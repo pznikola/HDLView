@@ -13,14 +13,52 @@ export interface Profile {
   pdk_root?: string | null;
   timeout_seconds?: number;
 }
+export type SourceGroup = "design" | "simulation";
+export type Technology = "sky130" | "ihp_sg13g2";
+export interface PhysicalConfig {
+  pdk: string;
+  library: string;
+  clock_port: string;
+  clock_period_ns: number;
+  sdc?: FileRef | null;
+  overrides: Record<string, unknown>;
+}
 export interface Project {
+  technology?: Technology | null;
+  simulation_headers?: FileRef[];
   name: string;
   top: string;
-  sources: { path: string; language: string }[];
-  simulations: Record<string, unknown>;
-  physical?: unknown;
+  schema_version: number;
+  standard: string;
+  source_roots?: Record<string, string>;
+  headers?: FileRef[];
+  imports?: ImportRecord[];
+  simulation_sources?: FileRef[];
+  include_dirs: FileRef[];
+  defines: Record<string, string>;
+  parameters: Record<string, string>;
+  assets: FileRef[];
+  sources: { path: FileRef; language: Language }[];
+  simulations: Record<string, SimulationConfig>;
+  physical?: PhysicalConfig | null;
+}
+export interface SimulationConfig {
+  simulator: "icarus" | "verilator";
+  top: string;
+  dut_scope: string[];
+  testbench: FileRef[];
+  models: FileRef[];
+  sdf?: FileRef | null;
+  stop_time: string;
+  args: string[];
+  defines: Record<string, string>;
+  timing_corner?: string | null;
+  delay_selection?: string | null;
+  use_snapshot_sdf: boolean;
 }
 export interface Snapshot {
+  project_path?: string | null;
+  project_fingerprint?: string | null;
   profile: Profile;
   id: string;
   representation: Representation;
@@ -128,4 +166,73 @@ export interface Job {
   status: string;
   error?: string;
   result?: unknown;
+}
+
+export type FileRef = string | { root: string; path: string };
+export type Language = "system_verilog" | "verilog";
+export type FileRole =
+  | "design"
+  | "header"
+  | "simulation"
+  | "simulation_header"
+  | "remove";
+export interface ImportRecord {
+  group?: SourceGroup;
+  kind: "folder" | "filelist";
+  location: FileRef;
+  working_directory?: string | null;
+  files: FileRef[];
+}
+export interface WorkspaceProject {
+  draft_id?: string | null;
+  path: string;
+  project: Project;
+  revision: string;
+}
+export interface ImportRequest {
+  group?: SourceGroup;
+  kind: "files" | "folder" | "filelist";
+  paths?: string[];
+  working_directory?: string;
+  record_index?: number;
+}
+export interface ImportEntry {
+  file: FileRef;
+  language: Language;
+  role: FileRole;
+  missing: boolean;
+}
+export interface ImportPreview {
+  project: Project;
+  entries: ImportEntry[];
+  record?: ImportRecord | null;
+  warnings: string[];
+  replace_record?: number | null;
+}
+export interface PreviewResult {
+  token: string;
+  preview: ImportPreview;
+}
+export interface ImportChoice {
+  index: number;
+  role: FileRole;
+  selected: boolean;
+}
+export interface SourceDocument {
+  file: FileRef;
+  text: string;
+  revision: string;
+  bom: boolean;
+  line_ending: string;
+}
+export type SaveResult = {
+  status: "saved" | "conflict";
+  document: SourceDocument;
+};
+
+export interface RestoredProject {
+  snapshot?: Snapshot | null;
+  run_path?: string | null;
+  stale: boolean;
+  warnings: string[];
 }

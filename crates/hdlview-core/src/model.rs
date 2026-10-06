@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
 pub const SCHEMA: u32 = 1;
+pub const PROJECT_SCHEMA: u32 = 3;
 pub const IMAGE: &str =
     "hpretl/iic-osic-tools@sha256:92961478ad3c4f508efb42d9ccdba12ab262eb42a14926d2bd49862230ba8521";
 fn version() -> u32 {
@@ -22,7 +23,6 @@ fn stop() -> String {
 pub enum Language {
     Verilog,
     SystemVerilog,
-    Vhdl,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -38,30 +38,118 @@ impl Representation {
         matches!(self, Self::Generic | Self::Mapped | Self::PostLayout)
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SourceFile {
-    pub path: PathBuf,
-    pub language: Language,
-    #[serde(default)]
-    pub library: Option<String>,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(untagged)]
+pub enum FileRef {
+    Local(PathBuf),
+    Rooted { root: String, path: PathBuf },
+}
+impl FileRef {
+    pub fn path(&self) -> &std::path::Path {
+        match self {
+            Self::Local(path) | Self::Rooted { path, .. } => path,
+        }
+    }
+    pub fn logical(&self) -> PathBuf {
+        let path = match self {
+            Self::Local(path) => path.clone(),
+            Self::Rooted { root, path } => PathBuf::from("__roots").join(root).join(path),
+        };
+        let normalized: PathBuf = path
+            .components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .collect();
+        if normalized.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            normalized
+        }
+    }
+}
+// Compiler-facing configurations contain only normalized Local references.
+impl AsRef<std::path::Path> for FileRef {
+    fn as_ref(&self) -> &std::path::Path {
+        self.path()
+    }
+}
+impl From<PathBuf> for FileRef {
+    fn from(path: PathBuf) -> Self {
+        Self::Local(path)
+    }
+}
+impl From<&str> for FileRef {
+    fn from(path: &str) -> Self {
+        Self::Local(path.into())
+    }
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceGroup {
+    #[default]
+    Design,
+    Simulation,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Technology {
+    Sky130,
+    IhpSg13g2,
+}
+impl Technology {
+    pub fn preset(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Sky130 => ("sky130A", "sky130_fd_sc_hd"),
+            Self::IhpSg13g2 => ("ihp-sg13g2", "sg13g2_stdcell"),
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportRecord {
+    #[serde(default)]
+    pub group: SourceGroup,
+    pub kind: String,
+    pub location: FileRef,
+    #[serde(default)]
+    pub working_directory: Option<PathBuf>,
+    #[serde(default)]
+    pub files: Vec<FileRef>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceFile {
+    pub path: FileRef,
+    pub language: Language,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technology: Option<Technology>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub simulation_headers: Vec<FileRef>,
     #[serde(default = "version")]
     pub schema_version: u32,
     pub name: String,
     pub top: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_roots: BTreeMap<String, PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<FileRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<ImportRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub simulation_sources: Vec<FileRef>,
     pub sources: Vec<SourceFile>,
     #[serde(default = "std_sv")]
     pub standard: String,
     #[serde(default)]
-    pub include_dirs: Vec<PathBuf>,
+    pub include_dirs: Vec<FileRef>,
     #[serde(default)]
     pub defines: BTreeMap<String, String>,
     #[serde(default)]
     pub parameters: BTreeMap<String, String>,
     #[serde(default)]
-    pub assets: Vec<PathBuf>,
+    pub assets: Vec<FileRef>,
     #[serde(default)]
     pub simulations: BTreeMap<String, SimulationConfig>,
     #[serde(default)]
@@ -121,24 +209,24 @@ impl ToolchainProfile {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Simulator {
-    Ghdl,
     Icarus,
     Verilator,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SimulationConfig {
     pub simulator: Simulator,
     pub top: String,
     pub dut_scope: Vec<String>,
-    pub testbench: Vec<PathBuf>,
+    pub testbench: Vec<FileRef>,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default = "stop")]
     pub stop_time: String,
     #[serde(default)]
-    pub sdf: Option<PathBuf>,
+    pub sdf: Option<FileRef>,
     #[serde(default)]
-    pub models: Vec<PathBuf>,
+    pub models: Vec<FileRef>,
     #[serde(default)]
     pub defines: BTreeMap<String, String>,
     #[serde(default)]
@@ -155,7 +243,7 @@ pub struct PhysicalConfig {
     pub clock_port: String,
     pub clock_period_ns: f64,
     #[serde(default)]
-    pub sdc: Option<PathBuf>,
+    pub sdc: Option<FileRef>,
     #[serde(default)]
     pub overrides: BTreeMap<String, serde_json::Value>,
 }
@@ -224,6 +312,10 @@ pub struct Design {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesignSnapshot {
+    #[serde(default)]
+    pub project_path: Option<PathBuf>,
+    #[serde(default)]
+    pub project_fingerprint: Option<String>,
     pub schema_version: u32,
     pub id: String,
     pub representation: Representation,
@@ -236,6 +328,8 @@ pub struct DesignSnapshot {
     pub input_hashes: BTreeMap<String, String>,
     #[serde(default)]
     pub artifact_hashes: BTreeMap<String, String>,
+    #[serde(default)]
+    pub source_origins: BTreeMap<String, PathBuf>,
     pub netlist: Option<PathBuf>,
     #[serde(default)]
     pub sdf: BTreeMap<String, PathBuf>,

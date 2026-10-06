@@ -48,17 +48,8 @@ pub fn simulate(
         identifier(p)?;
     }
     let gate = snapshot.representation.is_gate();
-    let vhdl = snapshot.project.sources[0].language == Language::Vhdl;
-    if cfg.simulator == Simulator::Ghdl && gate {
-        bail!(
-            "Gate netlists are Verilog; configure an Icarus/Verilator run and compatible testbench"
-        )
-    }
-    if !gate && vhdl && !snapshot.project.parameters.is_empty() {
-        bail!("VHDL generic overrides require a matching testbench generic map; use source defaults or a specialized wrapper entity for both compilation and simulation")
-    }
-    if !gate && vhdl != (cfg.simulator == Simulator::Ghdl) {
-        bail!("Use GHDL for VHDL RTL and Icarus/Verilator for Verilog RTL")
+    for file in &cfg.testbench {
+        validate_hdl(file, false)?;
     }
     let sdf = if cfg.use_snapshot_sdf {
         if !gate {
@@ -88,11 +79,7 @@ pub fn simulate(
     let dir = unique_dir(&snapshot.directory.join("simulations"), name)?;
     let r = Runner::new(snapshot.profile.clone(), snapshot.directory.clone(), cancel);
     let inputs = snapshot.directory.join("inputs");
-    let trace = dir.join(if cfg.simulator == Simulator::Ghdl {
-        "trace.ghw"
-    } else {
-        "trace.vcd"
-    });
+    let trace = dir.join("trace.vcd");
     let mut files = if gate {
         vec![snapshot
             .netlist
@@ -111,13 +98,16 @@ pub fn simulate(
         .models
         .iter()
         .map(|p| {
-            if p.is_absolute() {
-                p.clone()
+            if p.path().is_absolute() {
+                p.path().to_path_buf()
             } else {
                 inputs.join(p)
             }
         })
         .collect::<Vec<_>>();
+    if !gate {
+        models.clear();
+    }
     if gate && models.is_empty() {
         if let Some(p) = &snapshot.project.physical {
             if snapshot.representation != Representation::Generic {
@@ -145,53 +135,6 @@ pub fn simulate(
     let mut diagnostics = Vec::new();
     let mut dut_scope = cfg.dut_scope.clone();
     let log = match cfg.simulator {
-        Simulator::Ghdl => {
-            for s in &snapshot.project.sources {
-                r.run(
-                    "ghdl",
-                    &[
-                        "-a".into(),
-                        format!("--std={}", snapshot.project.standard),
-                        format!("--work={}", s.library.as_deref().unwrap_or("work")),
-                        inputs.join(&s.path).to_string_lossy().into(),
-                    ],
-                    &dir,
-                    "ghdl-analyze",
-                )?;
-            }
-            for tb in &cfg.testbench {
-                r.run(
-                    "ghdl",
-                    &[
-                        "-a".into(),
-                        format!("--std={}", snapshot.project.standard),
-                        inputs.join(tb).to_string_lossy().into(),
-                    ],
-                    &dir,
-                    "ghdl-testbench",
-                )?;
-            }
-            r.run(
-                "ghdl",
-                &[
-                    "-e".into(),
-                    format!("--std={}", snapshot.project.standard),
-                    cfg.top.clone(),
-                ],
-                &dir,
-                "ghdl-elaborate",
-            )?;
-            let mut args = vec![
-                "-r".into(),
-                format!("--std={}", snapshot.project.standard),
-                cfg.top.clone(),
-                format!("--wave={}", trace.display()),
-                format!("--stop-time={}", cfg.stop_time),
-                "--assert-level=error".into(),
-            ];
-            args.extend(cfg.args.clone());
-            r.run("ghdl", &args, &dir, "ghdl-simulate")?
-        }
         Simulator::Icarus | Simulator::Verilator => {
             // A generated top wraps the user's testbench without changing its source.
             if cfg.dut_scope.first() != Some(&cfg.top) {
@@ -347,6 +290,33 @@ fn json_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sdf_restrictions_fail_before_creating_a_job_directory() {
+        let d = tempfile::tempdir().unwrap();
+        let mut snapshot: DesignSnapshot = serde_json::from_value(serde_json::json!({
+            "schema_version":SCHEMA,"id":"sdf","representation":"elaborated","directory":d.path(),
+            "project":{"schema_version":3,"name":"SDF","top":"top","sources":[],
+                "simulations":{"shared":{"simulator":"icarus","top":"tb","dut_scope":["tb","dut"],"testbench":[],"sdf":"delay.sdf"}}},
+            "profile":ToolchainProfile::default(),"design":{"modules":{},"scopes":[]},
+            "diagnostics":[],"tool_versions":{},"input_hashes":{},"netlist":null
+        })).unwrap();
+        assert!(simulate(&snapshot, "shared", CancelToken::default())
+            .unwrap_err()
+            .to_string()
+            .contains("gate snapshot"));
+        snapshot.representation = Representation::Generic;
+        snapshot
+            .project
+            .simulations
+            .get_mut("shared")
+            .unwrap()
+            .simulator = Simulator::Verilator;
+        assert!(simulate(&snapshot, "shared", CancelToken::default())
+            .unwrap_err()
+            .to_string()
+            .contains("Icarus"));
+        assert!(!d.path().join("simulations").exists());
+    }
     #[test]
     fn validate_duration() {
         assert!(duration("100ns").is_ok());

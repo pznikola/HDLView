@@ -44,8 +44,8 @@ before treating an unsupported mapping as an implementation bug.
 - Resolve exact declarations and validated ranges. Do not introduce basename or
   fuzzy matching. Keep `missing`, `ambiguous`, `range_mismatch`, and `out_of_scope`
   distinguishable; unavailable signals have no invented value.
-- Apply VHDL case rules only where appropriate. Preserve escaped spelling, range
-  direction, offsets, and bit correspondence. Current manual mappings require
+- Preserve case-sensitive Verilog identifiers, escaped spelling, range direction,
+  offsets, and bit correspondence. Current manual mappings require
   compatible ranges; do not imply arbitrary slice remapping already works.
 - Preserve separate cell-pin identities for SDF interconnect delays, even when
   their electrical nets are connected. Retain integer timestamps across IPC.

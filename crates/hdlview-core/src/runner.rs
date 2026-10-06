@@ -58,7 +58,7 @@ pub fn resolve_profile(mut profile: ToolchainProfile) -> Result<ToolchainProfile
         }
         profile.image = Some(id);
     } else {
-        for name in ["PATH", "LD_LIBRARY_PATH", "GHDL_PREFIX", "YOSYS_DATDIR"] {
+        for name in ["PATH", "LD_LIBRARY_PATH", "YOSYS_DATDIR"] {
             if let Ok(value) = std::env::var(name) {
                 profile.env.entry(name.into()).or_insert(value);
             }
@@ -95,7 +95,9 @@ impl Runner {
             Provider::Native => (exe, args.to_vec()),
             Provider::Docker => {
                 env.entry("PATH".into()).or_insert("/opt/hdlview/magic/bin:/foss/tools/bin:/foss/tools/klayout:/foss/tools/sak:/usr/local/bin:/usr/bin:/bin".into());
-                env.entry("LD_LIBRARY_PATH".into()).or_insert("/foss/tools/iverilog/lib:/foss/tools/ghdl/lib:/foss/tools/gtkwave/lib/x86_64-linux-gnu".into());
+                env.entry("LD_LIBRARY_PATH".into()).or_insert(
+                    "/foss/tools/iverilog/lib:/foss/tools/gtkwave/lib/x86_64-linux-gnu".into(),
+                );
                 env.entry("CCACHE_DIR".into()).or_insert_with(|| {
                     self.workspace
                         .join("tool-cache/ccache")
@@ -233,7 +235,6 @@ impl Runner {
     pub fn probe(&self) -> BTreeMap<String, String> {
         [
             ("yosys", vec!["-V"]),
-            ("ghdl", vec!["--version"]),
             ("iverilog", vec!["-V"]),
             ("verilator", vec!["--version"]),
             ("slang", vec!["--version"]),

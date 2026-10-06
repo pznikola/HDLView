@@ -1,10 +1,7 @@
 FROM hpretl/iic-osic-tools@sha256:92961478ad3c4f508efb42d9ccdba12ab262eb42a14926d2bd49862230ba8521
 USER root
-RUN /usr/bin/python3 -m pip install --break-system-packages \
-    'git+https://github.com/ghdl/ghdl.git@dc2c18aa' \
-    'pyslang==9.1.0' 'pyVHDLModel==0.33.0' 'pyTooling==8.8.0'
-ENV GHDL_PREFIX=/foss/tools/ghdl/lib/ghdl
-ENV LD_LIBRARY_PATH=/foss/tools/iverilog/lib:/foss/tools/ghdl/lib
+RUN /usr/bin/python3 -m pip install --break-system-packages 'pyslang==10.0.0'
+ENV LD_LIBRARY_PATH=/foss/tools/iverilog/lib
 # IHP's bundled PDK uses the LibreLane 3 PDN and cell-list interfaces.
 RUN /usr/bin/python3 -m pip install --break-system-packages 'librelane==3.0.0'
 # LibreLane 3 requires Magic's `units` command, absent from base Magic 8.3.582.

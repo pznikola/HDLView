@@ -5,8 +5,8 @@ use std::{
     path::Path,
 };
 use wellen::{
-    viewers, Hierarchy, LoadOptions, ScopeRef, Signal, SignalRef as WSignalRef, SignalSource,
-    VarRef,
+    viewers, FileFormat, Hierarchy, LoadOptions, ScopeRef, Signal, SignalRef as WSignalRef,
+    SignalSource, VarRef,
 };
 
 pub struct WaveStore {
@@ -31,6 +31,10 @@ fn walk(h: &Hierarchy, scope: ScopeRef, path: &[String], out: &mut Vec<(Vec<Stri
 }
 impl WaveStore {
     pub fn open(path: &Path) -> Result<Self> {
+        let mut input = std::io::BufReader::new(std::fs::File::open(path)?);
+        if viewers::detect_file_format(&mut input) == FileFormat::Ghw {
+            bail!("GHW waveforms are no longer supported; import VCD or FST")
+        }
         let header = viewers::read_header_from_file(path, &LoadOptions::default())?;
         let body = viewers::read_body(header.body, &header.hierarchy, None)?;
         let h = header.hierarchy;
@@ -174,32 +178,16 @@ pub fn bindings(
     if run.snapshot_id != snapshot.id || run.representation != snapshot.representation {
         bail!("Waveform and schematic belong to different snapshots/stages")
     }
-    let vhdl = snapshot
-        .project
-        .sources
-        .iter()
-        .all(|s| s.language == Language::Vhdl)
-        && !snapshot.representation.is_gate();
-    let normalize = |s: &str| {
-        if vhdl && !s.starts_with('\\') {
-            s.to_ascii_lowercase()
-        } else {
-            s.to_owned()
-        }
-    };
     let mut wavepaths: BTreeMap<Vec<String>, Vec<&WaveVariable>> = BTreeMap::new();
     for v in &info.variables {
-        wavepaths
-            .entry(v.path.iter().map(|s| normalize(s)).collect())
-            .or_default()
-            .push(v);
+        wavepaths.entry(v.path.clone()).or_default().push(v);
     }
     let mut result = Vec::new();
     for scope in &snapshot.design.scopes {
         for sig in graph::signal_refs(snapshot, &scope.path)? {
             let mut path = run.dut_scope.clone();
             path.extend_from_slice(&sig.path[1..]);
-            let key = path.iter().map(|s| normalize(s)).collect::<Vec<_>>();
+            let key = path;
             let candidates: Vec<u32> = wavepaths
                 .get(&key)
                 .into_iter()
@@ -324,6 +312,16 @@ pub fn prepare_import(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ghw_is_rejected_even_with_a_vcd_filename() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("renamed.vcd");
+        std::fs::write(&path, b"GHDLwave\n\x10\x00\x01\x01\x04\x04\x00").unwrap();
+        let error = WaveStore::open(&path).err().unwrap();
+        assert!(error
+            .to_string()
+            .contains("GHW waveforms are no longer supported"));
+    }
     #[test]
     fn vcd_alias_and_large_time() {
         let d = tempfile::tempdir().unwrap();

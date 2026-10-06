@@ -3,9 +3,10 @@
 Linux desktop HDL schematic and waveform explorer, with a Rust core and headless CLI.
 
 - Source/dataflow, elaborated RTL, generic gates, PDK-mapped gates, and post-layout views.
-- Verilog/SystemVerilog and VHDL projects, using existing open-source compilers.
+- Verilog/SystemVerilog projects, using existing open-source compilers.
+- File-menu project creation/opening, grouped RTL/simulation imports, editable source tabs, and automatic project artifact restoration.
 - Bidirectional schematic/waveform selection, instance-aware signal identities, bus expansion, and exact integer timestamps.
-- Icarus, Verilator, and GHDL simulation; VCD/FST/GHW import through Wellen.
+- Icarus and Verilator simulation; VCD/FST import through Wellen.
 - SKY130 and IHP LibreLane flow integration, reports, final netlists, and SDF delay simulation.
 - Native executable profiles or Docker, immutable inputs, command manifests, logs, cancellation, and session restoration.
 
@@ -24,17 +25,41 @@ cargo build -p hdlview
 npm run desktop
 ```
 
+If startup aborts with `Could not create GBM EGL display: EGL_NOT_INITIALIZED`,
+try WebKit's DMA-BUF renderer workaround for that launch:
+
+```sh
+WEBKIT_DISABLE_DMABUF_RENDERER=1 npm run desktop
+```
+
+This bypasses the affected rendering path; it does not repair the graphics driver.
+See the [upstream WebKit workaround report](https://bugs.webkit.org/show_bug.cgi?id=280210).
+The Rust `tauri` crate and JavaScript `@tauri-apps/api` must share a major/minor
+version. Keep their pins aligned when updating dependencies.
+
 The tools are separate from the desktop application. Build the qualified derived image:
 
 ```sh
 docker build -f tools/Dockerfile -t hdlview-tools:2025.12 .
 ```
 
-The base image alone supports many compilation tasks, but **does not provide the complete source-VHDL/physical toolchain**. The derived image pins matching GHDL Python bindings, LibreLane 3, and Magic. Its LibreLane profile intentionally bypasses the base image's legacy LibreLane 2 wrapper to use the matching newer OpenROAD and OpenSTA binaries.
+The base image alone supports many compilation tasks, but **does not provide the complete qualified physical toolchain**. The derived image pins pyslang, LibreLane 3, and Magic. Its LibreLane profile intentionally bypasses the base image's legacy LibreLane 2 wrapper to use the matching newer OpenROAD and OpenSTA binaries.
 
-Open `examples/counter/hdlview.project.json`, `examples/verilog/hdlview.project.json`, or `examples/vhdl/hdlview.project.json`. The default desktop profile matches [tools/profiles/docker.json](tools/profiles/docker.json). Select a representation, build, then run a simulation. The VHDL example uses `rtl` for GHDL and `gates`/`timing` for Verilog netlist simulation.
+Open `examples/counter/hdlview.project.json` or `examples/verilog/hdlview.project.json`. The default desktop profile matches [tools/profiles/docker.json](tools/profiles/docker.json). Select a representation, build, then run a simulation.
 
-For a native installation, adapt [native.example.json](tools/profiles/native.example.json) in the Toolchain editor. Set plugin paths and relevant environment variables as well as executables. The Python environment must contain compatible `pyslang` and, for source VHDL, compiler-matched `pyGHDL`. Standard-cell interface extraction also uses `pyslang`.
+Use **File → Create New Project…** to choose a name, directory, and **SKY130** or **IHP SG13G2** technology. Add files, folders, or `.f`/`.flist` inputs, review them, then finish with **Create New Project**. Files stay in their original locations; cancelling the wizard writes no configuration. Empty projects can be created. Set the top in **Project Settings** before building; mapped/physical builds also require a clock port and period.
+
+**File → Add New Files…** adds Verilog/SystemVerilog inputs to **Design Sources** or **Simulation Sources**. Both RTL and gate runs use the same registered testbench files; gate runs compile the exact exported Verilog netlist. Headers remain separate from compilation units. The Sources explorer preserves directories under each group; right-click an imported folder/filelist (or use Shift+F10) to rescan/reimport. Configure the chosen simulation's top, DUT scope, and ordered testbench inputs in Project Settings' advanced JSON; registering a simulation file does not invent a testbench configuration.
+
+**File → Save Project** saves edited documents, project configuration, and current artifact references. `Ctrl+S` saves the active file; `Ctrl+Shift+S` saves the project. External edits offer Reload/Overwrite/Cancel. Closing a dirty tab/project/window offers Save/Discard/Cancel. Sources must be saved before building. Saved edits mark the schematic **Rebuild required**; captured source navigation remains read-only with a separate working-file action. UTF-8 BOM and LF/CRLF are preserved; unsupported encodings, mixed line endings, and CR-only files are reported.
+
+Drag the horizontal divider above Waveforms to resize its height. Focus the divider and use Up/Down to adjust it, or Home/End for the limits. The editor and schematic share the remaining space.
+
+**File → Open Existing Project…** selects JSON using the native picker and automatically reopens that project's last valid schematic and matching waveform. There is no separate Restore Session command. Restoration is local to this machine and the configuration's canonical path; tabs, pane sizes, scope, waveform cursor/zoom, and row selection start with defaults. Missing/corrupted artifacts produce warnings; changed working inputs retain the old immutable schematic with a rebuild indication. Opening never compiles or simulates automatically. **Close Project** leaves sources and artifacts on disk.
+
+Registered external roots appear as `@root/path`; include settings accept project-relative paths or that notation. Folder rescans preserve manual compilation order; filelist reimports apply reviewed order and retain source/header roles. Version-1 and version-2 Verilog/SystemVerilog configurations load without automatic rewriting. Their RTL/gate source lists merge in memory, preserving order and configuration-specific testbench lists. Explicit Save Project writes schema 3 without language-family, source-library, gate-source, or simulation-stage fields. Existing VHDL projects are unsupported and opening one leaves the current workspace intact. Legacy valid SV artifacts remain immutable and may show Rebuild required after migration.
+
+For a native installation, adapt [native.example.json](tools/profiles/native.example.json) in the Toolchain editor. Set plugin paths and relevant environment variables as well as executables. The Python environment must contain `pyslang==10.0.0` (needed to honor Verilog-2005 source-view settings). Standard-cell interface extraction also uses `pyslang`.
 
 ## Headless workflows
 
@@ -55,7 +80,7 @@ target/debug/hdlview simulate /absolute/artifact/directory/snapshot.json --confi
 
 `--store` selects the artifact root; the CLI defaults to `.hdlview`. Desktop artifacts use the OS application cache directory. `resume-physical DIRECTORY` retries collection of final physical artifacts when compilation/import failed before a snapshot was published. Existing snapshots are never overwritten by this command.
 
-Use **named port connections in gate testbenches**: physical tools may reorder declarations. For a VHDL-origin netlist, supply a Verilog/SystemVerilog gate testbench. `timing_corner` selects the exported SDF file, while `delay_selection` independently chooses `min`, `typ`, or `max`. OpenSTA's exported sparse triples use `max` by default; a missing selected value is an annotation error, not an assumed zero delay.
+Use **named port connections in gate testbenches**: physical tools may reorder declarations. Use one ordinary simulation configuration for RTL or gates; the selected snapshot chooses the DUT implementation. Test public interfaces: RTL-internal probes or DUT parameter overrides may need adjustments after synthesis. Configurations with SDF remain gate-only and require Icarus. `timing_corner` selects the exported SDF file, while `delay_selection` independently chooses `min`, `typ`, or `max`. OpenSTA's exported sparse triples use `max` by default; a missing selected value is an annotation error, not an assumed zero delay.
 
 `hdlview rpc` is a local JSON-lines interface used by tests, sharing the same application service as Tauri. It is not a network service. See [architecture](docs/ARCHITECTURE.md).
 
@@ -72,13 +97,14 @@ npx playwright install chromium
 HDLVIEW_TOOL_PROFILE=/absolute/native-profile.json npm run test:e2e
 ```
 
-The browser test compiles a real hierarchical design and simulates it through the CLI service. `tools/qualify.py` runs a repeatable toolchain matrix; `tools/benchmark.py --mib 1024` measures large-VCD parsing. `node tools/benchmark-layout.mjs` and `python3 tools/benchmark-values.py` measure browser layout and cached cursor queries.
+The browser test compiles a real hierarchical design and simulates it through the CLI service. `tools/qualify.py` runs a repeatable shared-testbench matrix; `--mapped` adds both PDKs, `--physical` adds full flows, and `--store` keeps provider reports separate; `tools/benchmark.py --mib 1024` measures large-VCD parsing. `node tools/benchmark-layout.mjs` and `python3 tools/benchmark-values.py` measure browser layout and cached cursor queries.
 
 With host desktop development libraries, `npm run package` invokes Tauri packaging. An isolated Ubuntu 22.04-compatible Debian package can instead be built with:
 
 ```sh
 bash tools/package-linux.sh
 # target/packages/hdlview_0.1.0_amd64.deb
+# Optional smoke check after packaging: python3 tools/smoke-package.py
 sudo apt install ./target/packages/hdlview_0.1.0_amd64.deb
 ```
 

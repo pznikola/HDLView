@@ -431,8 +431,8 @@ dd {
   color: #7f96a9;
 }
 .wave-panel {
-  height: 280px;
-  flex-shrink: 0;
+  height: 100%;
+  min-height: 0;
   border-top: 1px solid #3e5262;
   background: #111b26;
 }
@@ -676,4 +676,269 @@ footer button {
   .wave-empty span {
     display: none;
   }
+}
+
+.project-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.project-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+.explorer-tabs {
+  display: flex;
+  padding: 8px;
+  gap: 6px;
+  border-bottom: 1px solid #344352;
+}
+.source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+}
+.source-tree {
+  padding: 8px;
+  overflow: auto;
+}
+.source-tree details {
+  padding-left: 12px;
+}
+.source-tree summary {
+  padding: 6px 0;
+  cursor: pointer;
+}
+.source-file {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 5px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rescan {
+  margin: 6px;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.workspace-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  background: #15202b;
+}
+.workspace-tools span {
+  font-size: 11px;
+  color: #e0bd70;
+}
+.workspace-panes {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.wave-splitter {
+  background: #283744;
+  cursor: row-resize;
+  touch-action: none;
+}
+.wave-splitter:hover,
+.wave-splitter:focus-visible {
+  background: #539c8d;
+}
+.workbench {
+  display: grid;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.design-pane,
+.editor-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.editor-pane {
+  border-right: 1px solid #344352;
+}
+.editor-tabs {
+  display: flex;
+  overflow-x: auto;
+  flex-shrink: 0;
+  background: #15202b;
+}
+.editor-tabs > div {
+  display: flex;
+  border-bottom: 2px solid transparent;
+}
+.editor-tabs > div.active {
+  border-color: #74d1bd;
+}
+.editor-tabs button {
+  border: 0;
+  border-radius: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.editor-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px;
+  min-height: 36px;
+}
+.editor-tools span {
+  font-size: 11px;
+  color: #a4b4c5;
+}
+.source-editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.pane-splitter {
+  background: #283744;
+  cursor: col-resize;
+  touch-action: none;
+}
+.pane-splitter:hover,
+.pane-splitter:focus {
+  background: #539c8d;
+}
+.project-modal {
+  width: min(900px, 90vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+.project-modal label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+}
+.modal-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.directory-choice {
+  display: flex;
+  gap: 6px;
+}
+.directory-choice input {
+  flex: 1;
+  min-width: 0;
+}
+.compile-order,
+.import-entries {
+  max-height: 35vh;
+  overflow: auto;
+}
+.compile-order > div,
+.import-entries > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+}
+.compile-order span,
+.import-entries span {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.compile-order input {
+  width: 100px;
+}
+.decision-backdrop {
+  z-index: 100;
+}
+.import-progress {
+  position: fixed;
+  bottom: 40px;
+  right: 20px;
+  background: #23424c;
+  padding: 12px;
+  border-radius: 6px;
+  z-index: 30;
+}
+.source-kind {
+  margin-left: auto;
+  color: #8295a8;
+  font-size: 10px;
+}
+
+header .project-controls {
+  flex: 0 0 auto;
+}
+header .project-title {
+  max-width: none;
+  flex: 1;
+}
+header .brand {
+  margin: 0 0 0 auto;
+}
+.file-menu {
+  position: relative;
+}
+.command-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 235px;
+  padding: 6px;
+  border: 1px solid #405360;
+  border-radius: 6px;
+  background: #1c2b36;
+  box-shadow: 0 8px 24px #0006;
+}
+.command-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 9px 12px;
+}
+.command-menu button:hover:not(:disabled),
+.command-menu button:focus-visible {
+  background: #304956;
+}
+.command-menu hr {
+  border: 0;
+  border-top: 1px solid #405360;
+  margin: 5px;
+}
+.source-context {
+  position: fixed;
+}
+.source-group > summary {
+  padding: 12px 4px 6px;
+  font-weight: 600;
+}
+.wizard-steps {
+  display: flex;
+  gap: 20px;
+}
+.wizard-steps [aria-current] {
+  color: #79d1bd;
+}
+
+.error-banner {
+  position: relative;
+  z-index: 40;
 }

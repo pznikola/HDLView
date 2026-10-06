@@ -23,6 +23,7 @@ fn main() {
         return;
     }
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let path = app.path().app_cache_dir()?;
             app.manage(Service::new(path));

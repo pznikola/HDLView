@@ -6,7 +6,6 @@ import { Schematic } from "./components/Schematic";
 import { Waveform } from "./components/Waveform";
 import { nextSelection, type Selection, formatValue } from "./selection";
 import type {
-  Project,
   Snapshot,
   Run,
   Graph,
@@ -20,6 +19,14 @@ import type {
 } from "./types";
 import "./style.css";
 import { useScopeNavigation } from "./navigation";
+import {
+  useProjectWorkspace,
+  ProjectToolbar,
+  ProjectSources,
+  ProjectDialogs,
+} from "./project-workspace";
+import { projects, canSimulate } from "./projects";
+import { SourceEditor } from "./components/SourceEditor";
 const defaultProfile: Profile = {
   provider: "docker",
   image: "hdlview-tools:2025.12",
@@ -37,11 +44,10 @@ const representations: { id: Representation; label: string }[] = [
   { id: "post_layout", label: "Post-layout" },
 ];
 function App() {
-  const restoredRows = useRef<number[] | undefined>(undefined);
-  const [path, setPath] = useState(
-    localStorage.getItem("hdlview-project") || "",
-  );
-  const [project, setProject] = useState<Project>();
+  const generation = useRef(0);
+  const flushRef = useRef<() => Promise<void>>(async () => {});
+  const flushArtifacts = useCallback(() => flushRef.current(), []);
+  const [restoring, setRestoring] = useState(false);
   const [profile, setProfile] = useState<Profile>(() => {
     try {
       const saved = localStorage.getItem("hdlview-profile");
@@ -77,24 +83,66 @@ function App() {
     ? [...run.dut_scope, ...(selection?.scope || scope).slice(1)]
     : [];
   const fail = useCallback((e: unknown) => setError(String(e)), []);
-  async function openProject() {
-    try {
-      const data = await api<{ path: string; project: Project }>(
-        "open_project",
-        { path },
-      );
-      setProject(data.project);
-      setPath(data.path);
-      setSimulation(Object.keys(data.project.simulations)[0] || "");
-      localStorage.setItem("hdlview-project", data.path);
-      setError("");
-    } catch (e) {
-      fail(e);
-    }
-  }
+  const [explorer, setExplorer] = useState<"sources" | "design">("sources");
+  const [editorCollapsed, setEditorCollapsed] = useState(false);
+  const [schematicCollapsed, setSchematicCollapsed] = useState(false);
+  const [editorWidth, setEditorWidth] = useState(45);
+  const [waveformHeight, setWaveformHeight] = useState(35);
+  const clearWorkspace = useCallback(() => {
+    generation.current += 1;
+    setRestoring(false);
+    setRep("elaborated");
+    setEditorCollapsed(false);
+    setSchematicCollapsed(false);
+    setEditorWidth(45);
+    setWaveformHeight(35);
+    setSnapshot(undefined);
+    setGraph(undefined);
+    setRun(undefined);
+    setWave(undefined);
+    setBindings([]);
+    setVisible([]);
+    setValues({});
+    setSelection(undefined);
+    setInspect(undefined);
+    setFocus(undefined);
+    setJob(undefined);
+    setError("");
+    setExplorer("sources");
+  }, []);
+  const working = useProjectWorkspace(
+    clearWorkspace,
+    fail,
+    flushArtifacts,
+    restoring || job?.status === "running",
+  );
+  const markBuilt = working.markBuilt;
+  const project = working.workspace?.project;
+  const path = working.workspace?.path ?? "";
+  const workspaceEpoch = generation.current;
+  const configuredSimulations =
+    snapshot?.project.simulations ?? project?.simulations;
+  const simulations = configuredSimulations;
+  const availableSimulations = Object.entries(simulations ?? {}).filter(
+    ([, config]) => canSimulate(config, snapshot),
+  );
+  useEffect(() => {
+    const names = Object.entries(configuredSimulations ?? {})
+      .filter(([, config]) => canSimulate(config, snapshot))
+      .map(([name]) => name);
+    if (!names.includes(simulation)) setSimulation(names[0] ?? "");
+  }, [configuredSimulations, snapshot, simulation]);
+  const viewSource = (source: string) => {
+    if (snapshot)
+      void working
+        .openSnapshotSource(snapshot.id, source)
+        .then(() => setEditorCollapsed(false))
+        .catch(fail);
+  };
   const acceptSnapshot = useCallback(
     (s: Snapshot) => {
       setSnapshot(s);
+      setExplorer("design");
       setGraph(undefined);
       setProfile(s.profile);
       setRep(s.representation);
@@ -109,28 +157,27 @@ function App() {
     },
     [resetScope],
   );
-  async function acceptRun(r: Run) {
+  const acceptRun = useCallback(async (r: Run) => {
+    const current = generation.current;
+    const [info, binding] = await Promise.all([
+      api<WaveInfo>("wave_info", { run_id: r.id }),
+      api<Binding[]>("bindings", { snapshot_id: r.snapshot_id, run_id: r.id }),
+    ]);
+    if (current !== generation.current) return;
     setRun(r);
-    const info = await api<WaveInfo>("wave_info", { run_id: r.id });
     setWave(info);
-    const b = await api<Binding[]>("bindings", {
-      snapshot_id: r.snapshot_id,
-      run_id: r.id,
-    });
-    setBindings(b);
+    setBindings(binding);
     setVisible(
-      restoredRows.current ??
-        info.variables
-          .filter(
-            (v) =>
-              v.path.length === r.dut_scope.length + 1 &&
-              r.dut_scope.every((x, i) => v.path[i] === x),
-          )
-          .slice(0, 12)
-          .map((v) => v.id),
+      info.variables
+        .filter(
+          (v) =>
+            v.path.length === r.dut_scope.length + 1 &&
+            r.dut_scope.every((x, i) => v.path[i] === x),
+        )
+        .slice(0, 12)
+        .map((v) => v.id),
     );
-    restoredRows.current = undefined;
-  }
+  }, []);
   useEffect(() => {
     if (!snapshot || !scope.length) return;
     let active = true;
@@ -152,65 +199,110 @@ function App() {
   }, [snapshot, scope, focus, splitBuses, fail]);
   useEffect(() => {
     if (!job || job.status !== "running") return;
+    let active = true;
+    const pollingGeneration = generation.current;
     const id = setInterval(() => {
       api<Job>("job", { id: job.id })
         .then(async (j) => {
+          if (!active) return;
+          const current = generation.current;
           setJob(j);
-          if (j.status === "failed") fail(j.error);
+          if (j.status === "cancelled") setRestoring(false);
+          if (j.status === "failed") {
+            fail(j.error);
+            setRestoring(false);
+          }
           if (j.status === "complete") {
-            if (j.kind === "build") acceptSnapshot(j.result as Snapshot);
-            else if (["simulate", "import", "open_run"].includes(j.kind))
+            if (j.kind === "build") {
+              acceptSnapshot(j.result as Snapshot);
+              markBuilt();
+            } else if (["simulate", "import", "open_run"].includes(j.kind)) {
               await acceptRun(j.result as Run);
-            else if (j.kind === "probe") {
+              if (current === generation.current) setRestoring(false);
+            } else if (j.kind === "probe") {
               setText(JSON.stringify(j.result, null, 2));
               setModal("Probe results");
             }
           }
         })
-        .catch(fail);
+        .catch((e) => {
+          if (pollingGeneration === generation.current) {
+            fail(e);
+            setRestoring(false);
+          }
+        });
       if (drawer) api<string>("logs").then(setLogs).catch(fail);
     }, 500);
-    return () => clearInterval(id);
-  }, [job, drawer, acceptSnapshot, fail]);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, [job, drawer, acceptSnapshot, acceptRun, fail, markBuilt]);
+  const checkpoint = useCallback(async () => {
+    if (!path || !snapshot || snapshot.project_path !== path || restoring)
+      return;
+    await projects.checkpoint(
+      path,
+      snapshot.directory + "/snapshot.json",
+      run ? run.directory + "/run.json" : undefined,
+    );
+  }, [path, snapshot, run, restoring]);
   useEffect(() => {
-    if (snapshot)
-      api("save_session", {
-        snapshot_id: snapshot.id,
-        snapshot_path: snapshot.directory + "/snapshot.json",
-        run_path: run ? run.directory + "/run.json" : null,
-        scope,
-        visible,
-      }).catch(fail);
-  }, [snapshot, run, scope, visible, fail]);
-  async function restore() {
-    try {
-      const s = await api<{
-        snapshot_path: string;
-        run_path?: string;
-        scope: string[];
-        visible: number[];
-      } | null>("restore_session");
-      if (!s) return;
-      const snap = await api<Snapshot>("open_snapshot", {
-        path: s.snapshot_path,
+    flushRef.current = checkpoint;
+  }, [checkpoint]);
+  useEffect(() => {
+    void checkpoint().catch(fail);
+  }, [checkpoint, fail]);
+  const markStale = working.markStale;
+  useEffect(() => {
+    if (!path) return;
+    let active = true;
+    setRestoring(true);
+    projects
+      .restore(path)
+      .then(async (state) => {
+        if (!active) return;
+        if (state.warnings.length) setError(state.warnings.join("\n"));
+        if (state.snapshot) {
+          acceptSnapshot(state.snapshot);
+          setExplorer("sources");
+          if (state.stale) markStale();
+          if (state.run_path) {
+            const result = await api<Job>("open_run", {
+              path: state.run_path,
+              snapshot_id: state.snapshot.id,
+            });
+            if (active) setJob(result);
+            return;
+          }
+        }
+        setRestoring(false);
+      })
+      .catch((e) => {
+        if (active) {
+          setRestoring(false);
+          fail(e);
+        }
       });
-      acceptSnapshot(snap);
-      restoredRows.current = s.visible;
-      setScope(s.scope);
-      if (s.run_path && !s.run_path.startsWith("undefined"))
-        setJob(
-          await api<Job>("open_run", {
-            path: s.run_path,
-            snapshot_id: snap.id,
-          }),
-        );
-    } catch (e) {
-      fail(e);
-    }
-  }
+    return () => {
+      active = false;
+    };
+  }, [path, workspaceEpoch, acceptSnapshot, markStale, fail]);
   async function startBuild() {
     setError("");
     try {
+      if (
+        ["mapped", "post_layout"].includes(rep) &&
+        (!project?.physical?.clock_port || !project.physical.clock_period_ns)
+      ) {
+        working.setModal("settings");
+        throw new Error(
+          "Set technology, clock port, and clock period in Project Settings before a mapped or physical build.",
+        );
+      }
+      if (!(await working.beforeBuild())) return;
+      working.markBuildStarted();
+
       setJob(await api<Job>("build", { path, profile, representation: rep }));
     } catch (e) {
       fail(e);
@@ -311,20 +403,12 @@ function App() {
   const selectedBinding = bindings.find(
     (b) => b.signal_id === selection?.signalId,
   );
-  const busy = job?.status === "running";
+  const busy = restoring || job?.status === "running";
   async function submitModal() {
     try {
       if (modal === "Toolchain") {
         setProfile(parseProfile(text));
         localStorage.setItem("hdlview-profile", text);
-        setModal(undefined);
-      } else if (modal === "Project configuration") {
-        const configuration: unknown = JSON.parse(text);
-        const saved = await api<Project>("save_project", {
-          path,
-          project: configuration,
-        });
-        setProject(saved);
         setModal(undefined);
       } else if (modal === "Open snapshot") {
         acceptSnapshot(await api<Snapshot>("open_snapshot", { path: text }));
@@ -357,32 +441,11 @@ function App() {
   return (
     <>
       <header>
-        <div className="brand">
-          <span className="brand-icon">H</span>
-          <strong>
-            HDL<span>View</span>
-          </strong>
-          <small>DESIGN EXPLORER</small>
-        </div>
-        <div className="project-open">
-          <input
-            aria-label="Project path"
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder="/path/to/hdlview.project.json"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void openProject();
-            }}
-          />
-          <button
-            onClick={() => {
-              void openProject();
-            }}
-            disabled={busy}
-          >
-            Open project
-          </button>
-        </div>
+        <ProjectToolbar
+          controller={working}
+          busy={busy || working.job?.status === "running"}
+          onError={fail}
+        />
         <button
           onClick={() => {
             setText(JSON.stringify(profile, null, 2));
@@ -391,22 +454,16 @@ function App() {
         >
           Toolchain
         </button>
-        <button
-          disabled={!project || busy}
-          onClick={() => {
-            setText(JSON.stringify(project, null, 2));
-            setModal("Project configuration");
-          }}
-        >
-          Configure project
-        </button>
-        <button
-          onClick={() => {
-            void restore();
-          }}
-        >
-          Restore session
-        </button>
+        <span className="project-title" title={path}>
+          {project?.name ?? "No project open"}
+          {working.dirtyProject ? " *" : ""}
+        </span>
+        <div className="brand">
+          <span className="brand-icon">H</span>
+          <strong>
+            HDL<span>View</span>
+          </strong>
+        </div>
       </header>
       <nav className="workflow">
         <div className="stages">
@@ -423,7 +480,14 @@ function App() {
         </div>
         <button
           className="primary"
-          disabled={!project || busy || !!run}
+          disabled={
+            !project ||
+            !project.top ||
+            !project.sources.length ||
+            busy ||
+            working.job?.status === "running" ||
+            !!run
+          }
           onClick={() => {
             void startBuild();
           }}
@@ -435,14 +499,21 @@ function App() {
           value={simulation}
           onChange={(e) => setSimulation(e.target.value)}
         >
-          {Object.keys(
-            snapshot?.project.simulations || project?.simulations || {},
-          ).map((n) => (
-            <option key={n}>{n}</option>
+          {Object.keys(simulations ?? {}).map((n) => (
+            <option
+              key={n}
+              disabled={!availableSimulations.some(([name]) => name === n)}
+            >
+              {n}
+            </option>
           ))}
         </select>
         <button
-          disabled={!snapshot || busy || !simulation}
+          disabled={
+            !snapshot ||
+            busy ||
+            !availableSimulations.some(([name]) => name === simulation)
+          }
           onClick={() => {
             void startSimulation();
           }}
@@ -472,273 +543,506 @@ function App() {
       )}
       <main>
         <aside className="sidebar">
-          <div className="panel-heading">
-            DESIGN HIERARCHY <span>{snapshot?.design.scopes.length || 0}</span>
-          </div>
-          {snapshot ? (
-            <>
-              <div className="project-name">
-                {snapshot.project.name}
-                <small>
-                  {snapshot.id.slice(0, 12)} ·{" "}
-                  {
-                    representations.find(
-                      (r) => r.id === snapshot.representation,
-                    )?.label
-                  }
-                </small>
-              </div>
-              <div className="hierarchy">
-                {snapshot.design.scopes
-                  .filter(
-                    (s) =>
-                      s.path.length === 1 ||
-                      s.path.slice(0, -1).every((p, i) => scope[i] === p),
-                  )
-                  .slice(0, 1000)
-                  .map((s) => (
-                    <button
-                      key={JSON.stringify(s.path)}
-                      style={{ paddingLeft: 12 + (s.path.length - 1) * 16 }}
-                      className={
-                        JSON.stringify(scope) === JSON.stringify(s.path)
-                          ? "active"
-                          : ""
-                      }
-                      onClick={() => {
-                        setScope(s.path);
-                        setFocus(undefined);
-                        setSelection((p) =>
-                          nextSelection(p, {
-                            origin: "hierarchy",
-                            scope: s.path,
-                          }),
-                        );
-                      }}
-                    >
-                      <span>◇</span> {s.path.at(-1)}
-                    </button>
-                  ))}
-              </div>
-            </>
-          ) : (
-            <p className="hint">
-              Open a project and build a schematic to explore its hierarchy.
-            </p>
-          )}
-          <div className="panel-heading">
-            SIGNALS <span>{graph?.signals.length || 0}</span>
-          </div>
-          <input
-            className="search"
-            aria-label="Search signals"
-            placeholder="Search signals…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <div className="signal-list">
-            {graph?.signals
-              .filter((s) =>
-                s.path.at(-1)!.toLowerCase().includes(search.toLowerCase()),
-              )
-              .slice(0, 1000)
-              .map((s) => {
-                const b = bindings.find((b) => b.signal_id === s.id);
-                const variableId = b?.variable_ids[0];
-                return (
-                  <button
-                    key={s.id}
-                    className={selection?.signalId === s.id ? "active" : ""}
-                    onClick={() => pickSignal([s.id])}
-                  >
-                    <span>
-                      {s.path.at(-1)}
-                      {s.width > 1 ? <small> /{s.width}</small> : null}
-                    </span>
-                    <small
-                      className={b?.status === "missing" ? "unavailable" : ""}
-                    >
-                      {variableId !== undefined
-                        ? formatValue(values[variableId] ?? "", "hex")
-                        : run
-                          ? "—"
-                          : ""}
-                    </small>
-                  </button>
-                );
-              })}
-          </div>
-          {run && wave && (
-            <details className="wave-browser">
-              <summary>Waveform scopes & signals</summary>
-              <p className="path" aria-label="Selected waveform scope">
-                {waveformScope.join(".")}
-              </p>
-              <button
-                onClick={() => {
-                  const prefix = waveformScope;
-                  setVisible((v) => [
-                    ...new Set([
-                      ...v,
-                      ...wave.variables
-                        .filter((x) => prefix.every((p, i) => x.path[i] === p))
-                        .slice(0, 200)
-                        .map((x) => x.id),
-                    ]),
-                  ]);
-                }}
-              >
-                Add signals in selected scope
-              </button>
-              {wave.variables
-                .filter((v) =>
-                  v.path.join(".").toLowerCase().includes(search.toLowerCase()),
-                )
-                .slice(0, 300)
-                .map((v) => (
-                  <button
-                    key={v.id}
-                    onClick={() => {
-                      setVisible((ids) =>
-                        ids.includes(v.id) ? ids : [...ids, v.id],
-                      );
-                      pickWave(v.id);
-                    }}
-                  >
-                    {v.path.join(".")}
-                  </button>
-                ))}
-            </details>
-          )}
-        </aside>
-        <div className="workspace">
-          <div className="breadcrumbs">
+          <div className="explorer-tabs">
             <button
-              aria-label="Previous scope"
-              disabled={!navigation.canBack}
-              onClick={navigation.back}
+              className={explorer === "sources" ? "active" : ""}
+              onClick={() => setExplorer("sources")}
             >
-              ←
+              Sources
             </button>
             <button
-              aria-label="Next scope"
-              disabled={!navigation.canForward}
-              onClick={navigation.forward}
+              className={explorer === "design" ? "active" : ""}
+              onClick={() => setExplorer("design")}
             >
-              →
+              Design
             </button>
-            {scope.map((s, i) => (
-              <React.Fragment key={i}>
-                <button
-                  onClick={() => {
-                    setScope(scope.slice(0, i + 1));
-                    setFocus(undefined);
-                  }}
-                >
-                  {s}
-                </button>
-                <span>/</span>
-              </React.Fragment>
-            ))}
-            {focus && (
-              <button onClick={() => setFocus(undefined)}>
-                Clear cone focus
-              </button>
-            )}
-            <span className="snapshot-note">
-              {run
-                ? "Bound to simulation " + run.id.slice(0, 8)
-                : "Schematic exploration"}
-            </span>
           </div>
-          {graph ? (
-            <Schematic
-              graph={graph}
-              splitBuses={splitBuses}
-              onSplitBuses={() => setSplitBuses(!splitBuses)}
-              selected={selection?.signalId}
-              onSignal={pickSignal}
-              onScope={(s) => {
-                setScope(s);
-                setFocus(undefined);
+          {explorer === "sources" ? (
+            <ProjectSources
+              controller={working}
+              onOpen={(file) => {
+                setEditorCollapsed(false);
+                void working.openFile(file).catch(fail);
               }}
-              onInspect={(node) => {
-                setInspect(node);
-                setSelection((previous) =>
-                  nextSelection(previous, {
-                    origin: "schematic",
-                    scope: node.child_scope,
-                  }),
-                );
-              }}
+              busy={busy || working.job?.status === "running"}
               onError={fail}
             />
           ) : (
-            <div className="welcome">
-              <div className="welcome-symbol">⌘</div>
-              <h1>See your hardware.</h1>
-              <p>
-                Explore RTL structure, follow signals, and inspect simulation
-                results in one workspace.
-              </p>
-              <div className="welcome-actions">
+            <>
+              <div className="panel-heading">
+                DESIGN HIERARCHY{" "}
+                <span>{snapshot?.design.scopes.length || 0}</span>
+              </div>
+              {snapshot ? (
+                <>
+                  <div className="project-name">
+                    {snapshot.project.name}
+                    <small>
+                      {snapshot.id.slice(0, 12)} ·{" "}
+                      {
+                        representations.find(
+                          (r) => r.id === snapshot.representation,
+                        )?.label
+                      }
+                    </small>
+                  </div>
+                  <div className="hierarchy">
+                    {snapshot.design.scopes
+                      .filter(
+                        (s) =>
+                          s.path.length === 1 ||
+                          s.path.slice(0, -1).every((p, i) => scope[i] === p),
+                      )
+                      .slice(0, 1000)
+                      .map((s) => (
+                        <button
+                          key={JSON.stringify(s.path)}
+                          style={{ paddingLeft: 12 + (s.path.length - 1) * 16 }}
+                          className={
+                            JSON.stringify(scope) === JSON.stringify(s.path)
+                              ? "active"
+                              : ""
+                          }
+                          onClick={() => {
+                            setScope(s.path);
+                            setFocus(undefined);
+                            setSelection((p) =>
+                              nextSelection(p, {
+                                origin: "hierarchy",
+                                scope: s.path,
+                              }),
+                            );
+                          }}
+                        >
+                          <span>◇</span> {s.path.at(-1)}
+                        </button>
+                      ))}
+                  </div>
+                </>
+              ) : (
+                <p className="hint">
+                  Open a project and build a schematic to explore its hierarchy.
+                </p>
+              )}
+              <div className="panel-heading">
+                SIGNALS <span>{graph?.signals.length || 0}</span>
+              </div>
+              <input
+                className="search"
+                aria-label="Search signals"
+                placeholder="Search signals…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <div className="signal-list">
+                {graph?.signals
+                  .filter((s) =>
+                    s.path.at(-1)!.toLowerCase().includes(search.toLowerCase()),
+                  )
+                  .slice(0, 1000)
+                  .map((s) => {
+                    const b = bindings.find((b) => b.signal_id === s.id);
+                    const variableId = b?.variable_ids[0];
+                    return (
+                      <button
+                        key={s.id}
+                        className={selection?.signalId === s.id ? "active" : ""}
+                        onClick={() => pickSignal([s.id])}
+                      >
+                        <span>
+                          {s.path.at(-1)}
+                          {s.width > 1 ? <small> /{s.width}</small> : null}
+                        </span>
+                        <small
+                          className={
+                            b?.status === "missing" ? "unavailable" : ""
+                          }
+                        >
+                          {variableId !== undefined
+                            ? formatValue(values[variableId] ?? "", "hex")
+                            : run
+                              ? "—"
+                              : ""}
+                        </small>
+                      </button>
+                    );
+                  })}
+              </div>
+              {run && wave && (
+                <details className="wave-browser">
+                  <summary>Waveform scopes & signals</summary>
+                  <p className="path" aria-label="Selected waveform scope">
+                    {waveformScope.join(".")}
+                  </p>
+                  <button
+                    onClick={() => {
+                      const prefix = waveformScope;
+                      setVisible((v) => [
+                        ...new Set([
+                          ...v,
+                          ...wave.variables
+                            .filter((x) =>
+                              prefix.every((p, i) => x.path[i] === p),
+                            )
+                            .slice(0, 200)
+                            .map((x) => x.id),
+                        ]),
+                      ]);
+                    }}
+                  >
+                    Add signals in selected scope
+                  </button>
+                  {wave.variables
+                    .filter((v) =>
+                      v.path
+                        .join(".")
+                        .toLowerCase()
+                        .includes(search.toLowerCase()),
+                    )
+                    .slice(0, 300)
+                    .map((v) => (
+                      <button
+                        key={v.id}
+                        onClick={() => {
+                          setVisible((ids) =>
+                            ids.includes(v.id) ? ids : [...ids, v.id],
+                          );
+                          pickWave(v.id);
+                        }}
+                      >
+                        {v.path.join(".")}
+                      </button>
+                    ))}
+                </details>
+              )}
+            </>
+          )}
+        </aside>
+        <div className="workspace">
+          <div className="workspace-tools">
+            <button onClick={() => setEditorCollapsed(!editorCollapsed)}>
+              {editorCollapsed ? "Show Editor" : "Hide Editor"}
+            </button>
+            <button onClick={() => setSchematicCollapsed(!schematicCollapsed)}>
+              {schematicCollapsed ? "Show Schematic" : "Hide Schematic"}
+            </button>
+            {working.stale && snapshot && (
+              <span>Sources changed · rebuild needed</span>
+            )}
+          </div>
+          <div
+            className="workspace-panes"
+            style={{
+              gridTemplateRows:
+                run && wave
+                  ? `minmax(120px, ${100 - waveformHeight}fr) 8px minmax(120px, ${waveformHeight}fr)`
+                  : "minmax(0, 1fr) auto",
+            }}
+          >
+            <div
+              className="workbench"
+              style={{
+                gridTemplateColumns:
+                  !editorCollapsed && working.activeTab && !schematicCollapsed
+                    ? `${editorWidth}% 8px minmax(0,1fr)`
+                    : "minmax(0,1fr)",
+              }}
+            >
+              {working.activeTab && (
+                <div
+                  className="editor-pane"
+                  style={{ display: editorCollapsed ? "none" : undefined }}
+                >
+                  <div className="editor-tabs">
+                    {working.tabs.map((tab) => (
+                      <div
+                        key={tab.id}
+                        className={working.active === tab.id ? "active" : ""}
+                      >
+                        <button
+                          title={tab.label}
+                          onClick={() => working.setActive(tab.id)}
+                        >
+                          {tab.label}
+                          {tab.text !== tab.saved ? " *" : ""}
+                        </button>
+                        <button
+                          aria-label={`Close ${tab.label}`}
+                          onClick={() => void working.closeTab(tab).catch(fail)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="editor-tools">
+                    {working.activeTab.readonly ? (
+                      <>
+                        <span>Captured source · read-only</span>
+                        <button
+                          disabled={!project}
+                          onClick={() => {
+                            const tab = working.activeTab;
+                            if (tab)
+                              void working.openWorkingFile(tab).catch(fail);
+                          }}
+                        >
+                          Open Working File
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          const tab = working.activeTab;
+                          if (tab) void working.saveTab(tab).catch(fail);
+                        }}
+                      >
+                        Save
+                      </button>
+                    )}
+                  </div>
+                  <SourceEditor
+                    tab={working.activeTab}
+                    tabIds={working.tabs.map((t) => t.id)}
+                    onChange={working.updateTab}
+                  />
+                </div>
+              )}
+              {!editorCollapsed && working.activeTab && !schematicCollapsed && (
+                <div
+                  className="pane-splitter"
+                  role="separator"
+                  aria-label="Editor width"
+                  aria-orientation="vertical"
+                  tabIndex={0}
+                  aria-valuenow={editorWidth}
+                  aria-valuemin={20}
+                  aria-valuemax={80}
+                  onKeyDown={(e) => {
+                    if (e.key === "ArrowLeft")
+                      setEditorWidth((w) => Math.max(20, w - 5));
+                    if (e.key === "ArrowRight")
+                      setEditorWidth((w) => Math.min(80, w + 5));
+                  }}
+                  onPointerDown={(e) =>
+                    e.currentTarget.setPointerCapture(e.pointerId)
+                  }
+                  onPointerMove={(e) => {
+                    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+                    const bounds =
+                      e.currentTarget.parentElement?.getBoundingClientRect();
+                    if (bounds)
+                      setEditorWidth(
+                        Math.min(
+                          80,
+                          Math.max(
+                            20,
+                            (100 * (e.clientX - bounds.left)) / bounds.width,
+                          ),
+                        ),
+                      );
+                  }}
+                  onPointerUp={(e) =>
+                    e.currentTarget.releasePointerCapture(e.pointerId)
+                  }
+                />
+              )}
+              {!schematicCollapsed && (
+                <div className="design-pane">
+                  <div className="breadcrumbs">
+                    <button
+                      aria-label="Previous scope"
+                      disabled={!navigation.canBack}
+                      onClick={navigation.back}
+                    >
+                      ←
+                    </button>
+                    <button
+                      aria-label="Next scope"
+                      disabled={!navigation.canForward}
+                      onClick={navigation.forward}
+                    >
+                      →
+                    </button>
+                    {scope.map((s, i) => (
+                      <React.Fragment key={i}>
+                        <button
+                          onClick={() => {
+                            setScope(scope.slice(0, i + 1));
+                            setFocus(undefined);
+                          }}
+                        >
+                          {s}
+                        </button>
+                        <span>/</span>
+                      </React.Fragment>
+                    ))}
+                    {focus && (
+                      <button onClick={() => setFocus(undefined)}>
+                        Clear cone focus
+                      </button>
+                    )}
+                    <span className="snapshot-note">
+                      {run
+                        ? "Bound to simulation " + run.id.slice(0, 8)
+                        : "Schematic exploration"}
+                    </span>
+                  </div>
+                  {graph ? (
+                    <Schematic
+                      graph={graph}
+                      splitBuses={splitBuses}
+                      onSplitBuses={() => setSplitBuses(!splitBuses)}
+                      selected={selection?.signalId}
+                      onSignal={pickSignal}
+                      onScope={(s) => {
+                        setScope(s);
+                        setFocus(undefined);
+                      }}
+                      onInspect={(node) => {
+                        setInspect(node);
+                        setSelection((previous) =>
+                          nextSelection(previous, {
+                            origin: "schematic",
+                            scope: node.child_scope,
+                          }),
+                        );
+                      }}
+                      onError={fail}
+                    />
+                  ) : (
+                    <div className="welcome">
+                      <div className="welcome-symbol">⌘</div>
+                      <h1>See your hardware.</h1>
+                      <p>
+                        Explore RTL structure, follow signals, and inspect
+                        simulation results in one workspace.
+                      </p>
+                      <div className="welcome-actions">
+                        <button
+                          onClick={() => {
+                            setText("");
+                            setModal("Open snapshot");
+                          }}
+                        >
+                          Open saved snapshot
+                        </button>
+                        <button
+                          onClick={() => {
+                            setJob(undefined);
+                            api<Job>("probe", { profile })
+                              .then(setJob)
+                              .catch(fail);
+                          }}
+                        >
+                          Check toolchain
+                        </button>
+                      </div>
+                      <p className="hint">
+                        Sources stay on your machine. Each waveform is bound to
+                        one design snapshot.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            {run && wave && (
+              <div
+                className="wave-splitter"
+                role="separator"
+                aria-label="Waveform height"
+                aria-orientation="horizontal"
+                aria-controls="waveform-pane"
+                tabIndex={0}
+                aria-valuenow={Math.round(waveformHeight)}
+                aria-valuemin={20}
+                aria-valuemax={70}
+                aria-valuetext={`${Math.round(waveformHeight)}%`}
+                onKeyDown={(e) => {
+                  if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(e.key))
+                    return;
+                  e.preventDefault();
+                  setWaveformHeight((height) =>
+                    e.key === "Home"
+                      ? 20
+                      : e.key === "End"
+                        ? 70
+                        : Math.min(
+                            70,
+                            Math.max(
+                              20,
+                              height + (e.key === "ArrowUp" ? 5 : -5),
+                            ),
+                          ),
+                  );
+                }}
+                onPointerDown={(e) => {
+                  if (e.button !== 0) return;
+                  e.preventDefault();
+                  e.currentTarget.focus();
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                }}
+                onPointerMove={(e) => {
+                  if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+                  const bounds =
+                    e.currentTarget.parentElement?.getBoundingClientRect();
+                  if (bounds)
+                    setWaveformHeight(
+                      Math.min(
+                        70,
+                        Math.max(
+                          20,
+                          (100 *
+                            (bounds.bottom -
+                              e.clientY -
+                              e.currentTarget.offsetHeight / 2)) /
+                            (bounds.height - e.currentTarget.offsetHeight),
+                        ),
+                      ),
+                    );
+                }}
+                onPointerUp={(e) => {
+                  if (e.currentTarget.hasPointerCapture(e.pointerId))
+                    e.currentTarget.releasePointerCapture(e.pointerId);
+                }}
+              />
+            )}
+            {run && wave ? (
+              <Waveform
+                key={run.id}
+                run={run}
+                info={wave}
+                visible={visible}
+                selected={selection?.variableId}
+                onSelect={pickWave}
+                onVisible={setVisible}
+                onCursor={(time) => {
+                  void cursor(time);
+                }}
+              />
+            ) : (
+              <div className="wave-empty">
+                <strong>Waveform workspace</strong>
+                <span>Run a simulation or import a matching trace.</span>
                 <button
+                  disabled={!snapshot || busy}
                   onClick={() => {
                     setText("");
-                    setModal("Open snapshot");
+                    setAux(
+                      JSON.stringify([
+                        project?.simulations && simulation ? "tb" : "tb",
+                        "dut",
+                      ]),
+                    );
+                    setModal("Import waveform");
                   }}
                 >
-                  Open saved snapshot
-                </button>
-                <button
-                  onClick={() => {
-                    setJob(undefined);
-                    api<Job>("probe", { profile }).then(setJob).catch(fail);
-                  }}
-                >
-                  Check toolchain
+                  Import VCD / FST
                 </button>
               </div>
-              <p className="hint">
-                Sources stay on your machine. Each waveform is bound to one
-                design snapshot.
-              </p>
-            </div>
-          )}
-          {run && wave ? (
-            <Waveform
-              key={run.id}
-              run={run}
-              info={wave}
-              visible={visible}
-              selected={selection?.variableId}
-              onSelect={pickWave}
-              onVisible={setVisible}
-              onCursor={(time) => {
-                void cursor(time);
-              }}
-            />
-          ) : (
-            <div className="wave-empty">
-              <strong>Waveform workspace</strong>
-              <span>Run a simulation or import a matching trace.</span>
-              <button
-                disabled={!snapshot || busy}
-                onClick={() => {
-                  setText("");
-                  setAux(
-                    JSON.stringify([
-                      project?.simulations && simulation ? "tb" : "tb",
-                      "dut",
-                    ]),
-                  );
-                  setModal("Import waveform");
-                }}
-              >
-                Import VCD / FST / GHW
-              </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
         <aside className="inspector">
           <div className="panel-heading">INSPECTOR</div>
@@ -768,20 +1072,10 @@ function App() {
               )}
               {selectedSignal.source && (
                 <button
-                  onClick={() =>
-                    void api<{ text: string; line: string; file: string }>(
-                      "source",
-                      {
-                        snapshot_id: snapshot?.id,
-                        source: selectedSignal.source,
-                      },
-                    )
-                      .then((s) => {
-                        setText(`${s.file}:${s.line}\n\n${s.text}`);
-                        setModal("Source");
-                      })
-                      .catch(fail)
-                  }
+                  onClick={() => {
+                    if (selectedSignal.source)
+                      viewSource(selectedSignal.source);
+                  }}
                 >
                   View source
                 </button>
@@ -810,17 +1104,9 @@ function App() {
               </div>
               {inspect.source && (
                 <button
-                  onClick={() =>
-                    void api<{ text: string }>("source", {
-                      snapshot_id: snapshot?.id,
-                      source: inspect.source,
-                    })
-                      .then((s) => {
-                        setText(s.text);
-                        setModal("Source");
-                      })
-                      .catch(fail)
-                  }
+                  onClick={() => {
+                    if (inspect.source) viewSource(inspect.source);
+                  }}
                 >
                   View source
                 </button>
@@ -885,7 +1171,7 @@ function App() {
       <footer>
         <span className={`status-dot ${busy ? "busy" : ""}`} />
         <span>{job ? `${job.kind}: ${job.status}` : "Ready"}</span>
-        {busy && (
+        {job?.status === "running" && (
           <button
             onClick={() => {
               void api("cancel", { id: job.id }).catch(fail);
@@ -914,6 +1200,7 @@ function App() {
           <pre>{logs || "Tool logs will appear here."}</pre>
         </section>
       )}
+      <ProjectDialogs controller={working} onError={fail} />
       {modal && (
         <div className="modal-backdrop">
           <section className="modal">

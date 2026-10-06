@@ -50,11 +50,15 @@ export function Waveform({
   const [scroll, setScroll] = useState(0);
   const [rows, setRows] = useState<WaveRow[]>([]);
   const [error, setError] = useState("");
-  const [width, setWidth] = useState(1000);
+  const [viewport, setViewport] = useState({ width: 1000, height: 238 });
+  const width = viewport.width;
   const container = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const first = Math.floor(scroll / ROW);
-  const count = Math.max(0, Math.min(32, displayed.length - first));
+  const count = Math.max(
+    0,
+    Math.min(Math.ceil(viewport.height / ROW) + 1, displayed.length - first),
+  );
   // Stable window inputs keep cursor/selection renders from repeating IPC queries.
   const shown = useMemo(
     () => displayed.slice(first, first + count),
@@ -75,7 +79,11 @@ export function Waveform({
   }, [selected, displayed]);
   useEffect(() => {
     const ob = new ResizeObserver(([entry]) => {
-      if (entry) setWidth(entry.contentRect.width);
+      if (entry)
+        setViewport({
+          width: entry.contentRect.width,
+          height: entry.contentRect.height,
+        });
     });
     if (container.current) ob.observe(container.current);
     return () => ob.disconnect();
@@ -216,7 +224,7 @@ export function Waveform({
     setRange([start, start + next]);
   }
   return (
-    <section className="wave-panel">
+    <section className="wave-panel" id="waveform-pane">
       <div className="wave-toolbar">
         <strong>Waveforms</strong>
         <span className="muted">{info.timescale} / tick</span>

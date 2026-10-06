@@ -1,6 +1,6 @@
 use crate::{
     graph, model::*, pipeline, project::*, runner::*, simulation, waveform,
-    waveprocess::WaveProcess,
+    waveprocess::WaveProcess, workspace,
 };
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,8 @@ pub struct Job {
     pub error: Option<String>,
 }
 struct State {
+    projects: BTreeMap<String, workspace::WorkspaceProject>,
+    previews: BTreeMap<String, (String, String, workspace::ImportPreview)>,
     snapshots: BTreeMap<String, DesignSnapshot>,
     runs: BTreeMap<String, SimulationRun>,
     waves: BTreeMap<String, WaveProcess>,
@@ -38,12 +40,23 @@ impl Service {
         Self {
             store,
             state: Arc::new(Mutex::new(State {
+                projects: BTreeMap::new(),
+                previews: BTreeMap::new(),
                 snapshots: BTreeMap::new(),
                 runs: BTreeMap::new(),
                 waves: BTreeMap::new(),
                 jobs: BTreeMap::new(),
             })),
         }
+    }
+    fn working_project(&self, path: &str) -> Result<workspace::WorkspaceProject> {
+        self.state
+            .lock()
+            .unwrap()
+            .projects
+            .get(path)
+            .cloned()
+            .context("Open the project first")
     }
     fn snapshot(&self, id: &str) -> Result<DesignSnapshot> {
         self.state
@@ -128,15 +141,179 @@ impl Service {
         };
         match action {
             "open_project" => {
-                let path = PathBuf::from(string("path")?);
-                Ok(json!({"path":path.canonicalize()?,"project":load_project(&path)?}))
+                let project = workspace::open(Path::new(string("path")?))?;
+                self.state
+                    .lock()
+                    .unwrap()
+                    .projects
+                    .insert(project.path.to_string_lossy().into_owned(), project.clone());
+                Ok(serde_json::to_value(project)?)
+            }
+            "create_project_draft" => {
+                let mut project = workspace::draft(
+                    Path::new(string("path")?),
+                    string("name")?.into(),
+                    serde_json::from_value(v["technology"].clone())?,
+                )?;
+                let token = format!(
+                    "draft-{}",
+                    SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+                );
+                project.draft_id = Some(token.clone());
+                self.state
+                    .lock()
+                    .unwrap()
+                    .projects
+                    .insert(token, project.clone());
+                Ok(json!(project))
+            }
+            "publish_project_draft" => {
+                let token = string("draft_id")?;
+                let project = self.working_project(token)?;
+                if project.draft_id.as_deref() != Some(token) {
+                    bail!("Not a creation draft")
+                }
+                let saved = workspace::publish_draft(
+                    &project,
+                    v["overwrite"].as_bool().unwrap_or(false),
+                    v["expected_revision"].as_str(),
+                )?;
+                let mut state = self.state.lock().unwrap();
+                state.projects.remove(token);
+                state
+                    .projects
+                    .insert(saved.path.to_string_lossy().into_owned(), saved.clone());
+                Ok(json!(saved))
+            }
+            "project_overwrite_revision" => {
+                let project = self.working_project(string("draft_id")?)?;
+                Ok(json!(if project.path.exists() {
+                    Some(file_hash(&project.path)?)
+                } else {
+                    None
+                }))
+            }
+            "close_project" => {
+                let key = string("path")?;
+                let mut state = self.state.lock().unwrap();
+                if state.jobs.values().any(|(job, _)| job.status == "running") {
+                    bail!("Cancel the running job before closing a project")
+                }
+                state.projects.remove(key);
+                state.previews.retain(|_, (path, _, _)| path != key);
+                // The desktop owns one visible artifact session. Dropping its parser stops the worker.
+                if !key.starts_with("draft-") {
+                    state.waves.clear();
+                    state.runs.clear();
+                    state.snapshots.clear();
+                }
+                Ok(Value::Null)
+            }
+            "update_project" => {
+                let mut project = self.working_project(string("path")?)?;
+                project.project = decode_project(v["project"].clone())?;
+                validate_project(&project.project)?;
+                deduplicate_simulation_files(&project.path, &mut project.project)?;
+                self.state
+                    .lock()
+                    .unwrap()
+                    .projects
+                    .insert(string("path")?.into(), project.clone());
+                Ok(serde_json::to_value(project)?)
             }
             "save_project" => {
-                let path = PathBuf::from(string("path")?).canonicalize()?;
-                let project: ProjectConfig = serde_json::from_value(v["project"].clone())?;
-                validate_project(&project)?;
-                atomic_json(&path, &project)?;
-                Ok(json!(project))
+                let mut project = self.working_project(string("path")?)?;
+                if !v["project"].is_null() {
+                    project.project = decode_project(v["project"].clone())?;
+                }
+                let saved = workspace::save(&project, string("expected_revision")?)?;
+                self.state
+                    .lock()
+                    .unwrap()
+                    .projects
+                    .insert(saved.path.to_string_lossy().into_owned(), saved.clone());
+                Ok(serde_json::to_value(saved)?)
+            }
+            "preview_import" => {
+                let key = string("path")?.to_owned();
+                let project = self.working_project(&key)?;
+                let request: workspace::ImportRequest =
+                    serde_json::from_value(v["request"].clone())?;
+                let service = self.clone();
+                self.launch("preview_import", move |cancel| {
+                    let preview = workspace::preview(&project, &request, &cancel)?;
+                    cancel.check()?;
+                    let token = format!(
+                        "import-{}",
+                        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+                    );
+                    service.state.lock().unwrap().previews.insert(
+                        token.clone(),
+                        (
+                            key,
+                            hash(serde_json::to_vec(&project.project)?),
+                            preview.clone(),
+                        ),
+                    );
+                    Ok(json!({"token":token,"preview":preview}))
+                })
+            }
+            "apply_import" => {
+                let token = string("token")?;
+                let mut state = self.state.lock().unwrap();
+                let (path, revision, preview) = state
+                    .previews
+                    .get(token)
+                    .cloned()
+                    .context("Import preview expired")?;
+                let project = state
+                    .projects
+                    .get_mut(&path)
+                    .context("Project is no longer open")?;
+                if hash(serde_json::to_vec(&project.project)?) != revision {
+                    bail!("Project changed; preview the import again")
+                }
+                project.project = workspace::apply(
+                    &preview,
+                    &serde_json::from_value::<Vec<workspace::ImportChoice>>(v["choices"].clone())?,
+                )?;
+                let result = serde_json::to_value(project)?;
+                state.previews.remove(token);
+                Ok(result)
+            }
+            "project_files" => Ok(json!(workspace::project_files(
+                &self.working_project(string("path")?)?.project
+            ))),
+            "read_document" => Ok(serde_json::to_value(workspace::read_document(
+                &self.working_project(string("path")?)?,
+                &serde_json::from_value(v["file"].clone())?,
+            )?)?),
+            "save_document" => Ok(serde_json::to_value(workspace::save_document(
+                &self.working_project(string("path")?)?,
+                &serde_json::from_value(v["document"].clone())?,
+            )?)?),
+            "working_source" => {
+                let snapshot = self.snapshot(string("snapshot_id")?)?;
+                let project = self.working_project(string("path")?)?;
+                let (file, _, _) = source_location(string("source")?);
+                let captured = Path::new(file);
+                let relative = if captured.is_absolute() {
+                    captured.strip_prefix(snapshot.directory.join("inputs"))?
+                } else {
+                    captured.strip_prefix("inputs").unwrap_or(captured)
+                };
+                let original = snapshot
+                    .source_origins
+                    .get(&relative.to_string_lossy().into_owned())
+                    .context("No original source mapping for this snapshot")?;
+                for reference in workspace::project_files(&project.project) {
+                    if resolve_reference(&project.path, &project.project, &reference)
+                        .is_ok_and(|p| &p == original)
+                    {
+                        return Ok(json!(reference));
+                    }
+                }
+                bail!("Original source is not registered in the current working project")
             }
             "load_profile" => {
                 let p: ToolchainProfile = read_json(Path::new(string("path")?))?;
@@ -200,16 +377,7 @@ impl Service {
                 let service = self.clone();
                 self.launch("open_run", move |c| {
                     c.check()?;
-                    let run: SimulationRun = read_json(&path)?;
-                    if run.schema_version != SCHEMA
-                        || run.snapshot_id != snapshot.id
-                        || run.representation != snapshot.representation
-                    {
-                        bail!("Run is bound to another schematic snapshot")
-                    }
-                    if file_hash(&run.trace)? != run.trace_hash {
-                        bail!("Waveform artifact changed")
-                    }
+                    let run = crate::lifecycle::validate_run(&path, &snapshot)?;
                     service.register_run(run, c)
                 })
             }
@@ -359,6 +527,7 @@ impl Service {
                 let path = if path.is_absolute() {
                     path
                 } else {
+                    let path = path.strip_prefix("inputs").unwrap_or(&path);
                     snapshot.directory.join("inputs").join(path)
                 };
                 let canonical = path.canonicalize()?;
@@ -369,20 +538,27 @@ impl Service {
                     json!({"text":fs::read_to_string(canonical)?,"line":line,"column":col,"file":file}),
                 )
             }
-            "save_session" => {
-                let id = string("snapshot_id")?;
-                self.snapshot(id)?;
-                let path = self.store.join("last-session.json");
-                atomic_json(&path, &v)?;
-                Ok(json!(path))
+            "save_project_state" => {
+                let project = self.working_project(string("path")?)?;
+                crate::lifecycle::save(
+                    &self.store,
+                    &project,
+                    Path::new(string("snapshot_path")?),
+                    v["run_path"].as_str().map(Path::new),
+                )?;
+                Ok(Value::Null)
             }
-            "restore_session" => {
-                let path = self.store.join("last-session.json");
-                if path.exists() {
-                    read_json(&path)
-                } else {
-                    Ok(Value::Null)
+            "restore_project_state" => {
+                let project = self.working_project(string("path")?)?;
+                let restored = crate::lifecycle::restore(&self.store, &project);
+                if let Some(snapshot) = &restored.snapshot {
+                    self.state
+                        .lock()
+                        .unwrap()
+                        .snapshots
+                        .insert(snapshot.id.clone(), snapshot.clone());
                 }
+                Ok(json!(restored))
             }
             _ => bail!("Unknown action {action}"),
         }

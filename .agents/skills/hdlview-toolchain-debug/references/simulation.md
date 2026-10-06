@@ -7,10 +7,11 @@ The snapshot's captured profile and inputs determine the actual simulation.
 - Keep synthesis sources and testbench sources separate. Check testbench top,
   DUT scope, runtime arguments, stop time, dump instrumentation, and expected trace.
   Generate instrumentation in the run directory; do not edit user HDL to obtain a dump.
-- VHDL RTL uses GHDL. Verilog/SystemVerilog RTL uses the explicitly selected Icarus
-  or Verilator. Gate netlists use Verilog-compatible testbenches; a VHDL-origin
-  design needs a separate gate testbench. Named port connections avoid declaration
-  reordering by physical tools.
+- Verilog/SystemVerilog uses the explicitly selected Icarus or Verilator. Ordinary
+  configurations reuse the same ordered testbench inputs across RTL/gate snapshots;
+  the snapshot selects captured RTL or the exact exported netlist. Named port
+  connections and public-interface checks avoid synthesized hierarchy and declaration
+  reordering differences. Waveforms remain bound to one snapshot and representation.
 - For gate models, check actual functional Verilog models, primitives, include
   directories, conditional defines, and power-pin conventions. Liberty and the
   generated graph blackboxes are insufficient for simulation.

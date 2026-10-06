@@ -7,10 +7,10 @@ or `post_layout` exactly as accepted by the CLI.
 
 - For source RTL, reproduce through the isolated Python helper using the captured
   project and helper inputs. Check `pyslang` compatibility for Verilog/SystemVerilog
-  and compiler-matched `pyGHDL`/DOM dependencies for VHDL. Unsupported constructs
+  only. Unsupported constructs
   remain diagnostic/opaque; do not recover source behavior from a synthesized graph.
-- For elaboration, inspect source ordering, standards, includes, libraries,
-  defines, parameters/generics, top selection, and plugin loading. The export
+- For elaboration, inspect source ordering, standards, includes,
+  defines, parameters, top selection, and plugin loading. The export
   lowers processes with `proc` and collects memories before JSON output. Preserve
   hierarchy and word-level operations; do not add synthesis optimization to fix
   an elaborated-view mismatch.
@@ -23,8 +23,8 @@ or `post_layout` exactly as accepted by the CLI.
   interfaces from models; these blackbox interfaces are not simulation models.
   Keep unknown cells explicit rather than inventing connectivity.
 
-Use `examples/counter` for repeated SV instances and `examples/vhdl` for the separate
-VHDL path. Add only the failing language construct to a focused fixture. Check
+Use `examples/counter` for repeated SV instances and `examples/verilog` for Verilog
+range-direction behavior. Add only the failing language construct to a focused fixture. Check
 connectivity, occurrence identity, width, and source references rather than compiler
 temporary names. A source-helper edit must be exercised with its matching compiler;
 Python syntax checks alone do not validate that interface.

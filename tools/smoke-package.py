@@ -38,5 +38,5 @@ checks['desktop_virtual_display_seconds'] = round(time.monotonic() - start, 2)
 checks['desktop_stderr'] = result.stderr
 package = root / 'target/packages/hdlview_0.1.0_amd64.deb'
 checks['package_sha256'] = hashlib.sha256(package.read_bytes()).hexdigest()
-(root / 'docs/package-smoke-results.json').write_text(json.dumps(checks, indent=2))
+(root / '.hdlview/package-smoke-results.json').write_text(json.dumps(checks, indent=2))
 print(json.dumps(checks, indent=2))

@@ -1,5 +1,7 @@
 # Open-Source RTL & Netlist Visualization Tools
 
+Historical research survey. HDLView now supports Verilog/SystemVerilog only; VHDL tools described below are reference material, not active application dependencies.
+
 A compact reference for AI agents evaluating software for RTL, synthesized-netlist, and digital-circuit visualization.
 
 ## Core Tools

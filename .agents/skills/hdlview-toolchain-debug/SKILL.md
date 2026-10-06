@@ -66,7 +66,7 @@ Fix the adapter or configuration responsible for the reproduced failure. Preserv
 logs, cancellation, argument-array execution, and atomic artifact publication.
 Use a focused real-tool fixture plus [applicable code checks](../hdlview-coding-style/references/verification.md#verification).
 Run the wider [qualification script](../../../tools/qualify.py) only when its matrix
-is relevant; `--physical` also launches mapped and post-layout flows for both examples.
+is relevant; `--physical` also launches mapped and post-layout flows for both technology variants.
 
 Report the cause, effective versions/profile, exact exercised workflow, and remaining
 compatibility limits. If a prerequisite is missing, identify it and stop that run;

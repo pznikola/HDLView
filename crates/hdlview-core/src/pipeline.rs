@@ -49,23 +49,7 @@ pub fn yosys(r: &Runner, script: &str, plugins: Vec<String>, label: &str) -> Res
 pub fn frontend(r: &Runner, p: &ProjectConfig) -> Result<(String, Vec<String>)> {
     let inputs = r.workspace.join("inputs");
     let mut script = String::new();
-    let plugins = if p.sources[0].language == Language::Vhdl {
-        for s in &p.sources {
-            let a = vec![
-                "-a".into(),
-                format!("--std={}", p.standard),
-                format!("--work={}", s.library.as_deref().unwrap_or("work")),
-                inputs.join(&s.path).to_string_lossy().into(),
-            ];
-            r.run("ghdl", &a, &r.workspace, "ghdl-analyze")?;
-        }
-        script.push_str(&format!("ghdl --std={} ", identifier(&p.standard)?));
-        for (k, v) in &p.parameters {
-            script.push_str(&format!("{} ", yosys_quote(&format!("-g{k}={v}"))?));
-        }
-        script.push_str(&format!("{}\n", identifier(&p.top)?));
-        plugin(r, "ghdl", "ghdl")?
-    } else {
+    let plugins = {
         let plugins = plugin(r, "slang", "read_slang")?;
         script.push_str(&format!(
             "--keep-hierarchy --std={} --top {} ",
@@ -125,13 +109,32 @@ fn compile_directory(
     cancel: CancelToken,
     resume: Option<PathBuf>,
 ) -> Result<DesignSnapshot> {
+    let mut project = load_project(project_path)?;
+    validate_build(&project)?;
     let profile = resolve_profile(profile)?;
-    let project = load_project(project_path)?;
     let resuming = resume.is_some();
     let dir = match resume {
         Some(path) => path,
         None => unique_dir(store, "design")?,
     };
+    let origin_file = dir.join("project-origin.json");
+    let origin: (Option<PathBuf>, Option<String>) = if resuming {
+        if origin_file.exists() {
+            read_json(&origin_file)?
+        } else {
+            (None, None)
+        }
+    } else {
+        (
+            Some(project_path.canonicalize()?),
+            Some(hash(serde_json::to_vec(&project)?)),
+        )
+    };
+    if !resuming {
+        atomic_json(&origin_file, &origin)?;
+    }
+    let original_path = &origin.0;
+    let mut source_origins = BTreeMap::new();
     let inputs = if resuming {
         let hashes: BTreeMap<String, String> = read_json(&dir.join("input-hashes.json"))?;
         for (name, expected) in &hashes {
@@ -142,7 +145,10 @@ fn compile_directory(
         }
         hashes
     } else {
-        capture(project_path, &project, &dir)?
+        let captured = capture(project_path, &project, &dir)?;
+        project = captured.project;
+        source_origins = captured.origins;
+        captured.hashes
     };
     atomic_json(&dir.join("toolchain.json"), &profile)?;
     let runner = Runner::new(profile.clone(), dir.clone(), cancel);
@@ -155,7 +161,7 @@ fn compile_directory(
         && !profile.pdk_root.as_ref().is_some_and(|p| p.exists())
     {
         Some(hash(serde_json::to_vec(
-            &json!({"project":project,"profile":profile,"representation":representation,"inputs":inputs,"tools":tool_versions,"application":file_hash(&std::env::current_exe()?)?}),
+            &json!({"project":project,"profile":profile,"representation":representation,"inputs":inputs,"tools":tool_versions,"application":file_hash(&std::env::current_exe()?).context("Fingerprint application; restart HDLView if its executable was rebuilt")?,"origins":source_origins,"project_path":original_path}),
         )?))
     } else {
         None
@@ -301,7 +307,18 @@ fn compile_directory(
             file_hash(path)?,
         );
     }
+    if origin_file.exists() {
+        artifact_hashes.insert("project-origin.json".into(), file_hash(&origin_file)?);
+    }
+    let origins_file = dir.join("source-origins.json");
+    if origins_file.exists() {
+        source_origins = read_json(&origins_file)?;
+        artifact_hashes.insert("source-origins.json".into(), file_hash(&origins_file)?);
+    }
     let snapshot = DesignSnapshot {
+        project_path: origin.0,
+        project_fingerprint: origin.1,
+        source_origins,
         artifact_hashes,
         schema_version: SCHEMA,
         id,

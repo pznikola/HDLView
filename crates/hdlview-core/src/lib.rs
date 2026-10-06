@@ -8,3 +8,7 @@ pub mod simulation;
 pub mod waveform;
 pub use model::*;
 pub mod waveprocess;
+
+pub mod workspace;
+
+pub mod lifecycle;
