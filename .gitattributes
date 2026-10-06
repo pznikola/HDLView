@@ -1,0 +1,2 @@
+# Preserve whitespace in verbatim upstream license notices.
+docs/THIRD_PARTY_NOTICES.md -whitespace

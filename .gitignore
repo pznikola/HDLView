@@ -1,0 +1,15 @@
+/target/
+node_modules/
+/dist/
+/dist-test/
+/src-tauri/gen/
+/.hdlview/
+/public/vendor/
+/rtl-visualizer-repos/
+__pycache__/
+*.pyc
+/test-results/
+/playwright-report/
+.env
+.env.*
+!.env.example

@@ -1,0 +1,252 @@
+[
+  {
+    "case": "counter/source",
+    "seconds": 3.2283292620013526,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-168111-1791250023645075108"
+  },
+  {
+    "case": "counter/source/rtl",
+    "seconds": 0.4864176500013855,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-168111-1791250023645075108/simulations/rtl-168740-1791250026854882950"
+  },
+  {
+    "case": "counter/source/rtl/parse",
+    "seconds": 0.0037391350015241187,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "case": "counter/elaborated",
+    "seconds": 3.5126174420001917,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-168913-1791250027364083504"
+  },
+  {
+    "case": "counter/elaborated/rtl",
+    "seconds": 0.4866881470006774,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-168913-1791250027364083504/simulations/rtl-169571-1791250030858971954"
+  },
+  {
+    "case": "counter/elaborated/rtl/parse",
+    "seconds": 0.0037950789992464706,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "case": "counter/elaborated/verilator",
+    "seconds": 0.32509209199997713,
+    "exit_code": 1,
+    "error": "Retained in local qualification logs; see retry entry and qualification ledger."
+  },
+  {
+    "case": "counter/generic",
+    "seconds": 4.169423971998185,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-169846-1791250031694674571"
+  },
+  {
+    "case": "counter/generic/rtl",
+    "seconds": 0.735719144999166,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-169846-1791250031694674571/simulations/rtl-170672-1791250035854700384"
+  },
+  {
+    "case": "counter/generic/rtl/parse",
+    "seconds": 0.005875953997019678,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "case": "counter/mapped",
+    "seconds": 7.3356526880015736,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-170921-1791250036607664235",
+    "physical_status": "complete"
+  },
+  {
+    "case": "counter/mapped/rtl",
+    "seconds": 0.5482379379973281,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-170921-1791250036607664235/simulations/rtl-171946-1791250043948552075"
+  },
+  {
+    "case": "counter/mapped/rtl/parse",
+    "seconds": 0.005748491999838734,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "case": "counter/post_layout",
+    "seconds": 52.78166594600043,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-172121-1791250044503281415",
+    "physical_status": "complete"
+  },
+  {
+    "case": "counter/post_layout/rtl",
+    "seconds": 0.5956695599998056,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-172121-1791250044503281415/simulations/rtl-175633-1791250097297111685"
+  },
+  {
+    "case": "counter/post_layout/rtl/parse",
+    "seconds": 0.011462970000138739,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "case": "counter/post_layout/timing",
+    "seconds": 0.6192122040010872,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-172121-1791250044503281415/simulations/timing-175814-1791250097906817266"
+  },
+  {
+    "case": "counter/post_layout/timing/parse",
+    "seconds": 0.02075168599913013,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "case": "vhdl/source",
+    "seconds": 3.317741503000434,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-175989-1791250098540100622"
+  },
+  {
+    "case": "vhdl/source/rtl",
+    "seconds": 1.209141092000209,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-175989-1791250098540100622/simulations/rtl-176586-1791250101839910523"
+  },
+  {
+    "case": "vhdl/source/rtl/parse",
+    "seconds": 0.002705961000174284,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "case": "vhdl/elaborated",
+    "seconds": 3.77677795800264,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-176905-1791250103071719837"
+  },
+  {
+    "case": "vhdl/elaborated/rtl",
+    "seconds": 1.128416643001401,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-176905-1791250103071719837/simulations/rtl-177656-1791250106829345982"
+  },
+  {
+    "case": "vhdl/elaborated/rtl/parse",
+    "seconds": 0.002692412002943456,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "case": "vhdl/generic",
+    "seconds": 4.41031119499894,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-177988-1791250107980001389"
+  },
+  {
+    "case": "vhdl/generic/gates",
+    "seconds": 0.7751196099998197,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-177988-1791250107980001389/simulations/gates-178896-1791250112381792969"
+  },
+  {
+    "case": "vhdl/generic/gates/parse",
+    "seconds": 0.004278944001271157,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "case": "vhdl/mapped",
+    "seconds": 6.403503066998383,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-179145-1791250113173382387",
+    "physical_status": "complete"
+  },
+  {
+    "case": "vhdl/mapped/gates",
+    "seconds": 0.5314411069994094,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-179145-1791250113173382387/simulations/gates-180248-1791250119563001688"
+  },
+  {
+    "case": "vhdl/mapped/gates/parse",
+    "seconds": 0.005031423002947122,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "case": "vhdl/post_layout",
+    "seconds": 68.8402724789994,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-180427-1791250120117397719",
+    "physical_status": "failed_checks"
+  },
+  {
+    "case": "vhdl/post_layout/gates",
+    "seconds": 0.4928409139974974,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-180427-1791250120117397719/simulations/gates-184638-1791250188945078440"
+  },
+  {
+    "case": "vhdl/post_layout/gates/parse",
+    "seconds": 0.0064997820009011775,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "case": "vhdl/post_layout/timing",
+    "seconds": 0.5413194120010303,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-180427-1791250120117397719/simulations/timing-184813-1791250189445013981"
+  },
+  {
+    "case": "vhdl/post_layout/timing/parse",
+    "seconds": 0.006821126000431832,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "case": "counter/elaborated/verilator",
+    "retry_of": "counter/elaborated/verilator",
+    "seconds": null,
+    "exit_code": 0,
+    "error": "",
+    "directory": ".hdlview/qualification/design-168913-1791250027364083504/simulations/verilator-181654-1791250125579865870",
+    "note": "Retested successfully after writable compiler-cache environment fix."
+  },
+  {
+    "case": "counter/elaborated/verilator/parse",
+    "exit_code": 0,
+    "error": ""
+  }
+]

@@ -1,0 +1,16 @@
+[package]
+name = "hdlview-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+hdlview-core = { path = "../crates/hdlview-core" }
+serde.workspace = true
+serde_json.workspace = true
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

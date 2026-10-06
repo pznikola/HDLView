@@ -1,0 +1,9 @@
+FROM rust:1.90-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f AS rust_toolchain
+FROM ubuntu:22.04
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential ca-certificates curl git libssl-dev libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config xvfb xauth && rm -rf /var/lib/apt/lists/*
+COPY --from=rust_toolchain /usr/local/cargo /usr/local/cargo
+COPY --from=rust_toolchain /usr/local/rustup /usr/local/rustup
+ENV PATH=/usr/local/cargo/bin:$PATH
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo
+WORKDIR /work

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "name": "Verilog range direction",
+  "top": "bridge",
+  "standard": "1364-2005",
+  "sources": [{ "path": "bridge.v", "language": "verilog" }],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "tb",
+      "dut_scope": ["tb", "dut"],
+      "testbench": ["tb.sv"],
+      "stop_time": "100ns"
+    }
+  }
+}

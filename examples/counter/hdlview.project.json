@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "name": "Two counters",
+  "top": "counter",
+  "standard": "1800-2017",
+  "sources": [
+    {
+      "path": "counter.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "tb",
+      "dut_scope": ["tb", "dut"],
+      "testbench": ["tb.sv"],
+      "stop_time": "1us"
+    },
+    "verilator": {
+      "simulator": "verilator",
+      "top": "tb",
+      "dut_scope": ["tb", "dut"],
+      "testbench": ["tb.sv"],
+      "stop_time": "1us"
+    },
+    "timing": {
+      "simulator": "icarus",
+      "top": "tb",
+      "dut_scope": ["tb", "dut"],
+      "testbench": ["tb.sv"],
+      "stop_time": "1us",
+      "use_snapshot_sdf": true,
+      "timing_corner": "nom_tt_025C_1v80",
+      "delay_selection": "max"
+    }
+  },
+  "physical": {
+    "pdk": "sky130A",
+    "library": "sky130_fd_sc_hd",
+    "clock_port": "clk",
+    "clock_period_ns": 10,
+    "overrides": {
+      "FP_CORE_UTIL": 25,
+      "PL_TARGET_DENSITY_PCT": 35
+    }
+  }
+}

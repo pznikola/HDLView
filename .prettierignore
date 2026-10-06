@@ -1,0 +1,12 @@
+node_modules/
+/target/
+/.hdlview/
+/dist/
+/dist-test/
+/public/vendor/
+/src-tauri/gen/
+/test-results/
+/playwright-report/
+/rtl-visualizer-repos/
+/docs/THIRD_PARTY_NOTICES.md
+/docs/*-results.json

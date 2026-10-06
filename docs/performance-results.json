@@ -1,0 +1,27 @@
+{
+  "vcd": {
+    "platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.35",
+    "bytes": 1074028999,
+    "wall_seconds": 33.029165285999625,
+    "exit_code": 0,
+    "resource_report": "\tCommand being timed: \"target/debug/hdlview wave .hdlview/benchmarks/large.vcd\"\n\tUser time (seconds): 280.37\n\tSystem time (seconds): 0.79\n\tPercent of CPU this job got: 851%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:33.01\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1544364\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 0\n\tMinor (reclaiming a frame) page faults: 140184\n\tVoluntary context switches: 63\n\tInvoluntary context switches: 74574\n\tSwaps: 0\n\tFile system inputs: 0\n\tFile system outputs: 0\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n"
+  },
+  "values": {
+    "signals": 200,
+    "queries": 50,
+    "median_ms": 3.4468099984223954,
+    "p95_ms": 3.8420820055762306,
+    "max_ms": 4.446704006113578
+  },
+  "cancellation": {
+    "trace_bytes": 1074028999,
+    "cancel_ms": 50.69297300360631,
+    "status": "cancelled"
+  },
+  "layout": {
+    "nodes": 1000,
+    "edges": 999,
+    "layout_ms": 1753.8999999985099
+  },
+  "layout_initial_ms": 12301.5
+}

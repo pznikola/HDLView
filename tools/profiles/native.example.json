@@ -1,0 +1,17 @@
+{
+  "provider": "native",
+  "executables": {
+    "yosys": "/path/to/bin/yosys",
+    "yosys-config": "/path/to/bin/yosys-config",
+    "ghdl": "/path/to/bin/ghdl",
+    "iverilog": "/path/to/bin/iverilog",
+    "vvp": "/path/to/bin/vvp",
+    "verilator": "/path/to/bin/verilator",
+    "python3": "/path/to/matched-python/bin/python3",
+    "librelane": "/path/to/librelane"
+  },
+  "plugins": { "slang": "/path/to/slang.so", "ghdl": "/path/to/ghdl.so" },
+  "env": { "PATH": "/path/to/bin:/usr/local/bin:/usr/bin:/bin" },
+  "pdk_root": "/path/to/pdks",
+  "timeout_seconds": 3600
+}

@@ -1,0 +1,18 @@
+[
+  {
+    "design": "counter",
+    "signal": "fast",
+    "zero_delay_first_one": 15000,
+    "sdf_first_one": 16187,
+    "timescale": "1 PicoSeconds",
+    "observed_delay_ticks": 1187
+  },
+  {
+    "design": "vhdl",
+    "signal": "count",
+    "zero_delay_first_one": 15000,
+    "sdf_first_one": 15407,
+    "timescale": "1 PicoSeconds",
+    "observed_delay_ticks": 407
+  }
+]
