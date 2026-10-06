@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
@@ -96,7 +102,9 @@ export function useProjectWorkspace(
   const updateTab = useCallback(
     (id: string, text: string) =>
       setTabs((previous) =>
-        previous.map((t) => (t.id === id ? { ...t, text } : t)),
+        previous.map((t) =>
+          t.id === id ? { ...t, text, version: (t.version ?? 0) + 1 } : t,
+        ),
       ),
     [],
   );
@@ -329,7 +337,8 @@ export function useProjectWorkspace(
     if (requestGeneration !== generation.current) return;
     await applyWorkspace(value);
     if (requestGeneration !== generation.current) return;
-    markChanged();
+    if (JSON.stringify(value.project) !== JSON.stringify(workspace.project))
+      markChanged();
   };
   const importFiles = async (request: ImportRequest) => {
     if (!importTarget) return;
@@ -423,7 +432,10 @@ export function useProjectWorkspace(
     setPreview(undefined);
     setModal(creating ? "new" : "add");
   };
-  const openFile = async (file: FileRef) => {
+  const openFile = async (
+    file: FileRef,
+    selection?: { from: number; to: number },
+  ) => {
     if (!workspace) return;
     const id = fileKey(file);
     const openedGeneration = generation.current;
@@ -446,6 +458,10 @@ export function useProjectWorkspace(
             ],
       );
     }
+    if (selection)
+      setTabs((previous) =>
+        previous.map((tab) => (tab.id === id ? { ...tab, selection } : tab)),
+      );
     setActive(id);
   };
   const openSnapshotSource = async (snapshotId: string, source: string) => {
@@ -1033,9 +1049,11 @@ export function ProjectSources({
 function SettingsForm({
   controller: c,
   onError,
+  lintControls,
 }: {
   controller: ProjectController;
   onError: (error: unknown) => void;
+  lintControls?: ReactNode;
 }) {
   const [project, setProject] = useState(c.workspace?.project);
   const [includes, setIncludes] = useState(
@@ -1173,6 +1191,7 @@ function SettingsForm({
           />
         </label>
       </details>
+      {lintControls}
       <h3>Compilation order</h3>
       <div className="compile-order">
         {project.sources.map((source, index) => (
@@ -1650,9 +1669,11 @@ function ImportForm({
 export function ProjectDialogs({
   controller: c,
   onError,
+  lintControls,
 }: {
   controller: ProjectController;
   onError: (error: unknown) => void;
+  lintControls?: ReactNode;
 }) {
   return (
     <>
@@ -1698,7 +1719,11 @@ export function ProjectDialogs({
             ) : c.modal === "add" ? (
               <SourceSelection controller={c} onError={onError} />
             ) : c.modal === "settings" ? (
-              <SettingsForm controller={c} onError={onError} />
+              <SettingsForm
+                controller={c}
+                onError={onError}
+                lintControls={lintControls}
+              />
             ) : c.modal === "filelist" ? (
               <FilelistOptions controller={c} onError={onError} />
             ) : (

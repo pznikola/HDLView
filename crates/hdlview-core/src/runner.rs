@@ -238,6 +238,8 @@ impl Runner {
             ("iverilog", vec!["-V"]),
             ("verilator", vec!["--version"]),
             ("slang", vec!["--version"]),
+            ("verible-verilog-lint", vec!["--version"]),
+            ("python3", vec!["-c", "import pyslang; from importlib.metadata import version; installed = version('pyslang'); assert installed == '10.0.0', f'Configured Python has pyslang {installed}; HDLView requires 10.0.0. Update the selected tools image or native Python environment.'; assert hasattr(pyslang.Driver, 'runAnalysis') and hasattr(pyslang.SourceManager, 'getFullyOriginalLoc'); print('pyslang', installed)"]),
             ("librelane", vec!["--version"]),
         ]
         .into_iter()

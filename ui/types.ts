@@ -236,3 +236,48 @@ export interface RestoredProject {
   stale: boolean;
   warnings: string[];
 }
+
+export type LintContext =
+  | { kind: "design" }
+  | { kind: "simulation"; configuration: string | null };
+export interface WorkingBuffer {
+  file: FileRef;
+  text: string;
+  version: number;
+}
+export interface EditorLintRequest {
+  path: string;
+  active_file: FileRef;
+  context: LintContext;
+  buffers: WorkingBuffer[];
+  profile: Profile;
+  generation: number;
+  style: boolean;
+}
+export interface EditorLocation {
+  file?: FileRef;
+  from?: number;
+  to?: number;
+  line?: number;
+  column?: number;
+}
+export interface EditorDiagnostic extends EditorLocation {
+  severity: "error" | "warning" | "info" | "hint";
+  engine: string;
+  code: string;
+  message: string;
+  related: (EditorLocation & { message: string })[];
+}
+export interface EditorLintResult {
+  generation: number;
+  project_fingerprint: string;
+  files: { file: FileRef; text_hash: string }[];
+  engines: {
+    engine: string;
+    status: "complete" | "limited" | "failed" | "disabled";
+    message: string | null;
+  }[];
+  diagnostics: EditorDiagnostic[];
+  limited: boolean;
+  truncated: boolean;
+}

@@ -20,6 +20,15 @@ import {
 } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { verilog } from "@codemirror/legacy-modes/mode/verilog";
+import {
+  linter,
+  lintGutter,
+  lintKeymap,
+  previousDiagnostic,
+  setDiagnostics,
+  setDiagnosticsEffect,
+} from "@codemirror/lint";
+import type { EditorDiagnostic } from "../types";
 const highlighting = HighlightStyle.define([
   { tag: tags.keyword, color: "#7bc6bb" },
   { tag: [tags.string, tags.number, tags.bool], color: "#e8ba82" },
@@ -35,15 +44,19 @@ export interface EditorTab {
   line?: number;
   source?: string;
   snapshotId?: string;
+  version?: number;
+  selection?: { from: number; to: number };
 }
 export function SourceEditor({
   tab,
   tabIds,
   onChange,
+  diagnostics,
 }: {
   tab?: EditorTab;
   tabIds: string[];
   onChange: (id: string, text: string) => void;
+  diagnostics: EditorDiagnostic[];
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView>(undefined);
@@ -68,11 +81,20 @@ export function SourceEditor({
           highlightActiveLine(),
           history(),
           search(),
+          linter(null),
+          lintGutter(),
+          EditorState.transactionExtender.of((transaction) =>
+            transaction.docChanged
+              ? { effects: setDiagnosticsEffect.of([]) }
+              : null,
+          ),
           keymap.of([
             ...defaultKeymap,
             ...historyKeymap,
             ...searchKeymap,
             indentWithTab,
+            ...lintKeymap,
+            { key: "Shift-F8", run: previousDiagnostic },
           ]),
           StreamLanguage.define(verilog),
           syntaxHighlighting(highlighting),
@@ -135,6 +157,45 @@ export function SourceEditor({
       effects: EditorView.scrollIntoView(line.from, { y: "center" }),
     });
   }, [tab?.id, tab?.line]);
+  useEffect(() => {
+    const editor = view.current;
+    if (!editor) return;
+    editor.dispatch(
+      setDiagnostics(
+        editor.state,
+        diagnostics.flatMap((d) =>
+          d.from !== undefined &&
+          d.to !== undefined &&
+          d.to <= editor.state.doc.length
+            ? [
+                {
+                  from: d.from,
+                  to: d.to,
+                  severity: d.severity,
+                  source: `${d.engine} · ${d.code}`,
+                  message: [d.message, ...d.related.map((r) => r.message)].join(
+                    "\n",
+                  ),
+                },
+              ]
+            : [],
+        ),
+      ),
+    );
+  }, [diagnostics, tab?.id]);
+  useEffect(() => {
+    const editor = view.current;
+    const selection = tab?.selection;
+    if (!editor || !selection) return;
+    editor.dispatch({
+      selection: {
+        anchor: Math.min(selection.from, editor.state.doc.length),
+        head: Math.min(selection.to, editor.state.doc.length),
+      },
+      scrollIntoView: true,
+    });
+    editor.focus();
+  }, [tab?.selection, tab?.id]);
   return (
     <div className="source-editor" aria-label="RTL editor" ref={host}>
       {!tab && <p className="hint">Select a source file to edit it.</p>}

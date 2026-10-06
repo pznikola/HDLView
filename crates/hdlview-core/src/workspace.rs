@@ -945,10 +945,38 @@ pub fn project_files(project: &ProjectConfig) -> Vec<FileRef> {
     files
 }
 fn document_path(workspace: &WorkspaceProject, file: &FileRef) -> Result<PathBuf> {
+    let path = resolve_reference(&workspace.path, &workspace.project, file)?;
     if !project_files(&workspace.project).contains(file) {
-        bail!("File is not registered in the open project")
+        // Compiler-discovered headers may be opened only inside registered include/source directories.
+        validate_hdl(file, true)?;
+        let mut directories = Vec::new();
+        for directory in &workspace.project.include_dirs {
+            directories.push(resolve_reference(
+                &workspace.path,
+                &workspace.project,
+                directory,
+            )?);
+        }
+        for source in workspace
+            .project
+            .sources
+            .iter()
+            .map(|s| &s.path)
+            .chain(&workspace.project.simulation_sources)
+        {
+            let source = resolve_reference(&workspace.path, &workspace.project, source)?;
+            if let Some(parent) = source.parent() {
+                directories.push(parent.to_owned());
+            }
+        }
+        if !directories
+            .iter()
+            .any(|directory| path.starts_with(directory))
+        {
+            bail!("File is not registered in the open project")
+        }
     }
-    resolve_reference(&workspace.path, &workspace.project, file)
+    Ok(path)
 }
 pub fn read_document(workspace: &WorkspaceProject, file: &FileRef) -> Result<Document> {
     let path = document_path(workspace, file)?;
@@ -1430,7 +1458,10 @@ mod tests {
             save_document(&workspace, &request).unwrap(),
             SaveResult::Conflict { .. }
         ));
+        fs::write(d.path().join("secret.sv"), "module secret; endmodule\n").unwrap();
         assert!(read_document(&workspace, &"secret.sv".into()).is_err());
+        fs::write(d.path().join("included.svh"), "`define INCLUDED 1\n").unwrap();
+        assert!(read_document(&workspace, &"included.svh".into()).is_ok());
         let mut permissions = fs::metadata(d.path().join("top.sv")).unwrap().permissions();
         permissions.set_readonly(true);
         fs::set_permissions(d.path().join("top.sv"), permissions).unwrap();

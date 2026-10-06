@@ -2,6 +2,98 @@
 
 This file records exercised workflows separately from proposed release targets. Version 0.1.0 is an engineering preview; it is not a claim of complete HDL-language coverage or signoff-quality timing simulation.
 
+## Live editor linting qualification
+
+The live editor uses pinned pyslang **10.0.0**, Verible
+**v0.0-3724-gdec56671**, and CodeMirror lint **6.9.5**. Both tools were exercised
+through the normal core/service runner, using actual temporary projects and
+unsaved buffers rather than mocked diagnostic responses.
+
+- **45 Rust tests** and **24 frontend tests** pass. Rust formatting and
+  desktop-inclusive release Clippy/tests pass with warnings denied, alongside the
+  host core/CLI checks; frontend formatting, lint, TypeScript, and
+  production build pass. Added cases cover Unicode/EOF ranges, engine timeout
+  cleanup, bounded lint-job retention, background cancellation during close and
+  user jobs, and HDL-only temporary include capture.
+- **23 real-tool checks pass for each provider**, native and Docker. They cover
+  syntax, unresolved names, ports, widths, BOM/CRLF, multiple unsaved headers,
+  macro definition/expansion locations, external roots and duplicate basenames,
+  configuration defines/DUT parameters, limited analysis, custom rules/waivers,
+  unsupported style parsing, auxiliary/unregistered-unit exclusion, malformed rules, independently missing engines,
+  1,000-diagnostic truncation, and correction without saving. Every check verifies
+  unchanged original sources/configuration, removed temporary inputs, and only
+  one retained lint job. Reports: `.hdlview/lint-native/results.json` and
+  `.hdlview/lint-docker/results.json`.
+- **All eight browser workflows pass with each provider**, preserving project
+  imports/conflicts/restoration, immutable captured sources, instance/bus selection,
+  stage binding, and shared testbenches across RTL/gates. The editor workflow checks
+  unsaved underlines, Problems navigation, F8/Shift+F8, simultaneous headers,
+  configuration changes, local settings across reopening, immediate invalidation,
+  and rejection of a deliberately delayed real-tool result. Focused reruns
+  additionally verify undo/redo after diagnostics. Pickers are injected in browser
+  tests; backend operations use real files.
+- The rebuilt Linux Debian package passes runtime/CLI startup checks and an actual
+  **native-picker/WebKit editor smoke on Xvfb**. Its working editor displays semantic
+  and style underlines/gutter markers, opens Problems, navigates ranges, corrects
+  errors without saving, and discards the dirty buffer during Close Project.
+  Originals/configuration remain unchanged, no snapshots are created, and lint
+  temporary copies are removed. Local evidence:
+  `.hdlview/editor-lint-desktop-results.json`, `.hdlview/package-smoke-results.json`,
+  and `/tmp/hdlview-lint-smoke/` screenshots. This qualifies this host, not every
+  Linux distribution. No unrelated physical flows were rerun.
+
+On the workstation described below, a four-line design, included header, and one
+testbench with two configurations produced browser feedback in **1.95 seconds
+native** and **1.93 seconds Docker**, measured from replacement interaction through
+visible error underlines, including the 750 ms debounce and preparation. Typical
+backend requests including both engines took **0.18 seconds native** and **0.61
+seconds Docker**. The 1,010-style-finding cap case took 0.73/1.16 seconds. These are
+small-fixture observations alongside other development, not percentiles or large-
+project guarantees; larger working-project capture/parsing remains to be measured
+before introducing persistent workers.
+
+Slang 10 accepts SystemVerilog-2017/2023 but not Icarus's 2012 dialect. Icarus
+contexts therefore explicitly show limited analysis; simulator compilation is
+authoritative. Unreferenced headers receive style checks with limited status,
+and Verible parser limitations never become duplicate syntax errors or a clean
+style result. Live inputs are `.v`/`.sv` and `.vh`/`.svh`; generated models/SDF and
+captured tabs are excluded. Timed-out/missing engines are failures independent of
+HDL diagnostics. The package builder initially lacked Clippy and its standalone
+test invocation lacked the registry mount; verification reuses the host's matching
+installed Clippy and registry read-only rather than changing the tool image.
+
+A follow-up restoration regression reproduced a snapshot's old Docker image with
+pyslang 9.1.0 overriding the configured image containing 10.0.0. Opening/building
+a snapshot now preserves the configured profile for lint and new builds; existing
+snapshot simulations retain their recorded profile. Native and Docker browser
+regressions pass for profile preservation, unsaved undeclared identifiers, missing
+semicolons, visible error markers, engine unavailability, and recovery. All 45 Rust
+tests, desktop-inclusive Clippy, and the frontend checks/24 tests pass. The old
+image also verifies the actionable version-mismatch message. The packaged smoke
+above predates this follow-up; the package was not rebuilt for this fix.
+
+The status-wording follow-up passes frontend formatting, lint, TypeScript,
+production build, and **26 frontend tests**, plus the live editor browser workflow
+with both native and Docker tools. It distinguishes incomplete/unavailable style
+checks from semantic restrictions while retaining syntax errors and navigation.
+This frontend change did not rerun Rust or packaged smoke checks.
+
+## Linux compatibility launch
+
+`npm run desktop:compat` was exercised with WebKitGTK 2.50.4 and GTK 3.24.33
+in an isolated Xvfb session, with a separate development port and machine settings.
+Actual Tauri startup, native JSON selection/cancellation, editor lint, Docker
+elaboration/Icarus simulation, SVG schematics, and Canvas waveforms passed with
+**zero EGL or GTK warnings**. The original renderer configuration reproduced EGL
+warnings; using the default mount monitor reproduced GTK free-space warnings when
+a short-lived Docker container started.
+
+The compatibility launch uses Mesa software rendering and GIO's Unix volume monitor
+as development troubleshooting options. CPU cost and desktop-managed volume
+listing may differ; no graphics-performance benchmark or new package build was
+performed. Evidence: `.hdlview/desktop-compat-smoke-results.json` and
+`/tmp/hdlview-warning-smoke/` logs/screenshots. Repository formatting checks pass.
+
 ## Verilog/SystemVerilog-only qualification
 
 The current project contract is schema 3. Schema-1/2 Verilog/SystemVerilog projects load through an in-memory migration, preserving their files until explicit Save Project. VHDL configurations and GHDL simulators are rejected; source imports accept `.v`/`.sv` and `.vh`/`.svh`. The application supports VCD/FST and explicitly rejects GHW, including renamed GHW files.

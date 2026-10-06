@@ -16,6 +16,9 @@
 | `waveform.rs`                    | Wellen storage and conservative declaration/range binding                                            |
 | `waveprocess.rs`                 | Killable parser subprocess and bounded waveform queries                                              |
 | `service.rs`                     | Application jobs, draft/project state, frontend requests                                             |
+| `editor_lint.rs`                 | Working-source context validation, temporary overlays, engine results, normalized UTF-16 ranges      |
+| `tools/editor_lint.py`           | Pinned pyslang diagnostic extraction, original macro/include locations and related notes             |
+| `ui/editor-lint.ts`              | Debounce, latest-request coordination, contexts and project-local lint preferences                   |
 | `tools/source_graph.py`          | Isolated Slang source helper                                                                         |
 | `tools/library_interfaces.py`    | Slang-derived blackbox interfaces from simulation models                                             |
 | `tools/collect_physical.py`      | Strict JSON conversion of non-finite physical metrics                                                |
@@ -40,7 +43,29 @@ Build/import/simulation actions return job records. Poll `job`, cancel with `can
 
 Project schema 3 is separate from artifact schema 1. Rooted references resolve against registered directories, cannot escape them, and are normalized into `inputs/__roots/ROOT/…` during capture. The snapshot retains original-source mappings but compilers see only captured local paths. Version-1/2 Verilog/SystemVerilog projects migrate only on explicit save; empty projects validate independently from build readiness.
 
-`preview_import` returns a cancellable job and a review token. `apply_import` checks the project's configuration fingerprint before applying selected roles to its working configuration; saving is explicit. Expanded lists remain stable until explicit reimport. `read_document` and `save_document` accept only registered references. Saves compare content revisions and preserve BOM/newlines. The desktop grants dialog-open and window-destroy permissions without frontend filesystem access; window destruction follows the dirty-state prompt. Snapshot source navigation reads captured text; working-file navigation resolves the saved original mapping separately.
+`preview_import` returns a cancellable job and a review token. `apply_import` checks the project's configuration fingerprint before applying selected roles to its working configuration; saving is explicit. Expanded lists remain stable until explicit reimport. `read_document` and `save_document` accept registered references and HDL headers beneath configured includes or compilation-unit directories, still enforcing source-root boundaries. Saves compare content revisions and preserve BOM/newlines. The desktop grants dialog-open and window-destroy permissions without frontend filesystem access; window destruction follows the dirty-state prompt. Snapshot source navigation reads captured text; working-file navigation resolves the saved original mapping separately.
+
+`lint` accepts `EditorLintRequest` against an open working project, never an immutable
+snapshot. Rust validates membership, selects ordered design/testbench units,
+overlays open normalized buffers in separate root namespaces, and runs pinned
+pyslang and Verible through the existing runner. Simulator-specific defines and
+DUT parameter specialization are preserved; unsupported dialect differences are
+explicit. Original byte ranges become UTF-16 ranges against the exact normalized
+text checked. `EditorLintResult` records generations, input hashes, engine status,
+related locations, and truncation independently from compiler/run diagnostics.
+
+The React coordinator debounces 750 ms, cancels superseded work, retains one latest
+pending request, and installs results only for its current project/profile/context/
+buffers signature and generation. Edits invalidate displayed results immediately.
+The configured profile remains independent of restored snapshots: lint and new
+builds use current tool settings, while snapshot simulation uses its recorded
+profile for reproducibility.
+Other jobs cancel/pause lint; background lint never guards File transitions. Each
+engine times out after at most 10 seconds. Only one completed lint job and its latest
+logs remain; temporary inputs are removed on success, failure, or cancellation.
+CodeMirror diagnostic effects preserve document history/selection; Problems is an
+explicit drawer tab. Project-local lint toggles stay in presentation preferences
+outside project schema and compilation fingerprints.
 
 Large views use ELK layered layout with its documented [longest-path layering](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-layering-strategy.html) and [simple node placement](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-nodePlacement-strategy.html) to bound interactive work. Small views retain the default fuller heuristics. Layout workers are cancellable; selection never causes layout.
 

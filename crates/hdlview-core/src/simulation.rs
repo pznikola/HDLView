@@ -142,15 +142,11 @@ pub fn simulate(
             }
             let target = cfg.dut_scope.join(".");
             dut_scope.insert(0, "hdlview_sim".into());
-            let mut specialization = String::new();
-            if !gate {
-                for (k, v) in &snapshot.project.parameters {
-                    if v.contains([';', '\n', '\r']) {
-                        bail!("Invalid parameter expression")
-                    };
-                    specialization.push_str(&format!("defparam {target}.{k} = {v};\n"));
-                }
-            }
+            let specialization = if gate {
+                String::new()
+            } else {
+                rtl_parameter_overrides(&snapshot.project, cfg)?
+            };
             let annotation = sdf
                 .as_ref()
                 .map(|p| {
@@ -285,6 +281,25 @@ fn json_manifest(
     Ok(
         serde_json::json!({"snapshot":s.id,"effective_delay_selection":c.delay_selection.as_deref().unwrap_or(if c.use_snapshot_sdf{"max"}else{"typ"}),"configuration":c,"files":files,"model_files":models,"sdf":sdf,"host_visible_file_hashes":hashes,"toolchain":s.profile,"tool_versions":s.tool_versions}),
     )
+}
+
+/// Match the RTL simulator's specialization at the DUT instance, not the testbench top.
+pub(crate) fn rtl_parameter_overrides(
+    project: &ProjectConfig,
+    config: &SimulationConfig,
+) -> Result<String> {
+    if config.dut_scope.first() != Some(&config.top) {
+        bail!("DUT scope must begin with the testbench top")
+    }
+    let target = config.dut_scope.join(".");
+    let mut overrides = String::new();
+    for (key, value) in &project.parameters {
+        if value.contains([';', '\n', '\r']) {
+            bail!("Invalid parameter expression")
+        }
+        overrides.push_str(&format!("defparam {target}.{key} = {value};\n"));
+    }
+    Ok(overrides)
 }
 
 #[cfg(test)]

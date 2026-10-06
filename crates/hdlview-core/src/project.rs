@@ -396,7 +396,10 @@ fn copy_tree(
     rel: &Path,
     out: &Path,
     hashes: &mut BTreeMap<String, String>,
+    cancel: &crate::runner::CancelToken,
+    hdl_only: bool,
 ) -> Result<()> {
+    cancel.check()?;
     relative(rel)?;
     let src = root.join(rel);
     let canonical = src
@@ -409,6 +412,7 @@ fn copy_tree(
         bail!("Directory symlinks are not accepted as input directories")
     }
     if canonical.is_dir() {
+        fs::create_dir_all(out.join(rel))?;
         for entry in fs::read_dir(&src)? {
             let e = entry?;
             if e.file_type()?.is_symlink() {
@@ -428,9 +432,12 @@ fn copy_tree(
             {
                 continue;
             }
-            copy_tree(root, &rel.join(name), out, hashes)?;
+            copy_tree(root, &rel.join(name), out, hashes, cancel, hdl_only)?;
         }
     } else {
+        if hdl_only && hdl_language(&canonical).is_none() {
+            return Ok(());
+        }
         let bytes = fs::read(&canonical)?;
         hashes.insert(rel.to_string_lossy().into(), hash(&bytes));
         let dst = out.join(rel);
@@ -445,6 +452,31 @@ pub struct CapturedInputs {
     pub origins: BTreeMap<String, PathBuf>,
 }
 pub fn capture(project_path: &Path, p: &ProjectConfig, directory: &Path) -> Result<CapturedInputs> {
+    capture_inputs(
+        project_path,
+        p,
+        directory,
+        &crate::runner::CancelToken::default(),
+        false,
+    )
+}
+
+pub(crate) fn capture_cancellable(
+    project_path: &Path,
+    p: &ProjectConfig,
+    directory: &Path,
+    cancel: &crate::runner::CancelToken,
+) -> Result<CapturedInputs> {
+    capture_inputs(project_path, p, directory, cancel, true)
+}
+
+fn capture_inputs(
+    project_path: &Path,
+    p: &ProjectConfig,
+    directory: &Path,
+    cancel: &crate::runner::CancelToken,
+    hdl_only: bool,
+) -> Result<CapturedInputs> {
     let project_path = project_path.canonicalize()?;
     let root = project_path.parent().context("Missing project directory")?;
     let output = directory.join("inputs");
@@ -474,6 +506,8 @@ pub fn capture(project_path: &Path, p: &ProjectConfig, directory: &Path) -> Resu
             reference.path(),
             &namespace,
             &mut BTreeMap::new(),
+            cancel,
+            hdl_only,
         )?;
         fn collect(
             src: &Path,
@@ -762,8 +796,41 @@ mod tests {
         fs::write(d.path().join("top.v"), "old").unwrap();
         let o = tempfile::tempdir().unwrap();
         let mut h = BTreeMap::new();
-        copy_tree(d.path(), Path::new("top.v"), o.path(), &mut h).unwrap();
+        copy_tree(
+            d.path(),
+            Path::new("top.v"),
+            o.path(),
+            &mut h,
+            &crate::runner::CancelToken::default(),
+            false,
+        )
+        .unwrap();
         fs::write(d.path().join("top.v"), "new").unwrap();
         assert_eq!(fs::read_to_string(o.path().join("top.v")).unwrap(), "old");
+    }
+    #[test]
+    fn lint_capture_excludes_non_hdl_and_preserves_empty_include_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = crate::workspace::create(
+            &directory.path().join("hdlview.project.json"),
+            "capture".into(),
+            false,
+        )
+        .unwrap();
+        fs::create_dir(directory.path().join("include")).unwrap();
+        fs::write(directory.path().join("include/unrelated.bin"), "private").unwrap();
+        let mut project = workspace.project;
+        project.include_dirs.push("include".into());
+        let output = tempfile::tempdir().unwrap();
+        let captured = capture_cancellable(
+            &workspace.path,
+            &project,
+            output.path(),
+            &crate::runner::CancelToken::default(),
+        )
+        .unwrap();
+        assert!(captured.hashes.is_empty());
+        assert!(output.path().join("inputs/include").is_dir());
+        assert!(!output.path().join("inputs/include/unrelated.bin").exists());
     }
 }

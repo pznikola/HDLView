@@ -1116,6 +1116,20 @@ test("opening each project restores only its own schematic and matching waveform
       })
       .toBe(true);
   }
+  const currentProfile = { ...profile, timeout_seconds: 1234 };
+  await page.getByRole("button", { name: "Toolchain", exact: true }).click();
+  await page.getByLabel("Toolchain input").fill(JSON.stringify(currentProfile));
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  const expectCurrentToolchain = async () => {
+    await page.getByRole("button", { name: "Toolchain", exact: true }).click();
+    expect(
+      JSON.parse(await page.getByLabel("Toolchain input").inputValue()),
+    ).toEqual(currentProfile);
+    await page
+      .locator(".modal-heading")
+      .getByRole("button", { name: "×" })
+      .click();
+  };
   chosen = [paths.a];
   await fileCommand(page, "Open Existing Project…");
   await expect(
@@ -1126,6 +1140,7 @@ test("opening each project restores only its own schematic and matching waveform
   ).toHaveCount(0);
   await expect(page.locator(".cursor-label")).toHaveText("Cursor 0");
   await expect(page.locator(".editor-tabs button")).toHaveCount(0);
+  await expectCurrentToolchain();
   await fileCommand(page, "Close Project");
   await expect(page.getByLabel("Schematic", { exact: true })).toBeHidden();
   chosen = [paths.b];
@@ -1137,6 +1152,7 @@ test("opening each project restores only its own schematic and matching waveform
     page.locator(".wave-name").filter({ hasText: "a_count" }),
   ).toHaveCount(0);
   await expect(page.locator(".error-banner")).toBeHidden();
+  await expectCurrentToolchain();
   await page.screenshot({
     path: resolve("test-results/file-menu-workspace.png"),
     fullPage: true,
@@ -1223,7 +1239,7 @@ test("one unchanged testbench configuration runs RTL and generic gates", async (
     await expect(page.getByLabel("Schematic")).toBeVisible({ timeout: 30000 });
     await expect(
       page.getByRole("button", { name: "Run simulation" }),
-    ).toBeEnabled();
+    ).toBeEnabled({ timeout: 30000 });
     await expect(page.getByLabel("Simulation configuration")).toHaveValue(
       "shared",
     );
@@ -1240,4 +1256,254 @@ test("one unchanged testbench configuration runs RTL and generic gates", async (
       .click();
   }
   expect(readFileSync(join(directory, "tb.sv"))).toEqual(originalTestbench);
+});
+
+test("live lint checks unsaved buffers, navigation, contexts, and local settings", async ({
+  page,
+}) => {
+  const directory = mkdtempSync(join(tmpdir(), "hdlview live lint "));
+  const config = join(directory, "hdlview.project.json");
+  const top =
+    '`include "defs.svh"\nmodule top(input logic [`WIDTH-1:0] a, output logic [`WIDTH-1:0] y);\nassign y=a;\nendmodule\n';
+  const tb =
+    "module tb; reg [3:0] a=0; wire [3:0] y; top dut(.a(a), .y(y)); initial begin a=`MODE; #1 $finish; end endmodule\n";
+  writeFileSync(join(directory, "top.sv"), top);
+  writeFileSync(join(directory, "defs.svh"), "`define WIDTH 4\n");
+  writeFileSync(join(directory, "tb.sv"), tb);
+  writeFileSync(join(directory, "auxiliary.sv"), "not valid HDL  ");
+  writeFileSync(
+    config,
+    JSON.stringify({
+      schema_version: 3,
+      name: "Live lint",
+      standard: "1800-2017",
+      top: "top",
+      sources: [{ path: "top.sv", language: "system_verilog" }],
+      headers: ["defs.svh"],
+      simulation_sources: ["tb.sv"],
+      assets: ["auxiliary.sv"],
+      simulations: Object.fromEntries(
+        ["good", "bad"].map((name) => [
+          name,
+          {
+            simulator: "icarus",
+            top: "tb",
+            dut_scope: ["tb", "dut"],
+            testbench: ["tb.sv"],
+            defines: { MODE: name === "good" ? "1" : "missing_mode" },
+          },
+        ]),
+      ),
+    }),
+  );
+  const originalConfig = readFileSync(config);
+  let lintCalls = 0;
+  let holdLintResult = false;
+  let heldLintResult: (() => void) | undefined;
+  const calls: string[] = [];
+  await page.exposeFunction(
+    "__HDLVIEW_TEST_API__",
+    (action: string, args: unknown) =>
+      new Promise((resolve, reject) => {
+        calls.push(action);
+        if (action === "lint") lintCalls++;
+        pending.push((value: unknown) => {
+          const reply = value as {
+            ok: boolean;
+            result: unknown;
+            error: string;
+          };
+          const job = reply.result as { kind?: string; status?: string } | null;
+          if (
+            reply.ok &&
+            action === "job" &&
+            job?.kind === "lint" &&
+            job.status === "complete" &&
+            holdLintResult
+          )
+            heldLintResult = () => resolve(reply.result);
+          else
+            reply.ok ? resolve(reply.result) : reject(new Error(reply.error));
+        });
+        backend.stdin.write(JSON.stringify({ action, args }) + "\n");
+      }),
+  );
+  await page.exposeFunction("__HDLVIEW_TEST_PICKER__", () => [config]);
+  const profile = JSON.parse(
+    readFileSync(
+      process.env.HDLVIEW_TOOL_PROFILE ?? "tools/profiles/docker.json",
+      "utf8",
+    ),
+  );
+  await page.addInitScript(
+    (profile) =>
+      localStorage.setItem("hdlview-profile", JSON.stringify(profile)),
+    profile,
+  );
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await fileCommand(page, "Open Existing Project…");
+  await page.locator('.source-file[data-source-path="auxiliary.sv"]').click();
+  await expect(page.locator(".cm-content")).toContainText("not valid HDL");
+  await expect(page.getByLabel("Editor lint status")).toBeHidden();
+  await page
+    .getByRole("button", { name: "Build schematic", exact: true })
+    .click();
+  await expect(page.getByLabel("Schematic")).toBeVisible({ timeout: 30000 });
+  await page.getByRole("button", { name: "Sources", exact: true }).click();
+  await page.locator('.source-file[data-source-path="top.sv"]').click();
+  const content = page.locator(".cm-content");
+  const replace = async (text: string) => {
+    await content.click();
+    await page.keyboard.press("Control+a");
+    await page.keyboard.insertText(text);
+  };
+  await expect(page.getByLabel("Editor lint status")).toContainText("Checked", {
+    timeout: 15000,
+  });
+  await page.getByRole("button", { name: "Toolchain", exact: true }).click();
+  expect(
+    JSON.parse(await page.getByLabel("Toolchain input").inputValue()),
+  ).toEqual(profile);
+  await page
+    .locator(".modal-heading")
+    .getByRole("button", { name: "×" })
+    .click();
+  const checks = lintCalls;
+  const started = Date.now();
+  await replace(
+    top.replace("assign y=a;", "assign y=a; // é😀\nassign y=unknown;  "),
+  );
+  await expect(page.locator(".cm-lintRange-error")).toHaveCount(1, {
+    timeout: 15000,
+  });
+  const diagnosticMilliseconds = Date.now() - started;
+  console.log(
+    `live lint feedback (${profile.provider}): ${diagnosticMilliseconds} ms`,
+  );
+  expect(lintCalls - checks).toBeLessThanOrEqual(2);
+  expect(readFileSync(join(directory, "top.sv"), "utf8")).toBe(top);
+  expect(readFileSync(config)).toEqual(originalConfig);
+  await expect(page.getByText("Sources changed · rebuild needed")).toHaveCount(
+    0,
+  );
+  await page.getByRole("button", { name: /^Problems / }).click();
+  const problems = page.getByLabel("Editor problems");
+  await expect(problems).toContainText("unknown");
+  await expect(problems).toContainText("no-trailing-spaces");
+  await problems
+    .getByRole("button", { name: /use of undeclared identifier 'unknown'/ })
+    .click();
+  await expect
+    .poll(() => page.evaluate(() => window.getSelection()?.toString()))
+    .toBe("unknown");
+  await page.keyboard.press("F8");
+  await page.keyboard.press("Shift+F8");
+  await replace(top.replace("assign y=a;", "assign y=a"));
+  await expect(problems).toContainText("expected ';'", { timeout: 15000 });
+  await expect(page.getByLabel("Editor lint status")).toHaveText(
+    "Style checks incomplete",
+  );
+  await expect(page.locator(".cm-lintPoint-error")).toHaveCount(1);
+  await expect(page.locator(".cm-lint-marker-error").first()).toBeVisible();
+  const unavailableProfile = {
+    ...profile,
+    executables: {
+      ...profile.executables,
+      python3: "/hdlview/missing/python3",
+    },
+  };
+  await page.getByRole("button", { name: "Toolchain", exact: true }).click();
+  await page
+    .getByLabel("Toolchain input")
+    .fill(JSON.stringify(unavailableProfile));
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.getByLabel("Editor lint status")).toContainText(
+    "Correctness checks unavailable",
+    { timeout: 15000 },
+  );
+  await expect(problems).toContainText("slang:");
+  await page.getByRole("button", { name: "Toolchain", exact: true }).click();
+  await page.getByLabel("Toolchain input").fill(JSON.stringify(profile));
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(problems).toContainText("expected ';'", { timeout: 15000 });
+  await expect(page.getByLabel("Editor lint status")).toHaveText(
+    "Style checks incomplete",
+  );
+  // Hold a completed real-tool response across an edit to exercise stale-result rejection.
+  holdLintResult = true;
+  await replace(top.replace("assign y=a;", "assign y=stale_identifier;"));
+  await expect.poll(() => !!heldLintResult, { timeout: 15000 }).toBe(true);
+  await replace(top);
+  await expect(page.locator(".cm-lintRange-error")).toHaveCount(0);
+  holdLintResult = false;
+  if (!heldLintResult) throw new Error("Expected held editor lint result");
+  heldLintResult();
+  await expect(page.getByLabel("Editor lint status")).toContainText("Checked", {
+    timeout: 15000,
+  });
+  await content.click();
+  await page.keyboard.press("Control+z");
+  await expect(content).toContainText("stale_identifier");
+  await page.keyboard.press("Control+Shift+z");
+  await expect(content).not.toContainText("stale_identifier");
+  await page.locator('.source-file[data-source-path="defs.svh"]').click();
+  await replace("`define WIDTH 8\n");
+  await page.locator('.source-file[data-source-path="top.sv"]').click();
+  await replace(
+    top.replace("output logic [`WIDTH-1:0] y", "output logic [3:0] y"),
+  );
+  await expect(page.getByLabel("Editor lint status")).toContainText("Checked", {
+    timeout: 15000,
+  });
+  await expect(problems).toContainText("trunc");
+  await page.locator('.source-file[data-source-path="tb.sv"]').click();
+  await page.getByLabel("Lint simulation configuration").selectOption("bad");
+  await expect(problems).toContainText("missing_mode", { timeout: 15000 });
+  await page.getByLabel("Lint simulation configuration").selectOption("good");
+  await expect(page.getByLabel("Editor lint status")).toContainText(
+    "Limited analysis",
+    {
+      timeout: 15000,
+    },
+  );
+  await expect(problems).not.toContainText("missing_mode");
+  await page
+    .getByRole("button", { name: "Project Settings", exact: true })
+    .click();
+  await page.getByLabel("Live linting", { exact: true }).uncheck();
+  await page.getByRole("button", { name: "Close project dialog" }).click();
+  await expect(page.getByLabel("Editor lint status")).toContainText(
+    "Lint disabled",
+  );
+  expect(readFileSync(config)).toEqual(originalConfig);
+  await fileCommand(page, "Close Project");
+  await page
+    .getByRole("dialog", { name: "Unsaved changes" })
+    .getByRole("button", { name: "Discard", exact: true })
+    .click();
+  await expect(page.getByLabel("RTL editor")).toBeHidden();
+  await fileCommand(page, "Open Existing Project…");
+  await page.locator('.source-file[data-source-path="top.sv"]').click();
+  await expect(page.getByLabel("Editor lint status")).toContainText(
+    "Lint disabled",
+  );
+  await page
+    .getByRole("button", { name: "Project Settings", exact: true })
+    .click();
+  await page.getByLabel("Live linting", { exact: true }).check();
+  await page.getByRole("button", { name: "Close project dialog" }).click();
+  await expect(page.getByLabel("Editor lint status")).toContainText("Checked", {
+    timeout: 15000,
+  });
+  await expect(page.getByText("Sources changed · rebuild needed")).toHaveCount(
+    0,
+  );
+  expect(calls.filter((action) => action === "build")).toHaveLength(1);
+  expect(errors).toEqual([]);
+  await page.screenshot({
+    path: "test-results/live-editor-lint.png",
+    fullPage: true,
+  });
 });

@@ -5,6 +5,7 @@ Linux desktop HDL schematic and waveform explorer, with a Rust core and headless
 - Source/dataflow, elaborated RTL, generic gates, PDK-mapped gates, and post-layout views.
 - Verilog/SystemVerilog projects, using existing open-source compilers.
 - File-menu project creation/opening, grouped RTL/simulation imports, editable source tabs, and automatic project artifact restoration.
+- Live syntax, semantic, and style diagnostics for unsaved design and simulation buffers.
 - Bidirectional schematic/waveform selection, instance-aware signal identities, bus expansion, and exact integer timestamps.
 - Icarus and Verilator simulation; VCD/FST import through Wellen.
 - SKY130 and IHP LibreLane flow integration, reports, final netlists, and SDF delay simulation.
@@ -34,6 +35,19 @@ WEBKIT_DISABLE_DMABUF_RENDERER=1 npm run desktop
 
 This bypasses the affected rendering path; it does not repair the graphics driver.
 See the [upstream WebKit workaround report](https://bugs.webkit.org/show_bug.cgi?id=280210).
+For Linux development hosts that still show EGL initialization warnings or GTK
+free-space warnings for private Docker mounts, use the compatibility launch:
+
+```sh
+npm run desktop:compat
+```
+
+This sets the DMA-BUF workaround, [Mesa software rendering](https://docs.mesa3d.org/egl.html),
+and [GIO's Unix volume monitor](https://docs.gtk.org/gio/overview.html) for that launch.
+Software rendering uses the CPU. The volume-monitor override is a development
+troubleshooting option; desktop-managed drives/network locations may appear
+differently in the native picker. The Docker directory remains protected.
+
 The Rust `tauri` crate and JavaScript `@tauri-apps/api` must share a major/minor
 version. Keep their pins aligned when updating dependencies.
 
@@ -60,6 +74,55 @@ Drag the horizontal divider above Waveforms to resize its height. Focus the divi
 Registered external roots appear as `@root/path`; include settings accept project-relative paths or that notation. Folder rescans preserve manual compilation order; filelist reimports apply reviewed order and retain source/header roles. Version-1 and version-2 Verilog/SystemVerilog configurations load without automatic rewriting. Their RTL/gate source lists merge in memory, preserving order and configuration-specific testbench lists. Explicit Save Project writes schema 3 without language-family, source-library, gate-source, or simulation-stage fields. Existing VHDL projects are unsupported and opening one leaves the current workspace intact. Legacy valid SV artifacts remain immutable and may show Rebuild required after migration.
 
 For a native installation, adapt [native.example.json](tools/profiles/native.example.json) in the Toolchain editor. Set plugin paths and relevant environment variables as well as executables. The Python environment must contain `pyslang==10.0.0` (needed to honor Verilog-2005 source-view settings). Standard-cell interface extraction also uses `pyslang`.
+
+## Live editor diagnostics
+
+Working Verilog/SystemVerilog files are checked after 750 ms without typing, using
+pyslang 10.0.0 for project correctness and Verible for style. Unsaved buffers,
+including open headers, are analyzed in temporary copies. Typing and linting do
+not change originals, create snapshots, or mark the schematic for rebuilding.
+Checks pause during other jobs. Captured snapshot and auxiliary tabs are excluded.
+
+Errors and warnings appear as underlines, gutter markers, and hover messages with
+the engine and diagnostic code. Open **Problems** beside **Logs** for the full list;
+click an entry to select its working-source range. F8/Shift+F8 navigate diagnostics
+in the active editor. Linting does not open the drawer or move the cursor.
+
+Design analysis uses working project settings. Simulation files use the selected
+owning configuration or their unique owner; **Lint simulation configuration**
+resolves multiple owners. Missing tops/configurations and unreferenced headers
+show **Limited analysis**. Generated gate netlists, cell models, and SDF are not
+part of this working-source check. Icarus uses SystemVerilog-2012 while Slang 10
+supports SystemVerilog-2017/2023; this difference is reported as limited analysis,
+and actual simulator compilation remains authoritative.
+
+**Project Settings** has **Live linting** and **Style checks** toggles. They are
+machine-local, keyed by canonical project path, and do not change project JSON or
+build fingerprints. The default style rules are `no-trailing-spaces`, `posix-eof`,
+`forbid-consecutive-null-statements`, `module-port`, and `module-parameter`.
+A `.rules.verible_lint` beside `hdlview.project.json` replaces this preset using
+[Verible's configuration syntax](https://github.com/chipsalliance/verible/blob/dec56671f8aa63a77b687b4df9753de451582b53/verible/verilog/tools/lint/README.md).
+Existing inline waivers work; formatting and automatic fixes are not enabled.
+
+The qualified Docker image includes Verible `v0.0-3724-gdec56671`. Native users set
+`verible-verilog-lint` and Python executable paths in Toolchain. Probe checks both
+the binary and the actual pyslang API. Missing tools or invalid rule files are
+reported as engine failures and do not prevent editing or building. Each engine
+has a maximum 10-second timeout; results are capped at 1,000 diagnostics. Only
+the latest lint logs remain under `editor-lint/logs` in the application cache.
+
+**Style checks incomplete** means Verible could not finish checking the input,
+often because of an RTL syntax error. Slang diagnostics remain available.
+**Style checks unavailable** identifies a failed style engine; **Limited analysis**
+remains the status for restricted semantic checking.
+
+Live linting and new builds use the configured Toolchain profile. Opening or
+restoring a schematic does not replace that profile; simulation of an existing
+snapshot retains its recorded toolchain. **Correctness checks unavailable** means
+Slang failed to run, so syntax and name errors cannot be checked. For a pyslang
+version mismatch, select `hdlview-tools:2025.12` in Toolchain and rebuild that image
+from `tools/Dockerfile` if needed. Native users install `pyslang==10.0.0` into the
+Python environment selected by their profile.
 
 ## Headless workflows
 
@@ -98,6 +161,12 @@ HDLVIEW_TOOL_PROFILE=/absolute/native-profile.json npm run test:e2e
 ```
 
 The browser test compiles a real hierarchical design and simulates it through the CLI service. `tools/qualify.py` runs a repeatable shared-testbench matrix; `--mapped` adds both PDKs, `--physical` adds full flows, and `--store` keeps provider reports separate; `tools/benchmark.py --mib 1024` measures large-VCD parsing. `node tools/benchmark-layout.mjs` and `python3 tools/benchmark-values.py` measure browser layout and cached cursor queries.
+
+`python3 tools/qualify-editor-lint.py --profile tools/profiles/docker.json`
+checks real diagnostics, unsaved inputs, rule configuration, and temporary-copy
+cleanup. Use a configured native profile and a separate `--store` to compare
+providers. Browser qualification measures end-to-end editor feedback including
+debounce; backend matrix timings measure input preparation and engines only.
 
 With host desktop development libraries, `npm run package` invokes Tauri packaging. An isolated Ubuntu 22.04-compatible Debian package can instead be built with:
 

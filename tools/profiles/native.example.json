@@ -6,6 +6,7 @@
     "iverilog": "/path/to/bin/iverilog",
     "vvp": "/path/to/bin/vvp",
     "verilator": "/path/to/bin/verilator",
+    "verible-verilog-lint": "/path/to/bin/verible-verilog-lint",
     "python3": "/path/to/matched-python/bin/python3",
     "librelane": "/path/to/librelane"
   },

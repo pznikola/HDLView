@@ -255,6 +255,68 @@ Use Rust tests, frontend tests, browser interaction tests, and packaged Linux sm
 
 Project-lifecycle acceptance additionally covers cancelled drafts without writes, both technology presets, grouped imports through all methods, backend language-policy bypass attempts, shared testbench reuse, schema-1/2 migration and unsupported VHDL rejection, menu/context keyboard behavior, and independent automatic restoration of two projects. Verify missing/corrupt/stale/mismatched artifacts, saved-original conflicts and failed transitions, job cancellation, and packaged Linux menu/native-picker/reopening behavior. No full UI-layout restoration, recent-project menu, extra top-level menus, or unsaved-buffer recovery is included in this amendment.
 
+## 10. Live editor linting amendment
+
+Analyze working design/testbench files, including unsaved buffers, independently
+of displayed schematics and waveforms. Use pinned pyslang 10.0.0 for preprocessing,
+syntax and semantic diagnostics, and the tool image's Verible
+`v0.0-3724-gdec56671` for configurable style. Defer Verilator lint, LSP, formatting,
+and autofix. Pin CodeMirror lint 6.9.5 and retain actual dependency notices.
+
+Run after 750 ms without typing and after working-file open/save/reload, context
+or relevant settings changes, and application focus. Exclude captured and auxiliary
+tabs. Show red/yellow underlines, gutter markers, engine/code hover messages,
+Problems in the Logs drawer, clickable ranges/related locations, and F8/Shift+F8.
+Checks must not steal focus, open panels, reset history/selection/scroll, write
+originals, mark rebuilds, or create snapshots.
+
+Live linting and Style checks are machine-local preferences keyed by canonical
+project path, outside project JSON and compilation fingerprints. The default
+style preset is `no-trailing-spaces`, `posix-eof`,
+`forbid-consecutive-null-statements`, `module-port`, and `module-parameter`.
+Only `.rules.verible_lint` beside the project configuration replaces this preset,
+using `--ruleset=none`; preserve inline waivers. Style findings are warnings.
+
+Rust owns typed `EditorLintRequest`, `EditorLintResult`, and `EditorDiagnostic`
+contracts, membership/context validation, temporary captured input namespaces,
+original-file mappings, hashes, and byte-to-UTF-16 conversion against normalized
+analyzed text. Overlay every open working HDL buffer. Preserve macro/include
+origins and related notes. Docker receives captured inputs read-only; never mount
+external working-source directories. Diagnostics from unsuccessful HDL analysis
+are normal results; missing tools, malformed rules, and unsupported parser output
+are explicit engine failures or incomplete analysis.
+
+Design context uses ordered working sources, top, standard, includes, defines,
+and specialization. Simulation context adds one configuration's ordered testbenches,
+merged defines and top, applying parameter overrides at its DUT scope. Resolve
+selected or unique file ownership; expose an editor selector for ambiguity.
+Missing tops/configurations provide syntax/style checks with limited status.
+Headers compile through includers; unreferenced headers get applicable style
+checks and explanation. Do not load gate netlists, PDK models, or SDF. Slang's
+2017/2023 support differs from Icarus's 2012 dialect; report this difference and
+leave actual simulator compilation authoritative.
+
+Use cancellable processes through the runner, one lint job and newest pending
+request. Cancel superseded work and discard results after project/profile/context/
+buffer-generation changes. Immediately invalidate affected displayed diagnostics.
+Pause during user build/simulation/import jobs; lint must not guard project
+transitions. Limit engines to 10 seconds and publication to 1,000 findings with
+truncation status. Bound completed-job retention, delete copies on all exits,
+and keep only the latest lint logs. Probe actual pyslang APIs and Verible; their
+absence must not prevent editing or building. No project schema migration.
+
+Implement backend capture/diagnostics, scheduling, editor/Problems, preferences,
+and qualification in that order. Acceptance includes unsaved errors/corrections,
+widths/ports/names, source groups and ambiguous configurations, defines/DUT
+parameters, multiple open headers/external roots/duplicate names/spaces,
+Unicode/BOM/CRLF/EOF/macros/notes/ranges, preset/custom rules/waivers/parser limits,
+rapid edits and delayed results, switches/cancellation/timeouts/missing tools,
+bounded storage, navigation/history, and unchanged source/project/snapshot/run
+artifacts. Run Rust/frontend checks, native and Docker browser workflows, and a
+packaged Linux editor smoke. Target feedback within two seconds on documented
+small fixtures, measuring debounce plus preparation and engines. Record measured
+limits in qualification before considering persistent workers.
+
 ## Primary documentation
 
 - [Tauri architecture](https://v2.tauri.app/start/)
@@ -270,3 +332,7 @@ Project-lifecycle acceptance additionally covers cancelled drafts without writes
 - [LibreLane step interfaces](https://librelane.readthedocs.io/en/latest/reference/step_config_vars.html)
 - [LibreLane compatibility changelog](https://github.com/librelane/librelane/blob/main/Changelog.md)
 - [IIC tool image release notes](https://github.com/iic-jku/IIC-OSIC-TOOLS/blob/main/RELEASE_NOTES.md)
+
+- [Slang diagnostics and command-line options](https://sv-lang.com/command-line-ref.html)
+- [Verible lint rules, configurations, and waivers](https://github.com/chipsalliance/verible/blob/master/verible/verilog/tools/lint/README.md)
+- [CodeMirror diagnostic effects](https://codemirror.net/docs/ref/#lint)

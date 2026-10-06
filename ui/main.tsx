@@ -27,6 +27,9 @@ import {
 } from "./project-workspace";
 import { projects, canSimulate } from "./projects";
 import { SourceEditor } from "./components/SourceEditor";
+import { EditorProblems } from "./components/EditorProblems";
+import { useEditorLint } from "./editor-lint";
+import { fileKey } from "./projects";
 const defaultProfile: Profile = {
   provider: "docker",
   image: "hdlview-tools:2025.12",
@@ -73,6 +76,7 @@ function App() {
   const [search, setSearch] = useState("");
   const [logs, setLogs] = useState("");
   const [drawer, setDrawer] = useState(false);
+  const [drawerTab, setDrawerTab] = useState<"logs" | "problems">("logs");
   const [modal, setModal] = useState<string>();
   const [text, setText] = useState("");
   const [aux, setAux] = useState("");
@@ -119,6 +123,23 @@ function App() {
   const markBuilt = working.markBuilt;
   const project = working.workspace?.project;
   const path = working.workspace?.path ?? "";
+  const lint = useEditorLint(
+    working.workspace,
+    working.tabs,
+    working.activeTab,
+    profile,
+    simulation,
+    restoring ||
+      job?.status === "running" ||
+      working.job?.status === "running" ||
+      !!working.modal,
+  );
+  const activeFile = working.activeTab?.readonly
+    ? undefined
+    : working.activeTab?.document?.file;
+  const editorDiagnostics = (lint.result?.diagnostics ?? []).filter(
+    (d) => activeFile && d.file && fileKey(d.file) === fileKey(activeFile),
+  );
   const workspaceEpoch = generation.current;
   const configuredSimulations =
     snapshot?.project.simulations ?? project?.simulations;
@@ -144,7 +165,6 @@ function App() {
       setSnapshot(s);
       setExplorer("design");
       setGraph(undefined);
-      setProfile(s.profile);
       setRep(s.representation);
       resetScope([s.project.top]);
       setRun(undefined);
@@ -801,10 +821,46 @@ function App() {
                       </button>
                     )}
                   </div>
+                  {!!lint.status && (
+                    <div
+                      className="lint-status"
+                      aria-label="Editor lint status"
+                    >
+                      <span>{lint.status}</span>
+                      {lint.context &&
+                        lint.context.choices.length > 1 &&
+                        lint.context.context.kind === "simulation" && (
+                          <label>
+                            Analysis context{" "}
+                            <select
+                              aria-label="Lint simulation configuration"
+                              value={lint.context.context.configuration ?? ""}
+                              onChange={(event) =>
+                                lint.setContext(event.target.value)
+                              }
+                            >
+                              <option value="">Syntax and style only</option>
+                              {lint.context.choices.map((name) => (
+                                <option key={name} value={name}>
+                                  {name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
+                      {lint.context?.context.kind === "simulation" &&
+                        lint.context.choices.length === 1 && (
+                          <span>
+                            Simulation: {lint.context.context.configuration}
+                          </span>
+                        )}
+                    </div>
+                  )}
                   <SourceEditor
                     tab={working.activeTab}
                     tabIds={working.tabs.map((t) => t.id)}
                     onChange={working.updateTab}
+                    diagnostics={editorDiagnostics}
                   />
                 </div>
               )}
@@ -1188,19 +1244,89 @@ function App() {
         </span>
         <button
           onClick={() => {
-            setDrawer(!drawer);
+            setDrawer(drawerTab === "logs" ? !drawer : true);
+            setDrawerTab("logs");
             api<string>("logs").then(setLogs).catch(fail);
           }}
         >
-          Logs {drawer ? "⌄" : "⌃"}
+          Logs {drawer && drawerTab === "logs" ? "⌄" : "⌃"}
+        </button>
+        <button
+          onClick={() => {
+            setDrawer(drawerTab === "problems" ? !drawer : true);
+            setDrawerTab("problems");
+          }}
+        >
+          Problems {lint.result?.diagnostics.length ?? 0}{" "}
+          {drawer && drawerTab === "problems" ? "⌄" : "⌃"}
         </button>
       </footer>
       {drawer && (
         <section className="log-drawer">
-          <pre>{logs || "Tool logs will appear here."}</pre>
+          {drawerTab === "logs" ? (
+            <pre>{logs || "Tool logs will appear here."}</pre>
+          ) : (
+            <EditorProblems
+              result={lint.result}
+              error={lint.error}
+              status={lint.status}
+              onNavigate={(location) => {
+                if (
+                  location.file &&
+                  location.from !== undefined &&
+                  location.to !== undefined
+                )
+                  void working
+                    .openFile(location.file, {
+                      from: location.from,
+                      to: location.to,
+                    })
+                    .catch(fail);
+              }}
+            />
+          )}
         </section>
       )}
-      <ProjectDialogs controller={working} onError={fail} />
+      <ProjectDialogs
+        controller={working}
+        onError={fail}
+        lintControls={
+          <fieldset className="lint-settings">
+            <legend>RTL editor linting (local to this project)</legend>
+            <label>
+              <input
+                type="checkbox"
+                checked={lint.settings.enabled}
+                onChange={(event) =>
+                  lint.setSettings({
+                    ...lint.settings,
+                    enabled: event.target.checked,
+                  })
+                }
+              />{" "}
+              Live linting
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={lint.settings.style}
+                onChange={(event) =>
+                  lint.setSettings({
+                    ...lint.settings,
+                    style: event.target.checked,
+                  })
+                }
+              />{" "}
+              Style checks
+            </label>
+            <p className="hint">
+              A .rules.verible_lint file beside the project configuration
+              replaces the small default style preset. These toggles do not
+              change project JSON.
+            </p>
+          </fieldset>
+        }
+      />
       {modal && (
         <div className="modal-backdrop">
           <section className="modal">

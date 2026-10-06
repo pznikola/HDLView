@@ -1,5 +1,5 @@
 use crate::{
-    graph, model::*, pipeline, project::*, runner::*, simulation, waveform,
+    editor_lint, graph, model::*, pipeline, project::*, runner::*, simulation, waveform,
     waveprocess::WaveProcess, workspace,
 };
 use anyhow::{bail, Context, Result};
@@ -83,17 +83,30 @@ impl Service {
             error: None,
         };
         let token = CancelToken::default();
-        self.state
-            .lock()
-            .unwrap()
-            .jobs
-            .insert(id.clone(), (job.clone(), token.clone()));
+        {
+            let mut state = self.state.lock().unwrap();
+            if kind == "lint" {
+                if state.jobs.values().any(|(job, _)| job.status == "running") {
+                    bail!("Linting paused while another job finishes")
+                }
+                state.jobs.retain(|_, (job, _)| job.kind != "lint");
+            } else {
+                for (job, cancel) in state.jobs.values() {
+                    if job.kind == "lint" {
+                        cancel.cancel();
+                    }
+                }
+            }
+            state.jobs.insert(id.clone(), (job.clone(), token.clone()));
+        }
         let state = self.state.clone();
         thread::spawn(move || {
             let result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(token.clone())));
             let mut s = state.lock().unwrap();
-            let j = &mut s.jobs.get_mut(&id).unwrap().0;
+            let Some((j, _)) = s.jobs.get_mut(&id) else {
+                return;
+            };
             match result {
                 Ok(Ok(value)) => {
                     j.status = "complete".into();
@@ -196,8 +209,17 @@ impl Service {
             "close_project" => {
                 let key = string("path")?;
                 let mut state = self.state.lock().unwrap();
-                if state.jobs.values().any(|(job, _)| job.status == "running") {
+                if state
+                    .jobs
+                    .values()
+                    .any(|(job, _)| job.kind != "lint" && job.status == "running")
+                {
                     bail!("Cancel the running job before closing a project")
+                }
+                for (job, token) in state.jobs.values() {
+                    if job.kind == "lint" {
+                        token.cancel();
+                    }
                 }
                 state.projects.remove(key);
                 state.previews.retain(|_, (path, _, _)| path != key);
@@ -284,6 +306,15 @@ impl Service {
             "project_files" => Ok(json!(workspace::project_files(
                 &self.working_project(string("path")?)?.project
             ))),
+            "lint" => {
+                let request: editor_lint::EditorLintRequest = serde_json::from_value(v)?;
+                let project = self.working_project(&request.path)?;
+                editor_lint::validate(&project, &request)?;
+                let store = self.store.clone();
+                self.launch("lint", move |cancel| {
+                    Ok(json!(editor_lint::lint(&project, request, &store, cancel)?))
+                })
+            }
             "read_document" => Ok(serde_json::to_value(workspace::read_document(
                 &self.working_project(string("path")?)?,
                 &serde_json::from_value(v["file"].clone())?,
@@ -586,4 +617,88 @@ fn tail(path: &Path, max: u64) -> Result<String> {
     let mut b = Vec::new();
     f.read_to_end(&mut b)?;
     Ok(String::from_utf8_lossy(&b).into_owned())
+}
+
+#[cfg(test)]
+mod lint_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn wait(service: &Service, id: &str) -> Value {
+        let started = Instant::now();
+        loop {
+            let job = service.request("job", json!({ "id": id })).unwrap();
+            if job["status"] != "running" {
+                return job;
+            }
+            assert!(started.elapsed() < Duration::from_secs(3));
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[test]
+    fn background_lint_does_not_block_close_and_retention_is_bounded() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = Service::new(directory.path().into());
+        let (started, received) = std::sync::mpsc::channel();
+        let job = service
+            .launch("lint", move |cancel| {
+                started.send(()).unwrap();
+                loop {
+                    cancel.check()?;
+                    thread::sleep(Duration::from_millis(5));
+                }
+            })
+            .unwrap();
+        received.recv_timeout(Duration::from_secs(1)).unwrap();
+        service
+            .request("close_project", json!({"path":"project"}))
+            .unwrap();
+        assert_eq!(
+            wait(&service, job["id"].as_str().unwrap())["status"],
+            "cancelled"
+        );
+        for _ in 0..5 {
+            let job = service.launch("lint", |_| Ok(Value::Null)).unwrap();
+            assert_eq!(
+                wait(&service, job["id"].as_str().unwrap())["status"],
+                "complete"
+            );
+        }
+        let jobs = service.request("jobs", json!({})).unwrap();
+        assert_eq!(jobs.as_array().unwrap().len(), 1);
+    }
+    #[test]
+    fn user_jobs_cancel_lint_but_keep_project_transition_guard() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = Service::new(directory.path().into());
+        let lint = service
+            .launch("lint", |cancel| loop {
+                cancel.check()?;
+                thread::sleep(Duration::from_millis(5));
+            })
+            .unwrap();
+        let (release, held) = std::sync::mpsc::channel();
+        let job = service
+            .launch("build", move |_| {
+                held.recv_timeout(Duration::from_secs(3))?;
+                Ok(Value::Null)
+            })
+            .unwrap();
+        assert_eq!(
+            wait(&service, lint["id"].as_str().unwrap())["status"],
+            "cancelled"
+        );
+        assert!(service.launch("lint", |_| Ok(Value::Null)).is_err());
+        assert!(service
+            .request("close_project", json!({"path":"project"}))
+            .is_err());
+        release.send(()).unwrap();
+        assert_eq!(
+            wait(&service, job["id"].as_str().unwrap())["status"],
+            "complete"
+        );
+        service
+            .request("close_project", json!({"path":"project"}))
+            .unwrap();
+    }
 }

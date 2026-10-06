@@ -12,3 +12,5 @@ pub mod waveprocess;
 pub mod workspace;
 
 pub mod lifecycle;
+
+pub mod editor_lint;
