@@ -113,6 +113,13 @@ pub struct ImportRecord {
     pub working_directory: Option<PathBuf>,
     #[serde(default)]
     pub files: Vec<FileRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclusions: Vec<ImportExclusion>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImportExclusion {
+    pub path: FileRef,
+    pub directory: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

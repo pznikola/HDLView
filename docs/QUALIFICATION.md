@@ -2,6 +2,50 @@
 
 This file records exercised workflows separately from proposed release targets. Version 0.1.0 is an engineering preview; it is not a claim of complete HDL-language coverage or signoff-quality timing simulation.
 
+## Source explorer and file management qualification
+
+The registered-entry explorer and working-file operations were exercised using
+real temporary projects. File creation, rename, and Trash modify originals
+immediately; project membership is published only by Save Project. Import
+exclusions remain optional schema-3 metadata, omitted when empty; historical
+snapshot/run files are not rewritten.
+
+- **56 Rust tests** and **28 frontend tests** pass. Workspace formatting,
+  desktop-inclusive Clippy with warnings denied, frontend formatting, ESLint,
+  TypeScript, and production build pass. Core coverage includes empty/header/
+  external creation, collisions and symlinks, stale project/disk previews,
+  reference/order preservation, discovered-header tab mappings, missing-entry
+  removal, folder/filelist exclusions, hidden Trash blockers, and bounded file-job
+  retention.
+- **All ten browser workflows pass with each provider**, native and Docker.
+  Two focused workflows also pass with each provider after extending successful
+  folder Trash and delayed-read coverage. They create/edit/build new RTL,
+  preserve dirty buffers and undo history through rename, reuse former filenames
+  without tab collisions, reject reads that complete after rename, cancel dirty-tab
+  removal, persist empty folders, reopen saved projects, remove membership without deleting originals,
+  and move registered files and nested folders to real isolated Trash. Existing
+  editor conflicts, legacy loading, imports/rescans, live lint, immutable source,
+  cross-probing, shared testbenches, and per-project restoration regressions pass.
+  Browser pickers are injected; core filesystem and tool operations are real.
+- The rebuilt Debian package passes CLI/runtime checks and an actual
+  **native-picker/WebKit smoke on Xvfb**: create an empty SKY130 project, create
+  an empty file with Ctrl+N, edit/save it, rename with F2, use Shift+F10 context
+  actions, register an empty folder, Save Project, Close Project, and reopen
+  through the JSON picker. The renamed source and empty folder remain available.
+  Its declared dependencies include `libglib2.0-bin`. Local evidence:
+  `.hdlview/source-files-desktop-results.json` and
+  `/tmp/hdlview-files-desktop-smoke/` screenshots/logs.
+
+GIO refused Trash on this host's separately mounted `/tmp` filesystem with
+“Trashing on system internal mounts is not supported”; the failed operation left
+the original and project membership intact. Successful Trash fixtures therefore
+use the project filesystem and a separate `XDG_DATA_HOME`, without touching the
+user's Trash. Mount-specific Trash availability remains a host limitation;
+there is no permanent-delete fallback. The packaged smoke uses the documented
+software-rendering/Unix-volume-monitor compatibility settings. These results
+qualify this host, not every Linux distribution. No unrelated physical flows or
+large-project explorer benchmarks were rerun.
+
 ## Live editor linting qualification
 
 The live editor uses pinned pyslang **10.0.0**, Verible
@@ -158,3 +202,11 @@ The synthetic 100,000-cell graph test limits the returned view to 2,000 cells. S
 - The synthetic layout and cached value-query targets pass, but complete Tauri-to-screen selection/cursor latency and representative customer traces remain release benchmarks. A large synthetic trace is not a substitute for representative customer traces.
 
 The complete accepted plan's final release criteria therefore remain broader than this preview's measured qualification. Subsequent work should use the explicit milestone gates in `HDLView_IMPLEMENTATION_PLAN.md` rather than treating a successful counter demonstration as full release acceptance.
+
+## Project Settings qualification
+
+The browser suite includes a no-JSON project setup workflow: settings sections, simulation addition/duplication/rename/deletion, invalid DUT paths, source-import draft preservation, external model/include/SDC/SDF pickers, duplicate defines, Apply/Cancel and local preference cancellation, narrow-window footers, real counter simulation, stale-settings run blocking, and save/close/reopen with the original waveform. Run it with the documented native profile and `tools/profiles/docker.json`. Rust tests separately verify readiness versus errors, read-only reference resolution, backend SDF/physical validation, and rejecting a changed project before starting a captured simulation. Existing cross-probing, file-management and editor workflows remain release regressions.
+
+The completed settings change passes **63 Rust tests** (53 core and 10 identity), workspace formatting and Clippy with `-D warnings`, and **32 frontend tests**, TypeScript, ESLint, formatting and production build. All **12 browser workflows pass with each provider**, native and Docker. The new workflow configures and runs the counter testbench entirely through the form, then verifies that applied simulation changes require rebuilding while retaining the original waveform. Existing small-fixture lint checks measured 1,949 ms native and 1,948 ms Docker, including debounce; these are not general project-size benchmarks.
+
+The rebuilt Debian package passed an isolated Xvfb smoke test using actual GTK directory, SDC and project-JSON pickers. It created an empty SKY130 project, changed to IHP, configured the design top, Icarus testbench top/DUT path and clock, selected an external SDC, and exercised Apply, Escape cancellation, Save Project, Close Project and reopening. Applied settings left JSON unchanged until Save Project; reopened controls retained the saved schema-3 settings and references. The startup log was empty with the documented software-rendering compatibility environment. Evidence is `.hdlview/project-settings-desktop-results.json` and `/tmp/hdlview-settings-desktop-smoke/` screenshots/logs. This qualifies these interactions on the current host, not every Linux desktop. No full physical flow was rerun solely for the form redesign.

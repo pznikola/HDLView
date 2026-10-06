@@ -56,6 +56,26 @@ export interface SimulationConfig {
   delay_selection?: string | null;
   use_snapshot_sdf: boolean;
 }
+export type SettingsSection =
+  | "general"
+  | "sources"
+  | "simulation"
+  | "physical"
+  | "editor";
+export interface SettingsIssue {
+  field: string;
+  message: string;
+}
+export interface SettingsValidation {
+  errors: SettingsIssue[];
+  warnings: SettingsIssue[];
+  matches_snapshot: boolean | null;
+}
+export type SettingsInputKind = "include_directory" | "model" | "sdc" | "sdf";
+export interface SettingsReferences {
+  project: Project;
+  references: FileRef[];
+}
 export interface Snapshot {
   project_path?: string | null;
   project_fingerprint?: string | null;
@@ -182,6 +202,7 @@ export interface ImportRecord {
   location: FileRef;
   working_directory?: string | null;
   files: FileRef[];
+  exclusions?: { path: FileRef; directory: boolean }[];
 }
 export interface WorkspaceProject {
   draft_id?: string | null;
@@ -201,7 +222,52 @@ export interface ImportEntry {
   language: Language;
   role: FileRole;
   missing: boolean;
+  excluded?: boolean;
 }
+export interface CreateFileEntry {
+  directory: string;
+  name: string;
+  group: SourceGroup;
+  folder: boolean;
+}
+export interface FileChange {
+  file: FileRef;
+  directory: boolean;
+  kind: "rename" | "remove" | "trash";
+  name?: string;
+  open_files?: FileRef[];
+}
+export interface ReferenceChange {
+  from: FileRef;
+  to: FileRef | null;
+}
+export interface FileChangePreview {
+  token: string;
+  preview: {
+    request: FileChange;
+    location: string;
+    affected: ReferenceChange[];
+    simulations: string[];
+    warnings: string[];
+    blocked: string[];
+    disk_revision: string;
+  };
+}
+export interface FileChangeResult {
+  workspace: WorkspaceProject;
+  affected: ReferenceChange[];
+  created: FileRef | null;
+}
+export interface ExplorerLocation {
+  file: FileRef;
+  location: string;
+  exists: boolean;
+  mutable: boolean;
+}
+export type FileDialog =
+  | { kind: "create"; request: CreateFileEntry }
+  | { kind: "rename"; request: FileChange }
+  | { kind: "review"; result: FileChangePreview };
 export interface ImportPreview {
   project: Project;
   entries: ImportEntry[];

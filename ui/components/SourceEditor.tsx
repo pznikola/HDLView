@@ -131,7 +131,7 @@ export function SourceEditor({
       view.current = undefined;
     };
     // Buffer updates synchronize below without rebuilding the editor or its undo history.
-  }, [tab?.id, tab?.readonly, tab?.label]);
+  }, [tab?.id, tab?.readonly]);
   useEffect(() => {
     for (const id of states.current.keys()) {
       if (!tabIds.includes(id)) states.current.delete(id);

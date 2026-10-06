@@ -163,6 +163,11 @@ pub fn decode_project(mut value: serde_json::Value) -> Result<ProjectConfig> {
                     previous.files.push(file);
                 }
             }
+            for exclusion in record.exclusions {
+                if !previous.exclusions.contains(&exclusion) {
+                    previous.exclusions.push(exclusion);
+                }
+            }
         } else {
             imports.push(record);
         }
@@ -226,14 +231,11 @@ pub fn validate_hdl(file: &FileRef, header: bool) -> Result<()> {
     Ok(())
 }
 pub fn validate_project(p: &ProjectConfig) -> Result<()> {
+    if let Some(issue) = crate::settings::field_errors(p).first() {
+        bail!("{}: {}", issue.field, issue.message)
+    }
     if ![1, 2, PROJECT_SCHEMA].contains(&p.schema_version) {
         bail!("Unsupported project schema {}", p.schema_version)
-    }
-    if p.name.trim().is_empty() {
-        bail!("Project name is required")
-    }
-    if !p.top.is_empty() {
-        identifier(&p.top)?;
     }
     for root in p.source_roots.keys() {
         identifier(root)?;
@@ -289,16 +291,14 @@ pub fn validate_project(p: &ProjectConfig) -> Result<()> {
         for reference in &import.files {
             validate_reference(p, reference)?;
         }
+        for exclusion in &import.exclusions {
+            validate_reference(p, &exclusion.path)?;
+        }
     }
     for (name, simulation) in &p.simulations {
         for (index, file) in simulation.testbench.iter().enumerate() {
             validate_hdl(file, false)
                 .with_context(|| format!("simulations.{name}.testbench[{index}]"))?;
-        }
-        if (simulation.sdf.is_some() || simulation.use_snapshot_sdf)
-            && simulation.simulator != Simulator::Icarus
-        {
-            bail!("simulations.{name}: SDF simulation requires Icarus")
         }
         for reference in simulation
             .testbench
@@ -314,18 +314,6 @@ pub fn validate_project(p: &ProjectConfig) -> Result<()> {
     }
     if let Some(sdc) = p.physical.as_ref().and_then(|p| p.sdc.as_ref()) {
         validate_reference(p, sdc)?;
-    }
-    for k in p.parameters.keys().chain(p.defines.keys()) {
-        identifier(k)?;
-    }
-    for s in p.simulations.values() {
-        identifier(&s.top)?;
-        for c in &s.dut_scope {
-            identifier(c)?;
-        }
-        if s.dut_scope.is_empty() {
-            bail!("Simulation requires a DUT scope")
-        }
     }
     Ok(())
 }
@@ -412,7 +400,8 @@ fn copy_tree(
         bail!("Directory symlinks are not accepted as input directories")
     }
     if canonical.is_dir() {
-        fs::create_dir_all(out.join(rel))?;
+        // A registered root uses "."; creating a missing namespace ending in "/." fails.
+        fs::create_dir_all(out.join(rel).components().collect::<PathBuf>())?;
         for entry in fs::read_dir(&src)? {
             let e = entry?;
             if e.file_type()?.is_symlink() {
@@ -508,7 +497,8 @@ fn capture_inputs(
             &mut BTreeMap::new(),
             cancel,
             hdl_only,
-        )?;
+        )
+        .with_context(|| format!("Capture input {}", src.display()))?;
         fn collect(
             src: &Path,
             logical: &Path,
@@ -532,7 +522,12 @@ fn capture_inputs(
                     .logical()
                     .to_string_lossy()
                     .into_owned();
-                hashes.insert(key.clone(), file_hash(&output.join(logical))?);
+                hashes.insert(
+                    key.clone(),
+                    file_hash(&output.join(logical)).with_context(|| {
+                        format!("Hash captured input {}", output.join(logical).display())
+                    })?,
+                );
                 origins.insert(key, src.canonicalize()?);
             }
             Ok(())

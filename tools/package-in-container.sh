@@ -14,7 +14,7 @@ Package: hdlview
 Version: 0.1.0
 Architecture: amd64
 Maintainer: HDLView contributors
-Depends: libwebkit2gtk-4.1-0, libgtk-3-0, libssl3, libstdc++6, libc6 (>= 2.35)
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0, libglib2.0-bin, libssl3, libstdc++6, libc6 (>= 2.35)
 Section: electronics
 Priority: optional
 Description: HDL schematic and waveform exploration

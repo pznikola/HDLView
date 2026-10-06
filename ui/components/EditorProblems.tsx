@@ -10,11 +10,13 @@ export function EditorProblems({
   error,
   status,
   onNavigate,
+  onConfigure,
 }: {
   result?: EditorLintResult;
   error?: string;
   status: string;
   onNavigate: (location: EditorLocation) => void;
+  onConfigure?: () => void;
 }) {
   const groups = new Map<string, EditorDiagnostic[]>();
   for (const diagnostic of result?.diagnostics ?? []) {
@@ -30,6 +32,9 @@ export function EditorProblems({
       aria-live="polite"
     >
       <p>{status || "Open a working RTL file to check it."}</p>
+      {onConfigure && (
+        <button onClick={onConfigure}>Configure Simulation…</button>
+      )}
       {error && <p className="error">{error}</p>}
       {result?.engines.map(
         (engine) =>

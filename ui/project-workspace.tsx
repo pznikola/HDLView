@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
@@ -28,8 +22,20 @@ import type {
   SourceGroup,
   Technology,
   Project,
+  FileDialog,
+  FileChange,
+  FileChangePreview,
+  FileChangeResult,
+  ExplorerLocation,
+  CreateFileEntry,
+  SettingsSection,
+  Snapshot,
 } from "./types";
 import type { EditorTab } from "./components/SourceEditor";
+import { SourceExplorer } from "./components/SourceExplorer";
+import { FileManagementDialog } from "./components/FileManagementDialog";
+import { ProjectSettings } from "./components/ProjectSettings";
+import type { LintPreferences } from "./editor-lint";
 interface WorkingTab extends EditorTab {
   document?: SourceDocument;
 }
@@ -43,15 +49,24 @@ export function useProjectWorkspace(
   onError: (error: unknown) => void,
   flushArtifacts: () => Promise<void>,
   externalBusy: boolean,
+  revealEditor: () => void,
 ) {
   const [workspace, setWorkspace] = useState<WorkspaceProject>();
   const [savedProject, setSavedProject] = useState("");
   const [files, setFiles] = useState<FileRef[]>([]);
+  const [locations, setLocations] = useState<ExplorerLocation[]>([]);
+  const [fileDialog, setFileDialog] = useState<FileDialog>();
+  const [fileJob, setFileJob] = useState<Job>();
+  const [filePending, setFilePending] = useState(false);
+  const fileEpoch = useRef(0);
+  const [diskChanged, setDiskChanged] = useState(false);
+  const fileBusy = filePending || fileJob?.status === "running";
   const [tabs, setTabs] = useState<WorkingTab[]>([]);
   const [active, setActive] = useState<string>();
   const [modal, setModal] = useState<
-    "new" | "settings" | "import" | "filelist" | "add" | undefined
+    "new" | "import" | "filelist" | "add" | undefined
   >();
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>();
   const [preview, setPreview] = useState<PreviewResult>();
   const [lastImport, setLastImport] = useState<ImportRequest>();
   const [job, setJob] = useState<Job>();
@@ -111,11 +126,15 @@ export function useProjectWorkspace(
   const applyWorkspace = useCallback(
     async (value: WorkspaceProject, saved = false) => {
       const requestGeneration = generation.current;
-      const files = await projects.files(value.path);
+      const [files, locations] = await Promise.all([
+        projects.files(value.path),
+        projects.explorer(value.path),
+      ]);
       if (requestGeneration !== generation.current) return;
       setWorkspace(value);
       if (saved) setSavedProject(JSON.stringify(value.project));
       setFiles(files);
+      setLocations(locations);
     },
     [],
   );
@@ -194,6 +213,7 @@ export function useProjectWorkspace(
         markChanged();
     }
     await flushArtifacts();
+    setDiskChanged(false);
     return true;
   }, [
     tabs,
@@ -205,36 +225,55 @@ export function useProjectWorkspace(
     flushArtifacts,
   ]);
   const guard = useCallback(async () => {
-    if (externalBusy || job?.status === "running") {
+    if (externalBusy || job?.status === "running" || fileBusy) {
       onError(
         "Cancel the running project job before closing or switching projects.",
       );
       return false;
     }
     if (dirty) {
-      const choice = await ask("Save changes before leaving this project?", [
-        "Save",
-        "Discard",
-        "Cancel",
-      ]);
+      const choice = await ask(
+        diskChanged
+          ? "Save changes before leaving? Discard does not undo files already created, renamed, or moved to Trash."
+          : "Save changes before leaving this project?",
+        ["Save", "Discard", "Cancel"],
+      );
       if (choice === "Cancel" || (choice === "Save" && !(await saveAll())))
         return false;
     }
     await flushArtifacts();
     return true;
-  }, [dirty, ask, saveAll, flushArtifacts, externalBusy, job?.status, onError]);
+  }, [
+    dirty,
+    ask,
+    saveAll,
+    flushArtifacts,
+    externalBusy,
+    job?.status,
+    fileBusy,
+    diskChanged,
+    onError,
+  ]);
   const closeGuard = useRef(guard);
   useEffect(() => {
     closeGuard.current = guard;
   }, [guard]);
   const activate = useCallback(
     async (value: WorkspaceProject) => {
-      const nextFiles = await projects.files(value.path);
+      const [nextFiles, nextLocations] = await Promise.all([
+        projects.files(value.path),
+        projects.explorer(value.path),
+      ]);
       generation.current += 1;
       onActivate();
       setWorkspace(value);
       setSavedProject(JSON.stringify(value.project));
       setFiles(nextFiles);
+      setLocations(nextLocations);
+      setFileDialog(undefined);
+      setFileJob(undefined);
+      setDiskChanged(false);
+      setSettingsSection(undefined);
       setTabs([]);
       setActive(undefined);
       setStale(false);
@@ -317,6 +356,10 @@ export function useProjectWorkspace(
     setWorkspace(undefined);
     setSavedProject("");
     setFiles([]);
+    setLocations([]);
+    setFileDialog(undefined);
+    setDiskChanged(false);
+    setSettingsSection(undefined);
     setTabs([]);
     setActive(undefined);
     setStale(false);
@@ -339,6 +382,7 @@ export function useProjectWorkspace(
     if (requestGeneration !== generation.current) return;
     if (JSON.stringify(value.project) !== JSON.stringify(workspace.project))
       markChanged();
+    return value;
   };
   const importFiles = async (request: ImportRequest) => {
     if (!importTarget) return;
@@ -437,11 +481,18 @@ export function useProjectWorkspace(
     selection?: { from: number; to: number },
   ) => {
     if (!workspace) return;
-    const id = fileKey(file);
+    const id =
+      tabs.find((t) => t.document && fileKey(t.document.file) === fileKey(file))
+        ?.id ?? `working:${fileKey(file)}:${fileEpoch.current}`;
     const openedGeneration = generation.current;
+    const openedFileEpoch = fileEpoch.current;
     if (!tabs.some((t) => t.id === id)) {
       const document = await projects.read(workspace.path, file);
-      if (openedGeneration !== generation.current) return;
+      if (
+        openedGeneration !== generation.current ||
+        openedFileEpoch !== fileEpoch.current
+      )
+        return;
       setTabs((previous) =>
         previous.some((t) => t.id === id)
           ? previous
@@ -510,6 +561,162 @@ export function useProjectWorkspace(
     setTabs(remaining);
     if (active === tab.id) setActive(remaining.at(-1)?.id);
   };
+  const beginFile = (
+    folder = false,
+    group: SourceGroup = sourceGroup,
+    directory?: string,
+  ) => {
+    if (!workspace || externalBusy || job?.status === "running" || fileBusy)
+      return;
+    setFileDialog({
+      kind: "create",
+      request: {
+        folder,
+        group,
+        directory:
+          directory ??
+          `${workspace.path.slice(0, workspace.path.lastIndexOf("/"))}/${group === "design" ? "rtl" : "sim"}`,
+        name: folder ? "new-folder" : "untitled.sv",
+      },
+    });
+  };
+  const createEntry = async (request: CreateFileEntry) => {
+    if (!workspace || fileBusy) return;
+    setFilePending(true);
+    try {
+      const result = await projects.createEntry(workspace.path, request);
+      fileEpoch.current += 1;
+      await applyWorkspace(result.workspace);
+      markChanged();
+      setDiskChanged(true);
+      setFileDialog(undefined);
+      if (!request.folder && result.created) {
+        await openFile(result.created, { from: 0, to: 0 });
+        revealEditor();
+      }
+    } finally {
+      setFilePending(false);
+    }
+  };
+  const finishFileJob = async (initial: Job, previewEpoch?: number) => {
+    let value = initial;
+    setFileJob(value);
+    while (value.status === "running") {
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+      value = await projects.job(value.id);
+      setFileJob(value);
+    }
+    if (previewEpoch !== undefined && previewEpoch !== fileEpoch.current)
+      return { ...value, status: "cancelled", result: null };
+    if (value.status === "failed")
+      throw new Error(value.error ?? "File operation failed");
+    return value;
+  };
+  const previewChange = async (request: FileChange) => {
+    if (!workspace || fileBusy) return;
+    const epoch = fileEpoch.current;
+    const result = await finishFileJob(
+      await projects.previewChange(workspace.path, {
+        ...request,
+        open_files: tabs.flatMap((tab) =>
+          tab.document ? [tab.document.file] : [],
+        ),
+      }),
+      epoch,
+    );
+    if (result.status === "complete")
+      setFileDialog({
+        kind: "review",
+        result: result.result as FileChangePreview,
+      });
+  };
+  const cancelFileOperation = async () => {
+    fileEpoch.current += 1;
+    if (fileJob?.status === "running") await api("cancel", { id: fileJob.id });
+  };
+  const beginChange = (request: FileChange) => {
+    if (request.kind === "rename") setFileDialog({ kind: "rename", request });
+    else return previewChange(request);
+  };
+  const applyChange = async (result: FileChangePreview) => {
+    if (!workspace || fileBusy) return;
+    const removing = result.preview.request.kind !== "rename";
+    const keys = new Set(result.preview.affected.map((c) => fileKey(c.from)));
+    let savedWorking = false;
+    if (removing) {
+      for (const tab of tabs.filter(
+        (t) =>
+          t.document &&
+          keys.has(fileKey(t.document.file)) &&
+          t.text !== t.saved,
+      )) {
+        const choice = await ask(
+          `Save changes to ${tab.label} before removing it?`,
+          ["Save", "Discard", "Cancel"],
+        );
+        if (choice === "Cancel" || (choice === "Save" && !(await saveTab(tab))))
+          return;
+        if (choice === "Save") savedWorking = true;
+      }
+    }
+    // Saving a dirty document changes the disk revision, so obtain a fresh review before committing.
+    let fresh = result;
+    if (savedWorking) {
+      const epoch = fileEpoch.current;
+      const reviewed = await finishFileJob(
+        await projects.previewChange(workspace.path, result.preview.request),
+        epoch,
+      );
+      if (reviewed.status !== "complete") return;
+      fresh = reviewed.result as FileChangePreview;
+      if (fresh.preview.disk_revision !== result.preview.disk_revision) {
+        setFileDialog({ kind: "review", result: fresh });
+        return;
+      }
+    }
+    const terminal = await finishFileJob(
+      await projects.applyChange(workspace.path, fresh.token),
+    );
+    if (terminal.status !== "complete") return;
+    const changed = terminal.result as FileChangeResult;
+    fileEpoch.current += 1;
+    await applyWorkspace(changed.workspace);
+    const updates = new Map(
+      changed.affected.map((c) => [fileKey(c.from), c.to]),
+    );
+    setTabs((previous) =>
+      previous.flatMap((tab) => {
+        if (!tab.document) return [tab];
+        const key = fileKey(tab.document.file);
+        if (!updates.has(key)) return [tab];
+        const file = updates.get(key);
+        if (!file) return [];
+        return [
+          {
+            ...tab,
+            label: fileLabel(file),
+            document: { ...tab.document, file },
+          },
+        ];
+      }),
+    );
+    if (
+      tabs.some(
+        (t) =>
+          t.id === active &&
+          t.document &&
+          updates.get(fileKey(t.document.file)) === null,
+      )
+    )
+      setActive(
+        tabs.find((t) => !t.document || !updates.has(fileKey(t.document.file)))
+          ?.id,
+      );
+    markChanged();
+    if (!removing || result.preview.request.kind === "trash")
+      setDiskChanged(true);
+    setFileDialog(undefined);
+  };
   const beforeBuild = async () => {
     if (!dirty) return true;
     return (
@@ -524,7 +731,7 @@ export function useProjectWorkspace(
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s")
         return;
       event.preventDefault();
-      if (modal) return;
+      if (modal || settingsSection || fileDialog || fileBusy) return;
       const tab = tabs.find((t) => t.id === active);
       (event.shiftKey ? saveAll() : tab ? saveTab(tab) : saveAll()).catch(
         onError,
@@ -532,7 +739,36 @@ export function useProjectWorkspace(
     };
     window.addEventListener("keydown", handle);
     return () => window.removeEventListener("keydown", handle);
-  }, [active, tabs, saveTab, saveAll, onError, modal]);
+  }, [
+    active,
+    tabs,
+    saveTab,
+    saveAll,
+    onError,
+    modal,
+    settingsSection,
+    fileDialog,
+    fileBusy,
+  ]);
+  useEffect(() => {
+    const handle = (event: KeyboardEvent) => {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "n" &&
+        workspace &&
+        !modal &&
+        !settingsSection &&
+        !fileDialog &&
+        !fileBusy &&
+        !externalBusy
+      ) {
+        event.preventDefault();
+        beginFile();
+      }
+    };
+    window.addEventListener("keydown", handle);
+    return () => window.removeEventListener("keydown", handle);
+  });
   useEffect(() => {
     if (!isTauri()) return;
     let disposed = false;
@@ -560,12 +796,25 @@ export function useProjectWorkspace(
   return {
     workspace,
     files,
+    locations,
+    fileDialog,
+    setFileDialog,
+    fileJob,
+    fileBusy,
+    cancelFileOperation,
+    beginFile,
+    createEntry,
+    beginChange,
+    previewChange,
+    applyChange,
     tabs,
     active,
     setActive,
     activeTab: tabs.find((t) => t.id === active),
     modal,
     setModal,
+    settingsSection,
+    setSettingsSection,
     preview,
     lastImport,
     job,
@@ -673,6 +922,11 @@ export function ProjectToolbar({
     { label: "Create New Project…", disabled: busy, action: c.beginNew },
     { label: "Open Existing Project…", disabled: busy, action: c.open },
     null,
+    {
+      label: "New File…",
+      disabled: busy || !c.workspace,
+      action: () => c.beginFile(),
+    },
     {
       label: "Add New Files…",
       disabled: busy || !c.workspace,
@@ -794,483 +1048,24 @@ export function ProjectToolbar({
       </div>
       <button
         disabled={busy || !c.workspace}
-        onClick={() => c.setModal("settings")}
+        onClick={() => c.setSettingsSection("general")}
       >
         Project Settings
       </button>
     </div>
   );
 }
-function SourceTree({
-  files,
-  project,
-  onOpen,
-  directories = [],
-}: {
-  directories?: string[];
-  files: FileRef[];
-  project: WorkspaceProject["project"];
-  onOpen: (file: FileRef) => void;
-}) {
-  interface Tree {
-    dirs: Map<string, Tree>;
-    files: FileRef[];
-  }
-  const tree: Tree = { dirs: new Map(), files: [] };
-  const role = (file: FileRef) => {
-    const key = fileKey(file);
-    if (
-      [...(project.headers ?? []), ...(project.simulation_headers ?? [])].some(
-        (f) => fileKey(f) === key,
-      )
-    )
-      return "header";
-    if (project.sources.some((s) => fileKey(s.path) === key)) return "RTL";
-    if (project.simulation_sources?.some((f) => fileKey(f) === key))
-      return "sim";
-    if (
-      Object.values(project.simulations).some((s) =>
-        s.testbench.some((f) => fileKey(f) === key),
-      )
-    )
-      return "sim";
-    return /\.(f|flist)$/i.test(fileLabel(file)) ? "list" : "aux";
-  };
-  const directoryNode = (parts: string[]) => {
-    let node = tree;
-    for (const part of parts) {
-      let child = node.dirs.get(part);
-      if (!child) {
-        child = { dirs: new Map(), files: [] };
-        node.dirs.set(part, child);
-      }
-      node = child;
-    }
-    return node;
-  };
-  for (const directory of directories) {
-    if (directory !== ".") directoryNode(directory.split("/"));
-  }
-  for (const file of files) {
-    directoryNode(fileLabel(file).split("/").slice(0, -1)).files.push(file);
-  }
-  const render = (node: Tree, prefix: string): React.ReactNode => (
-    <>
-      {[...node.dirs].map(([name, child]) => (
-        <details key={`${prefix}/${name}`} open>
-          <summary
-            tabIndex={0}
-            data-source-path={`${prefix}/${name}`.replace(/^\//, "")}
-          >
-            {name}
-          </summary>
-          {render(child, `${prefix}/${name}`)}
-        </details>
-      ))}
-      {node.files.map((file) => (
-        <button
-          className="source-file"
-          data-source-path={fileLabel(file)}
-          key={fileKey(file)}
-          title={fileLabel(file)}
-          onClick={() => onOpen(file)}
-        >
-          {fileLabel(file).split("/").at(-1)}
-          <small className="source-kind">{role(file)}</small>
-        </button>
-      ))}
-    </>
-  );
-  return <div className="source-tree">{render(tree, "")}</div>;
-}
-export function ProjectSources({
-  controller: c,
-  busy,
-  onOpen,
-  onError,
-}: {
+export function ProjectSources(props: {
   controller: ProjectController;
   busy: boolean;
   onOpen: (file: FileRef) => void;
   onError: (error: unknown) => void;
 }) {
-  const [context, setContext] = useState<{
-    indices: number[];
-    x: number;
-    y: number;
-  }>();
-  const menu = useRef<HTMLDivElement>(null);
-  const contextTrigger = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (!context) return;
-    menu.current?.querySelector<HTMLButtonElement>("button")?.focus();
-    const close = (event: PointerEvent) => {
-      if (event.target instanceof Node && !menu.current?.contains(event.target))
-        setContext(undefined);
-    };
-    document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
-  }, [context]);
-  const project = c.workspace?.project;
-  const byRole = (file: FileRef) => {
-    const contains = (files: FileRef[] | undefined) =>
-      files?.some((f) => fileKey(f) === fileKey(file));
-    if (
-      project?.sources.some((s) => fileKey(s.path) === fileKey(file)) ||
-      contains(project?.headers)
-    )
-      return "design";
-    if (
-      contains(project?.simulation_sources) ||
-      contains(project?.simulation_headers) ||
-      Object.values(project?.simulations ?? {}).some((s) =>
-        s.testbench.some((f) => fileKey(f) === fileKey(file)),
-      )
-    )
-      return "simulation";
-    return "aux";
-  };
-  const showContext = (target: HTMLElement, x: number, y: number) => {
-    const path =
-      target.closest<HTMLElement>("[data-source-path]")?.dataset.sourcePath;
-    const group = target.closest<HTMLElement>("[data-source-group]")?.dataset
-      .sourceGroup;
-    const indices = (project?.imports ?? []).flatMap((r, index) =>
-      fileLabel(r.location).replace(/\/\.$/, "") === path &&
-      (group === "aux" || r.group === group)
-        ? [index]
-        : [],
-    );
-    if (indices.length) setContext({ indices, x, y });
-  };
   return (
-    <>
-      <div className="panel-heading">PROJECT SOURCES</div>
-      {project ? (
-        <div
-          onContextMenu={(event) => {
-            if (event.target instanceof HTMLElement) {
-              event.preventDefault();
-              showContext(event.target, event.clientX, event.clientY);
-            }
-          }}
-          onKeyDown={(event) => {
-            if (
-              event.shiftKey &&
-              event.key === "F10" &&
-              event.target instanceof HTMLElement
-            ) {
-              event.preventDefault();
-              const rect = event.target.getBoundingClientRect();
-              showContext(event.target, rect.left, rect.bottom);
-            }
-          }}
-        >
-          {[
-            ...sourceGroups,
-            { id: "aux", label: "Filelists and Auxiliary Files" },
-          ].map((group) => (
-            <details
-              open
-              key={group.id}
-              className="source-group"
-              data-source-group={group.id}
-            >
-              <summary
-                tabIndex={0}
-                data-source-path="."
-                data-source-group={group.id}
-              >
-                {group.label}
-              </summary>
-              <SourceTree
-                files={c.files.filter((f) => byRole(f) === group.id)}
-                directories={project.imports
-                  ?.filter(
-                    (r) =>
-                      r.kind === "folder" && (r.group ?? "design") === group.id,
-                  )
-                  .map((r) => fileLabel(r.location).replace(/\/\.$/, ""))}
-                project={project}
-                onOpen={onOpen}
-              />
-            </details>
-          ))}
-          {!c.files.length && (
-            <p className="hint">Use File → Add New Files to add sources.</p>
-          )}
-        </div>
-      ) : (
-        <p className="hint">Use File to open or create a project.</p>
-      )}
-      {context && (
-        <div
-          className="command-menu source-context"
-          style={{ left: context.x, top: context.y }}
-          ref={menu}
-          role="menu"
-          aria-label="Source actions"
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              setContext(undefined);
-              contextTrigger.current?.focus();
-            }
-          }}
-        >
-          {context.indices.map((index) => {
-            const record = project?.imports?.[index];
-            if (!record) return null;
-            const label =
-              record.kind === "folder" ? "Rescan Folder" : "Reimport Filelist";
-            return (
-              <button
-                key={index}
-                role="menuitem"
-                disabled={busy}
-                onClick={() => {
-                  void c
-                    .chooseImport(record.kind, index, undefined, record.group)
-                    .catch(onError);
-                  setContext(undefined);
-                }}
-              >
-                {label}
-                {context.indices.length > 1
-                  ? ` (${record.working_directory ?? "list directory"})`
-                  : ""}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </>
-  );
-}
-function SettingsForm({
-  controller: c,
-  onError,
-  lintControls,
-}: {
-  controller: ProjectController;
-  onError: (error: unknown) => void;
-  lintControls?: ReactNode;
-}) {
-  const [project, setProject] = useState(c.workspace?.project);
-  const [includes, setIncludes] = useState(
-    c.workspace?.project.include_dirs.map(fileLabel).join("\n") ?? "",
-  );
-  const [defines, setDefines] = useState(
-    Object.entries(c.workspace?.project.defines ?? {})
-      .map(([k, v]) => `${k}=${v}`)
-      .join("\n"),
-  );
-  const [clockPort, setClockPort] = useState(
-    c.workspace?.project.physical?.clock_port ?? "",
-  );
-  const [clockPeriod, setClockPeriod] = useState(
-    c.workspace?.project.physical?.clock_period_ns?.toString() ?? "",
-  );
-  const [advanced, setAdvanced] = useState(
-    JSON.stringify(c.workspace?.project, null, 2),
-  );
-  if (!project) return null;
-  const reorder = (index: number, delta: number) => {
-    const sources = [...project.sources];
-    const current = sources[index];
-    const target = sources[index + delta];
-    if (!current || !target) return;
-    sources[index] = target;
-    sources[index + delta] = current;
-    setProject({ ...project, sources });
-  };
-  const reference = (label: string): FileRef => {
-    const [prefix, ...rest] = label.split("/");
-    const root = prefix?.startsWith("@") ? prefix.slice(1) : undefined;
-    return root && project.source_roots?.[root] !== undefined
-      ? { root, path: rest.join("/") || "." }
-      : label;
-  };
-  const apply = async () => {
-    const values: Record<string, string> = {};
-    for (const line of defines.split("\n").filter((l) => l.trim())) {
-      const at = line.indexOf("=");
-      const key = (at < 0 ? line : line.slice(0, at)).trim();
-      if (key in values) throw new Error(`Duplicate define ${key}`);
-      values[key] = at < 0 ? "1" : line.slice(at + 1);
-    }
-    let physical = project.physical;
-    if (clockPort || clockPeriod) {
-      const period = Number(clockPeriod);
-      if (
-        !project.technology ||
-        !clockPort ||
-        !Number.isFinite(period) ||
-        period <= 0
-      )
-        throw new Error(
-          "Choose a technology, clock port, and positive clock period",
-        );
-      const preset =
-        project.technology === "sky130"
-          ? { pdk: "sky130A", library: "sky130_fd_sc_hd" }
-          : { pdk: "ihp-sg13g2", library: "sg13g2_stdcell" };
-      physical = {
-        ...physical,
-        ...preset,
-        clock_port: clockPort,
-        clock_period_ns: period,
-        overrides: physical?.overrides ?? {},
-      };
-    } else physical = undefined;
-    await c.update({
-      ...project,
-      physical,
-      include_dirs: includes
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .map(reference),
-      defines: values,
-    });
-    c.setModal(undefined);
-  };
-  return (
-    <>
-      <label>
-        Top module
-        <input
-          aria-label="Top module"
-          value={project.top}
-          onChange={(e) => setProject({ ...project, top: e.target.value })}
-        />
-      </label>
-      <label>
-        Language standard
-        <input
-          aria-label="Language standard"
-          value={project.standard}
-          onChange={(e) => setProject({ ...project, standard: e.target.value })}
-        />
-      </label>
-      <label>
-        Technology
-        <select
-          aria-label="Technology"
-          value={project.technology ?? ""}
-          onChange={(event) => {
-            const technology =
-              event.target.value === "sky130"
-                ? "sky130"
-                : event.target.value === "ihp_sg13g2"
-                  ? "ihp_sg13g2"
-                  : null;
-            setProject({ ...project, technology });
-          }}
-        >
-          <option value="">Not selected</option>
-          <option value="sky130">SKY130</option>
-          <option value="ihp_sg13g2">IHP SG13G2</option>
-        </select>
-      </label>
-      <details>
-        <summary>Mapped and physical build settings</summary>
-        <label>
-          Clock port
-          <input
-            aria-label="Clock port"
-            value={clockPort}
-            onChange={(event) => setClockPort(event.target.value)}
-          />
-        </label>
-        <label>
-          Clock period (ns)
-          <input
-            aria-label="Clock period (ns)"
-            value={clockPeriod}
-            onChange={(event) => setClockPeriod(event.target.value)}
-          />
-        </label>
-      </details>
-      {lintControls}
-      <h3>Compilation order</h3>
-      <div className="compile-order">
-        {project.sources.map((source, index) => (
-          <div key={`${fileKey(source.path)}:${index}`}>
-            <span>{fileLabel(source.path)}</span>
-            <button
-              aria-label={`Move ${fileLabel(source.path)} up`}
-              disabled={index === 0}
-              onClick={() => reorder(index, -1)}
-            >
-              ↑
-            </button>
-            <button
-              aria-label={`Move ${fileLabel(source.path)} down`}
-              disabled={index === project.sources.length - 1}
-              onClick={() => reorder(index, 1)}
-            >
-              ↓
-            </button>
-            <button
-              aria-label={`Remove ${fileLabel(source.path)} from project`}
-              onClick={() =>
-                setProject({
-                  ...project,
-                  sources: project.sources.filter((_, i) => i !== index),
-                })
-              }
-            >
-              Remove
-            </button>
-          </div>
-        ))}
-      </div>
-      <label>
-        Include directories (project-relative or @root/path, one per line)
-        <textarea
-          aria-label="Include directories"
-          value={includes}
-          onChange={(e) => setIncludes(e.target.value)}
-        />
-      </label>
-      <label>
-        Defines (NAME=value, one per line)
-        <textarea
-          aria-label="Defines"
-          value={defines}
-          onChange={(e) => setDefines(e.target.value)}
-        />
-      </label>
-      <button className="primary" onClick={() => void apply().catch(onError)}>
-        Apply Settings
-      </button>
-      <details>
-        <summary>Advanced JSON: simulation and physical flow</summary>
-        <textarea
-          aria-label="Advanced project JSON"
-          rows={18}
-          value={advanced}
-          onChange={(e) => setAdvanced(e.target.value)}
-        />
-        <button
-          onClick={() => {
-            let value: unknown;
-            try {
-              value = JSON.parse(advanced);
-            } catch (e) {
-              onError(e);
-              return;
-            }
-            void c
-              .update(value)
-              .then(() => c.setModal(undefined))
-              .catch(onError);
-          }}
-        >
-          Apply Advanced JSON
-        </button>
-      </details>
-    </>
+    <SourceExplorer
+      key={props.controller.workspace?.path ?? "closed"}
+      {...props}
+    />
   );
 }
 function SourceSelection({
@@ -1519,6 +1314,10 @@ function NewProjectForm({
         </>
       ) : c.wizardStep === 1 ? (
         <>
+          <p className="hint">
+            Sources are optional. Create an empty project and add or create
+            files afterward.
+          </p>
           <SourceSelection controller={c} onError={onError} />
           <p>
             {c.draft?.project.sources.length ?? 0} design files ·{" "}
@@ -1553,7 +1352,7 @@ function ImportForm({
     preview?.entries.map((entry, index) => ({
       index,
       role: entry.role,
-      selected: true,
+      selected: !entry.excluded,
     })) ?? [],
   );
   const [working, setWorking] = useState(
@@ -1608,6 +1407,7 @@ function ImportForm({
               />
               <span>
                 {fileLabel(entry.file)}
+                {entry.excluded ? " (excluded)" : ""}
                 {entry.missing
                   ? " (missing from import)"
                   : (c.draft ? [] : c.files).some(
@@ -1669,14 +1469,43 @@ function ImportForm({
 export function ProjectDialogs({
   controller: c,
   onError,
-  lintControls,
+  lintPreferences,
+  onLintPreferences,
+  snapshot,
 }: {
   controller: ProjectController;
   onError: (error: unknown) => void;
-  lintControls?: ReactNode;
+  lintPreferences: LintPreferences;
+  onLintPreferences: (preferences: LintPreferences) => void;
+  snapshot?: Snapshot;
 }) {
   return (
     <>
+      {c.settingsSection && (
+        <ProjectSettings
+          key={c.workspace?.path}
+          controller={c}
+          lintPreferences={lintPreferences}
+          onLintPreferences={onLintPreferences}
+          snapshot={snapshot}
+          onError={onError}
+        />
+      )}
+      {c.fileDialog && (
+        <FileManagementDialog
+          key={c.fileDialog.kind}
+          controller={c}
+          onError={onError}
+        />
+      )}
+      {c.fileJob?.status === "running" && (
+        <div className="import-progress">
+          Working on project files…{" "}
+          <button onClick={() => void c.cancelFileOperation().catch(onError)}>
+            Cancel
+          </button>
+        </div>
+      )}
       {c.modal && (
         <div className="modal-backdrop">
           <section
@@ -1685,26 +1514,22 @@ export function ProjectDialogs({
             aria-label={
               c.modal === "new"
                 ? "Create New Project"
-                : c.modal === "settings"
-                  ? "Project Settings"
-                  : c.modal === "add"
-                    ? "Add New Files"
-                    : c.modal === "filelist"
-                      ? "Filelist Import"
-                      : "Import Review"
+                : c.modal === "add"
+                  ? "Add New Files"
+                  : c.modal === "filelist"
+                    ? "Filelist Import"
+                    : "Import Review"
             }
           >
             <div className="modal-title">
               <strong>
                 {c.modal === "new"
                   ? "Create New Project"
-                  : c.modal === "settings"
-                    ? "Project Settings"
-                    : c.modal === "add"
-                      ? "Add New Files"
-                      : c.modal === "filelist"
-                        ? "Filelist Import"
-                        : "Import Review"}
+                  : c.modal === "add"
+                    ? "Add New Files"
+                    : c.modal === "filelist"
+                      ? "Filelist Import"
+                      : "Import Review"}
               </strong>
               <button
                 aria-label="Close project dialog"
@@ -1718,12 +1543,6 @@ export function ProjectDialogs({
               <NewProjectForm controller={c} onError={onError} />
             ) : c.modal === "add" ? (
               <SourceSelection controller={c} onError={onError} />
-            ) : c.modal === "settings" ? (
-              <SettingsForm
-                controller={c}
-                onError={onError}
-                lintControls={lintControls}
-              />
             ) : c.modal === "filelist" ? (
               <FilelistOptions controller={c} onError={onError} />
             ) : (

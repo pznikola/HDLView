@@ -25,9 +25,19 @@
 | `ui/components/Schematic.tsx`    | SVG renderer and view-scoped layout cache                                                            |
 | `ui/layout.worker.ts`            | Port-aware ELK graph conversion/layout                                                               |
 | `ui/components/Waveform.tsx`     | Canvas rendering, row virtualization, bus expansion                                                  |
-| `ui/project-workspace.tsx`       | Project wizard/settings/explorer, editor tabs, save and transition prompts                           |
+| `ui/project-workspace.tsx`       | Project wizard/imports, editor tabs, file operations, save and transition prompts                    |
 | `ui/components/SourceEditor.tsx` | Minimal CodeMirror extensions and per-tab editing history                                            |
 | `ui/projects.ts`                 | Typed core service requests and native picker boundary                                               |
+
+`settings.rs` owns shared field validation, readiness warnings and non-publishing picker-reference resolution. `validate_project_settings` optionally compares a candidate with a snapshot's original project fingerprint. `resolve_settings_inputs` returns a normalized settings draft and references without writing or publishing them. The existing project update/save operations enforce shared validation; project-bound simulation rejects settings that differ from its captured snapshot before launching tools.
+
+`ProjectSettings.tsx` owns the categorized settings dialog and its draft. `ui/project-settings.ts` converts editable maps, duration units and optional override JSON into the existing project schema, and rebases explicitly imported membership without losing unapplied edits. Apply updates the working configuration; saving remains explicit. Local editor preferences are applied separately and excluded from project/artifact fingerprints. Settings dialogs trap focus and make the workspace inert; reviewed source-import overlays temporarily cover the settings dialog without unmounting its draft.
+
+`file_management.rs` owns exclusive empty-file/folder creation, registered-entry metadata, reviewed rename/removal/Trash, reference rewriting, and original-path inspection. `ui/source-explorer.ts` constructs the registered tree; `SourceExplorer.tsx` owns tree selection/expansion and keyboard/context interaction. `FileManagementDialog.tsx` presents creation and reviewed changes. Editor tab identity remains stable through rename; its document reference changes without recreating CodeMirror history.
+
+`create_file_entry` returns a working configuration plus its created reference. `preview_file_change`/`apply_file_change` use cancellable `files` jobs and project/disk revision checks; application returns reference changes for tabs. Completed file jobs and preview tokens are bounded. A dedicated mutation lock serializes filesystem/configuration changes and job starts without holding the service state lock during I/O; other mutations cannot run while a file job is active. Cancellation is checked during inspection and before disk commit. A committed operation publishes its real state even if cancellation arrives afterward.
+
+Optional `ImportRecord.exclusions` retains removed file/directory membership through rescans. Empty directories reuse folder import records. Configuration remains schema 3, and empty metadata is omitted to preserve older artifact serialization. Disk operations take effect immediately; saving membership remains explicit. Removal closes affected working tabs after the dirty-state guard and leaves captured tabs/session artifacts intact. Linux Trash invokes system GIO with argument arrays on the host, independently of the toolchain provider, without a permanent-delete fallback.
 
 ## Identity and invariants
 

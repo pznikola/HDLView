@@ -261,7 +261,8 @@ pub fn lint(
             FileRef::Local(logical.into())
         };
         let path = directory.join("inputs").join(logical);
-        let bytes = fs::read(&path)?;
+        let bytes = fs::read(&path)
+            .with_context(|| format!("Read captured lint input {}", path.display()))?;
         let text = std::str::from_utf8(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes))
             .with_context(|| format!("Unsupported encoding in {}", original.display()))?
             .replace("\r\n", "\n");

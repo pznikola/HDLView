@@ -1,6 +1,6 @@
 use crate::{
-    editor_lint, graph, model::*, pipeline, project::*, runner::*, simulation, waveform,
-    waveprocess::WaveProcess, workspace,
+    editor_lint, file_management, graph, model::*, pipeline, project::*, runner::*, simulation,
+    waveform, waveprocess::WaveProcess, workspace,
 };
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,7 @@ pub struct Job {
 struct State {
     projects: BTreeMap<String, workspace::WorkspaceProject>,
     previews: BTreeMap<String, (String, String, workspace::ImportPreview)>,
+    file_previews: BTreeMap<String, (String, String, file_management::ChangePreview)>,
     snapshots: BTreeMap<String, DesignSnapshot>,
     runs: BTreeMap<String, SimulationRun>,
     waves: BTreeMap<String, WaveProcess>,
@@ -34,14 +35,17 @@ struct State {
 pub struct Service {
     state: Arc<Mutex<State>>,
     pub store: PathBuf,
+    mutations: Arc<Mutex<()>>,
 }
 impl Service {
     pub fn new(store: PathBuf) -> Self {
         Self {
             store,
+            mutations: Arc::new(Mutex::new(())),
             state: Arc::new(Mutex::new(State {
                 projects: BTreeMap::new(),
                 previews: BTreeMap::new(),
+                file_previews: BTreeMap::new(),
                 snapshots: BTreeMap::new(),
                 runs: BTreeMap::new(),
                 waves: BTreeMap::new(),
@@ -85,6 +89,11 @@ impl Service {
         let token = CancelToken::default();
         {
             let mut state = self.state.lock().unwrap();
+            if kind == "files" {
+                state
+                    .jobs
+                    .retain(|_, (job, _)| job.kind != "files" || job.status == "running");
+            }
             if kind == "lint" {
                 if state.jobs.values().any(|(job, _)| job.status == "running") {
                     bail!("Linting paused while another job finishes")
@@ -147,12 +156,83 @@ impl Service {
         Ok(serde_json::to_value(run)?)
     }
     pub fn request(&self, action: &str, v: Value) -> Result<Value> {
+        // Serialize mutations and job starts separately from the short-lived state lock.
+        let _mutation = if matches!(
+            action,
+            "open_project"
+                | "close_project"
+                | "create_project_draft"
+                | "publish_project_draft"
+                | "update_project"
+                | "save_project"
+                | "save_document"
+                | "apply_import"
+                | "create_file_entry"
+                | "preview_file_change"
+                | "apply_file_change"
+                | "build"
+                | "simulate"
+                | "preview_import"
+        ) {
+            Some(self.mutations.lock().unwrap())
+        } else {
+            None
+        };
+        if matches!(
+            action,
+            "create_file_entry"
+                | "open_project"
+                | "create_project_draft"
+                | "publish_project_draft"
+                | "preview_file_change"
+                | "apply_file_change"
+                | "update_project"
+                | "save_project"
+                | "save_document"
+                | "apply_import"
+                | "close_project"
+                | "build"
+                | "simulate"
+                | "preview_import"
+        ) && self
+            .state
+            .lock()
+            .unwrap()
+            .jobs
+            .values()
+            .any(|(job, _)| job.kind == "files" && job.status == "running")
+        {
+            bail!("Wait for the file operation to finish")
+        }
         let string = |key: &str| -> Result<&str> {
             v[key]
                 .as_str()
                 .with_context(|| format!("Missing field {key}"))
         };
         match action {
+            "validate_project_settings" => {
+                let workspace = self.working_project(string("path")?)?;
+                let project = decode_project(v["project"].clone())?;
+                let mut validation = crate::settings::validate(&workspace.path, &project);
+                if let Some(id) = v["snapshot_id"].as_str() {
+                    let snapshot = self.snapshot(id)?;
+                    validation.matches_snapshot = Some(
+                        snapshot.project_path.as_ref() == Some(&workspace.path)
+                            && snapshot.project_fingerprint.as_ref()
+                                == Some(&hash(serde_json::to_vec(&project)?)),
+                    );
+                }
+                Ok(json!(validation))
+            }
+            "resolve_settings_inputs" => {
+                let workspace = self.working_project(string("path")?)?;
+                let request: crate::settings::SettingsInputs =
+                    serde_json::from_value(v["request"].clone())?;
+                Ok(json!(crate::settings::references(
+                    &workspace.path,
+                    request
+                )?))
+            }
             "open_project" => {
                 let project = workspace::open(Path::new(string("path")?))?;
                 self.state
@@ -223,6 +303,7 @@ impl Service {
                 }
                 state.projects.remove(key);
                 state.previews.retain(|_, (path, _, _)| path != key);
+                state.file_previews.retain(|_, (path, _, _)| path != key);
                 // The desktop owns one visible artifact session. Dropping its parser stops the worker.
                 if !key.starts_with("draft-") {
                     state.waves.clear();
@@ -232,6 +313,16 @@ impl Service {
                 Ok(Value::Null)
             }
             "update_project" => {
+                if self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .jobs
+                    .values()
+                    .any(|(job, _)| job.kind != "lint" && job.status == "running")
+                {
+                    bail!("Wait for the running project job before changing settings")
+                }
                 let mut project = self.working_project(string("path")?)?;
                 project.project = decode_project(v["project"].clone())?;
                 validate_project(&project.project)?;
@@ -306,6 +397,84 @@ impl Service {
             "project_files" => Ok(json!(workspace::project_files(
                 &self.working_project(string("path")?)?.project
             ))),
+            "project_explorer" => Ok(json!(file_management::explorer(
+                &self.working_project(string("path")?)?,
+                &self.store
+            )?)),
+            "create_file_entry" | "preview_file_change" | "apply_file_change" => {
+                {
+                    let state = self.state.lock().unwrap();
+                    if state
+                        .jobs
+                        .values()
+                        .any(|(job, _)| job.kind != "lint" && job.status == "running")
+                    {
+                        bail!("Cancel the running project job before changing files")
+                    }
+                    for (job, cancel) in state.jobs.values() {
+                        if job.kind == "lint" {
+                            cancel.cancel();
+                        }
+                    }
+                }
+                let key = string("path")?.to_owned();
+                let workspace = self.working_project(&key)?;
+                if action == "create_file_entry" {
+                    let result = file_management::create(
+                        &workspace,
+                        &serde_json::from_value(v["request"].clone())?,
+                        &self.store,
+                    )?;
+                    self.state
+                        .lock()
+                        .unwrap()
+                        .projects
+                        .insert(key, result.workspace.clone());
+                    return Ok(json!(result));
+                }
+                let revision = hash(serde_json::to_vec(&workspace.project)?);
+                let service = self.clone();
+                if action == "preview_file_change" {
+                    let request = serde_json::from_value(v["request"].clone())?;
+                    self.launch("files", move |cancel| {
+                        let preview =
+                            file_management::preview(&workspace, request, &service.store, &cancel)?;
+                        cancel.check()?;
+                        let token = format!(
+                            "file-{}",
+                            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+                        );
+                        let mut state = service.state.lock().unwrap();
+                        state.file_previews.retain(|_, (path, _, _)| path != &key);
+                        state
+                            .file_previews
+                            .insert(token.clone(), (key, revision, preview.clone()));
+                        Ok(json!({"token":token,"preview":preview}))
+                    })
+                } else {
+                    let token = string("token")?.to_owned();
+                    let (_, expected, preview) = self
+                        .state
+                        .lock()
+                        .unwrap()
+                        .file_previews
+                        .get(&token)
+                        .filter(|(path, _, _)| path == &key)
+                        .cloned()
+                        .context("File preview expired; review again")?;
+                    if expected != revision {
+                        bail!("Project changed; review the operation again")
+                    }
+                    self.launch("files", move |cancel| {
+                        let result =
+                            file_management::apply(&workspace, &preview, &service.store, &cancel)?;
+                        let mut state = service.state.lock().unwrap();
+                        state.projects.insert(key, result.workspace.clone());
+                        state.file_previews.remove(&token);
+                        Ok(json!(result))
+                    })
+                }
+            }
             "lint" => {
                 let request: editor_lint::EditorLintRequest = serde_json::from_value(v)?;
                 let project = self.working_project(&request.path)?;
@@ -382,6 +551,15 @@ impl Service {
             }
             "simulate" => {
                 let snapshot = self.snapshot(string("snapshot_id")?)?;
+                if let Some(path) = v["project_path"].as_str() {
+                    let project = self.working_project(path)?;
+                    if snapshot.project_path.as_ref() != Some(&project.path)
+                        || snapshot.project_fingerprint.as_ref()
+                            != Some(&hash(serde_json::to_vec(&project.project)?))
+                    {
+                        bail!("Rebuild the schematic to use updated project settings")
+                    }
+                }
                 read_snapshot(&snapshot.directory.join("snapshot.json"))?;
                 let name = string("name")?.to_owned();
                 let service = self.clone();
@@ -636,6 +814,56 @@ mod lint_tests {
         }
     }
     #[test]
+    fn settings_validation_is_read_only_and_stale_configurations_cannot_launch_simulation() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = workspace::create(
+            &temp.path().join("hdlview.project.json"),
+            "empty".into(),
+            false,
+        )
+        .unwrap();
+        let path = workspace.path.to_string_lossy().into_owned();
+        let original = fs::read(&workspace.path).unwrap();
+        let service = Service::new(temp.path().join("store"));
+        service
+            .request("open_project", json!({"path":path}))
+            .unwrap();
+        let snapshot: DesignSnapshot = serde_json::from_value(json!({"schema_version":1,"id":"captured","representation":"elaborated","project_path":workspace.path,"project_fingerprint":hash(serde_json::to_vec(&workspace.project).unwrap()),"project":workspace.project,"profile":ToolchainProfile::default(),"directory":temp.path().join("artifact"),"design":{"modules":{},"scopes":[]},"diagnostics":[],"tool_versions":{},"input_hashes":{},"netlist":null})).unwrap();
+        service
+            .state
+            .lock()
+            .unwrap()
+            .snapshots
+            .insert(snapshot.id.clone(), snapshot);
+        let mut candidate = workspace.project.clone();
+        candidate.name = "changed".into();
+        let result = service
+            .request(
+                "validate_project_settings",
+                json!({"path":path,"project":candidate,"snapshot_id":"captured"}),
+            )
+            .unwrap();
+        assert_eq!(result["matches_snapshot"], false);
+        assert_eq!(
+            service.working_project(&path).unwrap().project.name,
+            "empty"
+        );
+        assert_eq!(fs::read(&workspace.path).unwrap(), original);
+        service
+            .request("update_project", json!({"path":path,"project":candidate}))
+            .unwrap();
+        let error = service
+            .request(
+                "simulate",
+                json!({"snapshot_id":"captured","name":"default","project_path":path}),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("Rebuild"));
+        assert!(service.state.lock().unwrap().jobs.is_empty());
+        assert!(!temp.path().join("artifact").exists());
+        assert_eq!(fs::read(&workspace.path).unwrap(), original);
+    }
+    #[test]
     fn background_lint_does_not_block_close_and_retention_is_bounded() {
         let directory = tempfile::tempdir().unwrap();
         let service = Service::new(directory.path().into());
@@ -700,5 +928,68 @@ mod lint_tests {
         service
             .request("close_project", json!({"path":"project"}))
             .unwrap();
+    }
+    #[test]
+    fn file_previews_reject_stale_projects_and_jobs_are_bounded() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let service = Service::new(store.path().into());
+        let workspace = workspace::create(
+            &directory.path().join("hdlview.project.json"),
+            "files".into(),
+            false,
+        )
+        .unwrap();
+        let path = workspace.path.clone();
+        service
+            .request("open_project", json!({"path":path}))
+            .unwrap();
+        service.request("create_file_entry",json!({"path":path,"request":{"directory":directory.path().join("rtl"),"name":"a.sv","group":"design","folder":false}})).unwrap();
+        let mut token = Value::Null;
+        for _ in 0..4 {
+            let job = service.request("preview_file_change", json!({"path":path,"request":{"file":"rtl/a.sv","directory":false,"kind":"remove"}})).unwrap();
+            let complete = wait(&service, job["id"].as_str().unwrap());
+            assert_eq!(complete["status"], "complete");
+            token = complete["result"]["token"].clone();
+        }
+        assert_eq!(
+            service
+                .request("jobs", json!({}))
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut workspace = service.working_project(path.to_str().unwrap()).unwrap();
+        workspace.project.name = "changed".into();
+        service
+            .request(
+                "update_project",
+                json!({"path":path,"project":workspace.project}),
+            )
+            .unwrap();
+        assert!(service
+            .request("apply_file_change", json!({"path":path,"token":token}))
+            .is_err());
+        assert!(directory.path().join("rtl/a.sv").exists());
+        let (release, held) = std::sync::mpsc::channel();
+        let job = service
+            .launch("files", move |_| {
+                held.recv_timeout(Duration::from_secs(3))?;
+                Ok(Value::Null)
+            })
+            .unwrap();
+        assert!(service
+            .request("close_project", json!({"path":path}))
+            .is_err());
+        assert!(service
+            .request("save_document", json!({"path":path}))
+            .is_err());
+        release.send(()).unwrap();
+        assert_eq!(
+            wait(&service, job["id"].as_str().unwrap())["status"],
+            "complete"
+        );
     }
 }

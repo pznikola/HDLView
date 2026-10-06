@@ -16,6 +16,8 @@ import type {
   Job,
   Node,
   WaveRow,
+  Project,
+  SettingsValidation,
 } from "./types";
 import "./style.css";
 import { useScopeNavigation } from "./navigation";
@@ -119,6 +121,10 @@ function App() {
     fail,
     flushArtifacts,
     restoring || job?.status === "running",
+    () => {
+      setEditorCollapsed(false);
+      setExplorer("sources");
+    },
   );
   const markBuilt = working.markBuilt;
   const project = working.workspace?.project;
@@ -132,7 +138,10 @@ function App() {
     restoring ||
       job?.status === "running" ||
       working.job?.status === "running" ||
-      !!working.modal,
+      working.fileBusy ||
+      !!working.fileDialog ||
+      !!working.modal ||
+      !!working.settingsSection,
   );
   const activeFile = working.activeTab?.readonly
     ? undefined
@@ -142,10 +151,42 @@ function App() {
   );
   const workspaceEpoch = generation.current;
   const configuredSimulations =
-    snapshot?.project.simulations ?? project?.simulations;
+    project?.simulations ?? snapshot?.project.simulations;
+  const [checkedSettings, setCheckedSettings] = useState<{
+    project: Project;
+    snapshotId?: string;
+    result: SettingsValidation;
+  }>();
+  const snapshotId = snapshot?.id;
+  useEffect(() => {
+    if (!project) return;
+    let active = true;
+    projects
+      .validateSettings(path, project, snapshotId)
+      .then((result) => {
+        if (active) setCheckedSettings({ project, snapshotId, result });
+      })
+      .catch((error: unknown) => {
+        if (active) fail(error);
+      });
+    return () => {
+      active = false;
+    };
+  }, [path, project, snapshotId, fail]);
+  const settingsValidation =
+    checkedSettings &&
+    checkedSettings.project === project &&
+    checkedSettings?.snapshotId === snapshotId
+      ? checkedSettings.result
+      : undefined;
+  const pendingSettings =
+    !!project && !!snapshot && settingsValidation?.matches_snapshot === false;
+  const simulationSettingsReady =
+    !project || settingsValidation?.matches_snapshot === true;
   const simulations = configuredSimulations;
   const availableSimulations = Object.entries(simulations ?? {}).filter(
-    ([, config]) => canSimulate(config, snapshot),
+    ([, config]) =>
+      canSimulate(config, snapshot) && config.testbench.length > 0,
   );
   useEffect(() => {
     const names = Object.entries(configuredSimulations ?? {})
@@ -315,7 +356,7 @@ function App() {
         ["mapped", "post_layout"].includes(rep) &&
         (!project?.physical?.clock_port || !project.physical.clock_period_ns)
       ) {
-        working.setModal("settings");
+        working.setSettingsSection("physical");
         throw new Error(
           "Set technology, clock port, and clock period in Project Settings before a mapped or physical build.",
         );
@@ -330,12 +371,17 @@ function App() {
   }
   async function startSimulation() {
     if (!snapshot) return;
+    if (!simulationSettingsReady) {
+      fail("Rebuild the schematic to use updated project settings.");
+      return;
+    }
     setError("");
     try {
       setJob(
         await api<Job>("simulate", {
           snapshot_id: snapshot.id,
           name: simulation,
+          project_path: project ? path : undefined,
         }),
       );
     } catch (e) {
@@ -423,7 +469,7 @@ function App() {
   const selectedBinding = bindings.find(
     (b) => b.signal_id === selection?.signalId,
   );
-  const busy = restoring || job?.status === "running";
+  const busy = restoring || job?.status === "running" || working.fileBusy;
   async function submitModal() {
     try {
       if (modal === "Toolchain") {
@@ -460,7 +506,7 @@ function App() {
   }
   return (
     <>
-      <header>
+      <header inert={!!working.settingsSection}>
         <ProjectToolbar
           controller={working}
           busy={busy || working.job?.status === "running"}
@@ -485,7 +531,7 @@ function App() {
           </strong>
         </div>
       </header>
-      <nav className="workflow">
+      <nav className="workflow" inert={!!working.settingsSection}>
         <div className="stages">
           {representations.map((r) => (
             <button
@@ -514,23 +560,33 @@ function App() {
         >
           Build schematic
         </button>
-        <select
-          aria-label="Simulation configuration"
-          value={simulation}
-          onChange={(e) => setSimulation(e.target.value)}
-        >
-          {Object.keys(simulations ?? {}).map((n) => (
-            <option
-              key={n}
-              disabled={!availableSimulations.some(([name]) => name === n)}
-            >
-              {n}
-            </option>
-          ))}
-        </select>
+        {!Object.keys(simulations ?? {}).length && project ? (
+          <button
+            disabled={busy || working.job?.status === "running"}
+            onClick={() => working.setSettingsSection("simulation")}
+          >
+            Configure Simulation…
+          </button>
+        ) : (
+          <select
+            aria-label="Simulation configuration"
+            value={simulation}
+            onChange={(e) => setSimulation(e.target.value)}
+          >
+            {Object.keys(simulations ?? {}).map((n) => (
+              <option
+                key={n}
+                disabled={!availableSimulations.some(([name]) => name === n)}
+              >
+                {n}
+              </option>
+            ))}
+          </select>
+        )}
         <button
           disabled={
             !snapshot ||
+            !simulationSettingsReady ||
             busy ||
             !availableSimulations.some(([name]) => name === simulation)
           }
@@ -561,7 +617,7 @@ function App() {
           <button onClick={() => setError("")}>Dismiss</button>
         </div>
       )}
-      <main>
+      <main inert={!!working.settingsSection}>
         <aside className="sidebar">
           <div className="explorer-tabs">
             <button
@@ -747,8 +803,53 @@ function App() {
               {schematicCollapsed ? "Show Schematic" : "Hide Schematic"}
             </button>
             {working.stale && snapshot && (
-              <span>Sources changed · rebuild needed</span>
+              <span>
+                {pendingSettings
+                  ? "Rebuild required to use updated settings"
+                  : "Sources changed · rebuild needed"}
+              </span>
             )}
+            {project && (!project.top || !project.sources.length) && (
+              <span className="workflow-guidance">
+                {!project.top
+                  ? "Set the design top before building."
+                  : "Add design sources before building."}{" "}
+                <button
+                  onClick={() =>
+                    working.setSettingsSection(
+                      !project.top ? "general" : "sources",
+                    )
+                  }
+                >
+                  Configure Project…
+                </button>
+              </span>
+            )}
+            {project &&
+              ["mapped", "post_layout"].includes(rep) &&
+              !project.physical && (
+                <span className="workflow-guidance">
+                  Clock settings are required.{" "}
+                  <button
+                    onClick={() => working.setSettingsSection("physical")}
+                  >
+                    Configure Physical Design…
+                  </button>
+                </span>
+              )}
+            {project &&
+              simulation &&
+              simulations?.[simulation] &&
+              !simulations[simulation].testbench.length && (
+                <span className="workflow-guidance">
+                  Select testbench files before simulation.{" "}
+                  <button
+                    onClick={() => working.setSettingsSection("simulation")}
+                  >
+                    Configure Simulation…
+                  </button>
+                </span>
+              )}
           </div>
           <div
             className="workspace-panes"
@@ -1224,7 +1325,7 @@ function App() {
           </div>
         </aside>
       </main>
-      <footer>
+      <footer inert={!!working.settingsSection}>
         <span className={`status-dot ${busy ? "busy" : ""}`} />
         <span>{job ? `${job.kind}: ${job.status}` : "Ready"}</span>
         {job?.status === "running" && (
@@ -1270,6 +1371,12 @@ function App() {
               result={lint.result}
               error={lint.error}
               status={lint.status}
+              onConfigure={
+                lint.context?.context.kind === "simulation" &&
+                !lint.context.context.configuration
+                  ? () => working.setSettingsSection("simulation")
+                  : undefined
+              }
               onNavigate={(location) => {
                 if (
                   location.file &&
@@ -1290,42 +1397,9 @@ function App() {
       <ProjectDialogs
         controller={working}
         onError={fail}
-        lintControls={
-          <fieldset className="lint-settings">
-            <legend>RTL editor linting (local to this project)</legend>
-            <label>
-              <input
-                type="checkbox"
-                checked={lint.settings.enabled}
-                onChange={(event) =>
-                  lint.setSettings({
-                    ...lint.settings,
-                    enabled: event.target.checked,
-                  })
-                }
-              />{" "}
-              Live linting
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={lint.settings.style}
-                onChange={(event) =>
-                  lint.setSettings({
-                    ...lint.settings,
-                    style: event.target.checked,
-                  })
-                }
-              />{" "}
-              Style checks
-            </label>
-            <p className="hint">
-              A .rules.verible_lint file beside the project configuration
-              replaces the small default style preset. These toggles do not
-              change project JSON.
-            </p>
-          </fieldset>
-        }
+        lintPreferences={lint.settings}
+        onLintPreferences={lint.setSettings}
+        snapshot={snapshot}
       />
       {modal && (
         <div className="modal-backdrop">

@@ -707,30 +707,6 @@ footer button {
   padding: 8px;
   overflow: auto;
 }
-.source-tree details {
-  padding-left: 12px;
-}
-.source-tree summary {
-  padding: 6px 0;
-  cursor: pointer;
-}
-.source-file {
-  display: flex;
-  gap: 6px;
-  width: 100%;
-  text-align: left;
-  background: transparent;
-  border: 0;
-  padding: 5px 10px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.rescan {
-  margin: 6px;
-  text-align: left;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
 .workspace-tools {
   display: flex;
   align-items: center;
@@ -824,6 +800,154 @@ footer button {
   max-height: 90vh;
   overflow: auto;
 }
+.settings-dialog {
+  width: min(1050px, 96vw);
+  height: min(760px, 92vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 20px;
+}
+.settings-body {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  margin-top: 16px;
+  gap: 20px;
+}
+.settings-navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.settings-navigation button {
+  text-align: left;
+}
+.settings-navigation button[aria-current="page"] {
+  background: #23424c;
+  color: #82e0d0;
+  border-color: #388d87;
+}
+.settings-content {
+  overflow: auto;
+  min-width: 0;
+  padding: 0 8px 12px 0;
+}
+.settings-content h3 {
+  margin-top: 0;
+}
+.settings-fields {
+  padding: 0;
+  margin: 0;
+  border: 0;
+  min-width: 0;
+}
+.settings-dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+}
+.settings-dialog input,
+.settings-dialog select,
+.settings-dialog textarea {
+  min-width: 0;
+  width: 100%;
+}
+.settings-dialog textarea {
+  resize: vertical;
+}
+.settings-list {
+  min-width: 0;
+  margin: 16px 0;
+  border: 1px solid #344352;
+  border-radius: 5px;
+  padding: 10px;
+}
+.settings-pair,
+.settings-reference {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 6px;
+  margin: 6px 0;
+}
+.settings-reference {
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+}
+.settings-actions,
+.duration-fields {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.settings-actions > input {
+  flex: 1;
+}
+.duration-fields {
+  max-width: 280px;
+}
+.duration-fields select {
+  width: 85px;
+}
+.settings-dialog .settings-check {
+  flex-direction: row;
+  align-items: center;
+  overflow-wrap: anywhere;
+}
+.settings-dialog input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+.settings-footer {
+  border-top: 1px solid #344352;
+  padding-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.settings-errors {
+  color: #ffada4;
+  border-left: 3px solid #d4766b;
+  padding-left: 12px;
+}
+.settings-warnings {
+  border-top: 1px solid #344352;
+  margin-top: 18px;
+}
+.settings-warnings button,
+.workflow-guidance button {
+  padding: 3px 6px;
+}
+.settings-library dd {
+  margin: 4px 0 12px;
+  color: #9cb1c3;
+}
+@media (max-width: 650px) {
+  .settings-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 12px;
+  }
+  .settings-navigation {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .settings-navigation button {
+    padding: 6px;
+  }
+  .settings-actions {
+    flex-wrap: wrap;
+  }
+  .settings-footer {
+    align-items: flex-end;
+  }
+  .settings-footer .settings-actions {
+    flex-wrap: nowrap;
+  }
+}
 .project-modal label {
   display: flex;
   flex-direction: column;
@@ -862,6 +986,25 @@ footer button {
 }
 .compile-order input {
   width: 100px;
+}
+.import-entries > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+}
+.import-entries input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+@media (max-width: 600px) {
+  .import-entries > div {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .import-entries select {
+    grid-column: 2;
+    justify-self: start;
+    max-width: 100%;
+  }
 }
 .decision-backdrop {
   z-index: 100;
@@ -925,10 +1068,6 @@ header .brand {
 }
 .source-context {
   position: fixed;
-}
-.source-group > summary {
-  padding: 12px 4px 6px;
-  font-weight: 600;
 }
 .wizard-steps {
   display: flex;
@@ -1005,4 +1144,110 @@ header .brand {
 .cm-tooltip-lint {
   max-width: 650px;
   white-space: pre-wrap;
+}
+.source-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  border-radius: 3px;
+}
+.source-row.selected {
+  background: #253748;
+}
+.source-row.active-file {
+  box-shadow: inset 2px 0 #7bc6bb;
+}
+.source-row > [role="treeitem"] {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+.source-row > [role="treeitem"]:focus-visible {
+  outline: 1px solid #7bc6bb;
+  outline-offset: -1px;
+}
+.source-group {
+  margin-top: 8px;
+}
+.source-group .source-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+.source-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-arrow {
+  width: 10px;
+  flex: 0 0 10px;
+  color: #92a9bb;
+}
+.source-icon {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  color: #a9becf;
+}
+.source-folder .source-icon {
+  color: #d9b278;
+}
+.source-heading-actions {
+  display: flex;
+}
+.source-heading-actions button {
+  padding: 3px;
+  border: 0;
+  background: transparent;
+}
+.source-heading-actions button:hover {
+  background: #344a5d;
+}
+.source-dirty {
+  color: #e8ba82;
+  font-size: 8px;
+}
+.source-missing {
+  color: #e8ba82;
+  font-size: 10px;
+}
+.file-modal {
+  width: min(620px, 85vw);
+}
+.file-modal label {
+  display: block;
+  margin: 12px 0;
+}
+.file-modal label > input,
+.file-modal label > select {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+}
+.file-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+.file-operation-path {
+  overflow-wrap: anywhere;
+  font-family: monospace;
+}
+.file-change-entries {
+  max-height: 220px;
+  overflow: auto;
+  font-size: 12px;
+}
+.file-modal [role="alert"] {
+  color: #ff9c9c;
+  overflow-wrap: anywhere;
 }

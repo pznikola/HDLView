@@ -45,3 +45,7 @@ Primary project sources:
 - https://github.com/IHP-GmbH/IHP-Open-PDK
 
 Reference repositories such as NetlistSVG, d3-hwschematic, DigitalJS, TerosHDL, HAL, and waveform viewers informed the architecture. They are not runtime dependencies. Repositories with restrictive or unclear terms remain references only.
+
+## Source-file Trash runtime
+
+Linux file management uses system `/usr/bin/gio` (`libglib2.0-bin`) for desktop Trash. GIO is part of GLib, licensed LGPL-2.1-or-later: https://gitlab.gnome.org/GNOME/glib. It is an external host program, not vendored application code or a new Cargo/npm dependency. The Debian package declares the runtime package; native/AppImage users install it separately. Editing, imports, and compilation remain available when Trash is unavailable.

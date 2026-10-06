@@ -14,8 +14,21 @@ import type {
   RestoredProject,
   Snapshot,
   SimulationConfig,
+  CreateFileEntry,
+  FileChange,
+  FileChangeResult,
+  ExplorerLocation,
+  Project,
+  SettingsValidation,
+  SettingsInputKind,
+  SettingsReferences,
 } from "./types";
-export type Picker = "project" | "directory" | "files" | "filelist";
+export type Picker =
+  | "project"
+  | "directory"
+  | "files"
+  | "filelist"
+  | "settings";
 declare global {
   interface Window {
     __HDLVIEW_TEST_PICKER__?: (kind: Picker) => Promise<string[] | null>;
@@ -36,6 +49,7 @@ export async function pick(
       directory: "Select folder",
       files: "Add RTL files",
       filelist: "Import RTL filelist",
+      settings: "Select settings input",
     }[kind],
     directory: kind === "directory",
     multiple: kind === "files",
@@ -49,7 +63,9 @@ export async function pick(
                   ? "Project configuration"
                   : kind === "filelist"
                     ? "RTL filelist"
-                    : "RTL sources",
+                    : kind === "settings"
+                      ? "Settings inputs"
+                      : "RTL sources",
               extensions:
                 kind === "project"
                   ? ["json"]
@@ -88,6 +104,22 @@ export const projects = {
     api("save_project_state", { path, snapshot_path, run_path }),
   update: (path: string, project: unknown) =>
     api<WorkspaceProject>("update_project", { path, project }),
+  validateSettings: (path: string, project: Project, snapshot_id?: string) =>
+    api<SettingsValidation>("validate_project_settings", {
+      path,
+      project,
+      snapshot_id,
+    }),
+  settingsReferences: (
+    path: string,
+    project: Project,
+    kind: SettingsInputKind,
+    paths: string[],
+  ) =>
+    api<SettingsReferences>("resolve_settings_inputs", {
+      path,
+      request: { project, kind, paths },
+    }),
   save: (workspace: WorkspaceProject) =>
     api<WorkspaceProject>("save_project", {
       path: workspace.path,
@@ -99,6 +131,14 @@ export const projects = {
   apply: (token: string, choices: ImportChoice[]) =>
     api<WorkspaceProject>("apply_import", { token, choices }),
   files: (path: string) => api<FileRef[]>("project_files", { path }),
+  explorer: (path: string) =>
+    api<ExplorerLocation[]>("project_explorer", { path }),
+  createEntry: (path: string, request: CreateFileEntry) =>
+    api<FileChangeResult>("create_file_entry", { path, request }),
+  previewChange: (path: string, request: FileChange) =>
+    api<Job>("preview_file_change", { path, request }),
+  applyChange: (path: string, token: string) =>
+    api<Job>("apply_file_change", { path, token }),
   read: (path: string, file: FileRef) =>
     api<SourceDocument>("read_document", { path, file }),
   write: (

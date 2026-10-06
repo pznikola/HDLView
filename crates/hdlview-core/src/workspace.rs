@@ -31,6 +31,8 @@ pub struct ImportEntry {
     pub language: Language,
     pub role: FileRole,
     pub missing: bool,
+    #[serde(default)]
+    pub excluded: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ImportPreview {
@@ -178,14 +180,21 @@ pub fn save(project: &WorkspaceProject, expected: &str) -> Result<WorkspaceProje
     if file_hash(&project.path)? != expected {
         bail!("Project configuration changed outside HDLView; reopen it before saving")
     }
-    let mut config = project.project.clone();
+    let mut config = prepare_saved_config(&project.path, &project.project)?;
+    validate_project(&config)?;
+    deduplicate_simulation_files(&project.path, &mut config)?;
+    atomic_json(&project.path, &config)?;
+    open(&project.path)
+}
+pub(crate) fn prepare_saved_config(path: &Path, project: &ProjectConfig) -> Result<ProjectConfig> {
+    let mut config = project.clone();
     config.schema_version = PROJECT_SCHEMA;
     let mut migrated = BTreeMap::new();
     for file in project_files(&config) {
         if file.path().is_absolute() {
             migrated.insert(
                 file.clone(),
-                register(file.path(), &project.path, &mut config, false)?,
+                register(file.path(), path, &mut config, false)?,
             );
         }
     }
@@ -210,12 +219,9 @@ pub fn save(project: &WorkspaceProject, expected: &str) -> Result<WorkspaceProje
             }
         }
     }
-    validate_project(&config)?;
-    deduplicate_simulation_files(&project.path, &mut config)?;
-    atomic_json(&project.path, &config)?;
-    open(&project.path)
+    Ok(config)
 }
-fn relative_directory(base: &Path, path: &Path) -> PathBuf {
+pub(crate) fn relative_directory(base: &Path, path: &Path) -> PathBuf {
     let a: Vec<_> = base.components().collect();
     let b: Vec<_> = path.components().collect();
     let common = a.iter().zip(&b).take_while(|(a, b)| a == b).count();
@@ -231,7 +237,7 @@ fn relative_directory(base: &Path, path: &Path) -> PathBuf {
     }
     result
 }
-fn register(
+pub(crate) fn register(
     path: &Path,
     config_path: &Path,
     project: &mut ProjectConfig,
@@ -301,7 +307,7 @@ fn register(
         },
     })
 }
-fn language(path: &Path) -> Option<(Language, FileRole)> {
+pub(crate) fn language(path: &Path) -> Option<(Language, FileRole)> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "sv" => Some((Language::SystemVerilog, FileRole::Design)),
         "v" => Some((Language::Verilog, FileRole::Design)),
@@ -633,6 +639,10 @@ pub fn preview(
             location,
             working_directory: None,
             files: Vec::new(),
+            exclusions: previous
+                .as_ref()
+                .map(|r| r.exclusions.clone())
+                .unwrap_or_default(),
         });
     } else if request.kind == "filelist" {
         if locations.len() != 1 {
@@ -681,6 +691,10 @@ pub fn preview(
             location: register(&list, &workspace.path, &mut project, false)?,
             working_directory: Some(working),
             files: Vec::new(),
+            exclusions: previous
+                .as_ref()
+                .map(|r| r.exclusions.clone())
+                .unwrap_or_default(),
         });
         files = parsed.files;
     } else if request.kind == "files" {
@@ -723,6 +737,15 @@ pub fn preview(
             }
         }
         entries.push(ImportEntry {
+            excluded: registered_role(&project, &reference).is_none()
+                && project
+                    .imports
+                    .iter()
+                    .filter(|r| r.group == group)
+                    .flat_map(|r| &r.exclusions)
+                    .any(|e| {
+                        crate::file_management::excludes(&workspace.path, &project, e, &reference)
+                    }),
             file: reference,
             language,
             role,
@@ -740,6 +763,7 @@ pub fn preview(
                     language,
                     role: FileRole::Remove,
                     missing: true,
+                    excluded: false,
                 });
             }
         }
@@ -775,7 +799,32 @@ pub fn apply(preview: &ImportPreview, choices: &[ImportChoice]) -> Result<Projec
             .get(choice.index)
             .context("Unknown import entry")?;
         if !choice.selected {
+            if let Some(record) = &mut record {
+                if !entry.missing
+                    && !record
+                        .exclusions
+                        .iter()
+                        .any(|e| e.path == entry.file && !e.directory)
+                {
+                    record.exclusions.push(ImportExclusion {
+                        path: entry.file.clone(),
+                        directory: false,
+                    });
+                }
+            }
             continue;
+        }
+        if choice.role != FileRole::Remove {
+            for import in &mut project.imports {
+                import
+                    .exclusions
+                    .retain(|e| e.path != entry.file || e.directory);
+            }
+            if let Some(record) = &mut record {
+                record
+                    .exclusions
+                    .retain(|e| e.path != entry.file || e.directory);
+            }
         }
         if entry.missing && choice.role != FileRole::Remove {
             bail!("Missing files can only be removed")
@@ -944,7 +993,7 @@ pub fn project_files(project: &ProjectConfig) -> Vec<FileRef> {
     files.dedup();
     files
 }
-fn document_path(workspace: &WorkspaceProject, file: &FileRef) -> Result<PathBuf> {
+pub(crate) fn document_path(workspace: &WorkspaceProject, file: &FileRef) -> Result<PathBuf> {
     let path = resolve_reference(&workspace.path, &workspace.project, file)?;
     if !project_files(&workspace.project).contains(file) {
         // Compiler-discovered headers may be opened only inside registered include/source directories.

@@ -8,13 +8,7 @@ use anyhow::{bail, Context, Result};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 fn duration(s: &str) -> Result<&str> {
-    let split = s
-        .find(|c: char| !c.is_ascii_digit())
-        .context("Stop time needs an integer and unit, e.g. 100ns")?;
-    let (n, u) = s.split_at(split);
-    if n.parse::<u64>()? == 0 || !["s", "ms", "us", "ns", "ps", "fs"].contains(&u) {
-        bail!("Invalid stop time {s}")
-    }
+    crate::settings::duration(s)?;
     Ok(s)
 }
 fn verilog_string(s: &str) -> String {
@@ -30,6 +24,7 @@ pub fn simulate(
     name: &str,
     cancel: CancelToken,
 ) -> Result<SimulationRun> {
+    validate_project(&snapshot.project)?;
     let cfg = snapshot
         .project
         .simulations

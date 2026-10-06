@@ -52,7 +52,10 @@ test.beforeAll(() => {
   );
   if (build.status !== 0) throw new Error(build.stderr);
   snapshot = JSON.parse(build.stdout);
-  backend = spawn("target/debug/hdlview", ["--store", store, "rpc"]);
+  const data = mkdtempSync(join(resolve("target"), "hdlview test Trash "));
+  backend = spawn("target/debug/hdlview", ["--store", store, "rpc"], {
+    env: { ...process.env, XDG_DATA_HOME: data, GIO_USE_VFS: "local" },
+  });
   createInterface({ input: backend.stdout }).on("line", (line) =>
     pending.shift()?.(JSON.parse(line)),
   );
@@ -417,8 +420,8 @@ test("create, import, edit, resolve conflicts, and rebuild external RTL without 
   await page
     .getByRole("button", { name: "Project Settings", exact: true })
     .click();
-  await page.getByLabel("Top module", { exact: true }).fill("top");
-  await page.getByRole("button", { name: "Apply Settings" }).click();
+  await page.getByLabel("Design top module", { exact: true }).fill("top");
+  await page.getByRole("button", { name: "OK" }).click();
   await expect(
     page.getByRole("dialog", { name: "Project Settings" }),
   ).toBeHidden();
@@ -426,24 +429,13 @@ test("create, import, edit, resolve conflicts, and rebuild external RTL without 
   await page
     .getByRole("button", { name: "Project Settings", exact: true })
     .click();
+  await page.getByRole("button", { name: "Simulation", exact: true }).click();
   await page
-    .getByText("Advanced JSON: simulation and physical flow", { exact: true })
+    .getByRole("button", { name: "Add Simulation Configuration", exact: true })
     .click();
-  const configured = JSON.parse(
-    await page.getByLabel("Advanced project JSON").inputValue(),
-  );
-  configured.simulations = {
-    rtl: {
-      simulator: "icarus",
-      top: "tb",
-      dut_scope: ["tb", "dut"],
-      testbench: project.simulation_sources,
-    },
-  };
-  await page
-    .getByLabel("Advanced project JSON")
-    .fill(JSON.stringify(configured));
-  await page.getByRole("button", { name: "Apply Advanced JSON" }).click();
+  await page.getByLabel("Testbench top module", { exact: true }).fill("tb");
+  await page.getByLabel("DUT instance path", { exact: true }).fill("tb.dut");
+  await page.getByRole("button", { name: "OK", exact: true }).click();
   await expect(
     page.getByRole("dialog", { name: "Project Settings" }),
   ).toBeHidden();
@@ -585,7 +577,7 @@ test("create, import, edit, resolve conflicts, and rebuild external RTL without 
   await page.getByRole("button", { name: "Sources", exact: true }).click();
   writeFileSync(join(rtl, "added.sv"), "module added; endmodule\n");
   await page
-    .locator('[data-source-path="@RTL_sources"]')
+    .locator('[data-source-path="@RTL_sources/."]')
     .first()
     .click({ button: "right" });
   await page
@@ -690,14 +682,18 @@ test("empty project creation and ordered SystemVerilog filelist import", async (
   await page
     .getByRole("button", { name: "Project Settings", exact: true })
     .click();
-  await page.getByLabel("Top module", { exact: true }).fill("top");
+  await page.getByLabel("Design top module", { exact: true }).fill("top");
+  await page
+    .getByRole("dialog", { name: "Project Settings" })
+    .getByRole("button", { name: "Sources", exact: true })
+    .click();
   await page
     .getByRole("button", { name: "Move lists/types.sv down", exact: true })
     .click();
   await page
     .getByRole("button", { name: "Move lists/types.sv up", exact: true })
     .click();
-  await page.getByRole("button", { name: "Apply Settings" }).click();
+  await page.getByRole("button", { name: "OK" }).click();
   await expect(
     page.getByRole("dialog", { name: "Project Settings" }),
   ).toBeHidden();
@@ -978,12 +974,9 @@ test("File menu, cancellable creation, independent source groups, and project cl
     ["Simulation Sources", "gate_tb.sv"],
   ]) {
     await expect(
-      page
-        .locator(".source-group")
-        .filter({
-          has: page.locator("summary", { hasText: new RegExp(`^${group}$`) }),
-        })
-        .locator(`.source-file[title="inputs/${file}"]`),
+      page.locator(
+        `.source-row[data-source-group="${group === "Design Sources" ? "design" : "simulation"}"] .source-file[title="inputs/${file}"]`,
+      ),
     ).toBeVisible();
   }
   await expect(page.locator("aside .source-actions")).toHaveCount(0);
@@ -1472,8 +1465,9 @@ test("live lint checks unsaved buffers, navigation, contexts, and local settings
   await page
     .getByRole("button", { name: "Project Settings", exact: true })
     .click();
+  await page.getByRole("button", { name: "Editor", exact: true }).click();
   await page.getByLabel("Live linting", { exact: true }).uncheck();
-  await page.getByRole("button", { name: "Close project dialog" }).click();
+  await page.getByRole("button", { name: "OK", exact: true }).click();
   await expect(page.getByLabel("Editor lint status")).toContainText(
     "Lint disabled",
   );
@@ -1492,8 +1486,9 @@ test("live lint checks unsaved buffers, navigation, contexts, and local settings
   await page
     .getByRole("button", { name: "Project Settings", exact: true })
     .click();
+  await page.getByRole("button", { name: "Editor", exact: true }).click();
   await page.getByLabel("Live linting", { exact: true }).check();
-  await page.getByRole("button", { name: "Close project dialog" }).click();
+  await page.getByRole("button", { name: "OK", exact: true }).click();
   await expect(page.getByLabel("Editor lint status")).toContainText("Checked", {
     timeout: 15000,
   });
@@ -1506,4 +1501,735 @@ test("live lint checks unsaved buffers, navigation, contexts, and local settings
     path: "test-results/live-editor-lint.png",
     fullPage: true,
   });
+});
+
+async function connectProjectFiles(page: Page) {
+  const directory = mkdtempSync(join(resolve("target"), "hdlview new files "));
+  let chosen: string[] | null = [directory];
+  await page.exposeFunction("__HDLVIEW_TEST_PICKER__", () => chosen);
+  const rpc = (action: string, args: unknown) =>
+    new Promise<unknown>((resolve, reject) => {
+      pending.push((value) => {
+        const response = value as {
+          ok: boolean;
+          result: unknown;
+          error: string;
+        };
+        response.ok
+          ? resolve(response.result)
+          : reject(new Error(response.error));
+      });
+      backend.stdin.write(JSON.stringify({ action, args }) + "\n");
+    });
+  let holdRead: (() => Promise<void>) | undefined;
+  await page.exposeFunction(
+    "__HDLVIEW_TEST_API__",
+    async (action: string, args: unknown) => {
+      const result = await rpc(action, args);
+      if (action === "read_document" && holdRead) await holdRead();
+      return result;
+    },
+  );
+  if (process.env.HDLVIEW_TOOL_PROFILE) {
+    const profile = JSON.parse(
+      readFileSync(process.env.HDLVIEW_TOOL_PROFILE, "utf8"),
+    );
+    await page.addInitScript(
+      (profile) =>
+        localStorage.setItem("hdlview-profile", JSON.stringify(profile)),
+      profile,
+    );
+  }
+  await page.goto("/");
+  await fileCommand(page, "Create New Project…");
+  await page
+    .getByLabel("Project name", { exact: true })
+    .fill("New working files");
+  await page
+    .getByRole("button", { name: "Choose Directory", exact: true })
+    .click();
+  await page.getByLabel("Technology", { exact: true }).selectOption("sky130");
+  await page
+    .getByRole("button", { name: "Next: Sources", exact: true })
+    .click();
+  await finishWizard(page);
+  return {
+    directory,
+    config: join(directory, "hdlview.project.json"),
+    choose: (paths: string[] | null) => {
+      chosen = paths;
+    },
+    rpc,
+    holdRead: (handler?: () => Promise<void>) => {
+      holdRead = handler;
+    },
+  };
+}
+async function sourceCommand(page: Page, path: string, command: string) {
+  await page
+    .locator(`[role="treeitem"][data-source-path="${path}"]`)
+    .click({ button: "right" });
+  await page.getByRole("menuitem", { name: command, exact: true }).click();
+}
+async function newSource(page: Page, name: string, group = "design") {
+  await fileCommand(page, "New File…");
+  await page
+    .getByLabel("New entry source group", { exact: true })
+    .selectOption(group);
+  await page.getByLabel("File name", { exact: true }).fill(name);
+  await page.getByRole("button", { name: "Create File", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "New File", exact: true }),
+  ).toBeHidden();
+}
+test("import review keeps file paths readable and controls within each row", async ({
+  page,
+}) => {
+  const { directory, config, choose } = await connectProjectFiles(page);
+  const sourceDirectory = join(directory, "RTL files", "nested sources");
+  mkdirSync(sourceDirectory, { recursive: true });
+  const names = [
+    "counter.sv",
+    "counter_with_a_long_filename_for_import_review_and_nested_directory_paths.sv",
+  ];
+  for (const name of names)
+    writeFileSync(join(sourceDirectory, name), "module counter; endmodule\n");
+  choose(names.map((name) => join(sourceDirectory, name)));
+  await fileCommand(page, "Add New Files…");
+  await page.getByRole("button", { name: "Select Files", exact: true }).click();
+  const review = page.getByRole("dialog", { name: "Import Review" });
+  await expect(review).toBeVisible();
+  const entries = review.locator(".import-entries");
+  await expect(entries.getByRole("checkbox")).toHaveCount(2);
+  for (const width of [1500, 900, 560]) {
+    await page.setViewportSize({ width, height: 800 });
+    const layout = await entries.evaluate((element) => ({
+      overflow: element.scrollWidth > element.clientWidth,
+      rows: Array.from(element.children, (row) => {
+        const checkbox = row.querySelector("input");
+        const path = row.querySelector("span");
+        const role = row.querySelector("select");
+        if (!checkbox || !path || !role)
+          throw new Error("Missing import review controls");
+        return {
+          checkboxWidth: checkbox.getBoundingClientRect().width,
+          pathWidth: path.getBoundingClientRect().width,
+          roleWidth: role.getBoundingClientRect().width,
+          height: row.getBoundingClientRect().height,
+          roleHeight: role.getBoundingClientRect().height,
+        };
+      }),
+    }));
+    expect(layout.overflow).toBe(false);
+    for (const row of layout.rows) {
+      expect(row.pathWidth).toBeGreaterThan(row.checkboxWidth * 5);
+      expect(row.height).toBeLessThan(row.roleHeight * 4);
+      if (width >= 900) expect(row.pathWidth).toBeGreaterThan(row.roleWidth);
+    }
+    await review.screenshot({
+      path: resolve(`test-results/import-review-${width}.png`),
+    });
+  }
+  await entries.getByRole("checkbox").first().uncheck();
+  await entries.getByRole("combobox").last().selectOption("simulation");
+  await review
+    .getByRole("button", { name: "Apply Import", exact: true })
+    .click();
+  await finishImport(page);
+  await fileCommand(page, "Save Project");
+  await expect
+    .poll(
+      () => JSON.parse(readFileSync(config, "utf8")).simulation_sources.length,
+    )
+    .toBe(1);
+  expect(JSON.parse(readFileSync(config, "utf8")).sources).toEqual([]);
+});
+test("source explorer creates, renames and removes working entries without losing editor history", async ({
+  page,
+}) => {
+  const { directory, config, choose, holdRead } =
+    await connectProjectFiles(page);
+  await page.keyboard.press("Control+n");
+  await expect(
+    page.getByRole("dialog", { name: "New File", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(existsSync(join(directory, "rtl"))).toBe(false);
+  await newSource(page, "top.sv");
+  expect(readFileSync(join(directory, "rtl/top.sv"), "utf8")).toBe("");
+  expect(JSON.parse(readFileSync(config, "utf8")).sources).toEqual([]);
+  const editor = page.locator(".source-editor .cm-content");
+  await expect(editor).toBeFocused();
+  const source =
+    "module top(input logic a, output logic y); assign y = ~a; endmodule\n";
+  await editor.fill(source);
+  await page.keyboard.press("Control+s");
+  await expect
+    .poll(() => readFileSync(join(directory, "rtl/top.sv"), "utf8"))
+    .toBe(source);
+  await editor.press("End");
+  await editor.press("Control+End");
+  await editor.press("x");
+  const dirtyText = await editor.innerText();
+  await page
+    .locator('[role="treeitem"][data-source-path="rtl/top.sv"]')
+    .focus();
+  await page.keyboard.press("F2");
+  await page.getByLabel("File name", { exact: true }).fill("renamed.sv");
+  await page
+    .getByRole("button", { name: "Review Rename", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Review Rename", exact: true })
+    .getByRole("button", { name: "Rename", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Review Rename", exact: true }),
+  ).toBeHidden();
+  expect(existsSync(join(directory, "rtl/top.sv"))).toBe(false);
+  expect(readFileSync(join(directory, "rtl/renamed.sv"), "utf8")).toBe(source);
+  await expect.poll(() => editor.innerText()).toBe(dirtyText);
+  await page
+    .locator('[role="treeitem"][data-source-path="rtl/renamed.sv"]')
+    .click();
+  await expect(page.locator(".editor-tabs > div")).toHaveCount(1);
+  await newSource(page, "top.sv");
+  await expect(editor).toHaveText("");
+  await expect(page.locator(".editor-tabs > div")).toHaveCount(2);
+  await page.locator('[data-source-path="rtl/renamed.sv"]').click();
+  await expect.poll(() => editor.innerText()).toBe(dirtyText);
+  await page
+    .getByRole("button", { name: "Close rtl/top.sv", exact: true })
+    .click();
+  await editor.press("Control+z");
+  await expect.poll(() => editor.innerText()).not.toBe(dirtyText);
+  await newSource(page, "defs.svh", "simulation");
+  await expect(
+    page.locator(
+      '.source-row[data-source-group="simulation"] [data-source-path="sim/defs.svh"]',
+    ),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "New folder in Design Sources", exact: true })
+    .click();
+  await page.getByLabel("Folder name", { exact: true }).fill("empty folder");
+  await page
+    .getByRole("button", { name: "Create Folder", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "New Folder", exact: true }),
+  ).toBeHidden();
+  await sourceCommand(page, "rtl/empty folder", "Rename…");
+  await page.getByLabel("File name", { exact: true }).fill("renamed folder");
+  await page
+    .getByRole("button", { name: "Review Rename", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Review Rename", exact: true })
+    .getByRole("button", { name: "Rename", exact: true })
+    .click();
+  await expect(
+    page.locator('[data-source-path="rtl/renamed folder"]'),
+  ).toBeVisible();
+  await page.keyboard.press("Control+Shift+s");
+  await expect(page.locator(".project-title")).not.toContainText("*");
+  const stored = JSON.parse(readFileSync(config, "utf8"));
+  expect(stored.sources[0].path).toBe("rtl/renamed.sv");
+  expect(stored.simulation_headers).toEqual(["sim/defs.svh"]);
+  await fileCommand(page, "Close Project");
+  choose([config]);
+  await fileCommand(page, "Open Existing Project…");
+  await expect(
+    page.locator('[data-source-path="rtl/renamed folder"]'),
+  ).toBeVisible();
+  // A read completed before rename must not reopen an obsolete working-file reference.
+  let releaseRead: (() => void) | undefined;
+  holdRead(
+    () =>
+      new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      }),
+  );
+  await page.locator('[data-source-path="rtl/renamed.sv"]').click();
+  await expect.poll(() => Boolean(releaseRead)).toBe(true);
+  await sourceCommand(page, "rtl/renamed.sv", "Rename…");
+  await page.getByLabel("File name", { exact: true }).fill("late.sv");
+  await page
+    .getByRole("button", { name: "Review Rename", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Review Rename", exact: true })
+    .getByRole("button", { name: "Rename", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Review Rename" }),
+  ).toBeHidden();
+  releaseRead?.();
+  holdRead();
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  await expect(page.locator(".editor-tabs > div")).toHaveCount(0);
+  await sourceCommand(page, "rtl/late.sv", "Remove from Project…");
+  await page
+    .getByRole("dialog", { name: "Remove from Project", exact: true })
+    .getByRole("button", { name: "Remove from Project", exact: true })
+    .click();
+  await expect(page.locator('[data-source-path="rtl/late.sv"]')).toHaveCount(0);
+  expect(existsSync(join(directory, "rtl/late.sv"))).toBe(true);
+});
+
+test("source explorer builds new files, preserves captured sources and validates real Trash", async ({
+  page,
+}) => {
+  const { directory, config, rpc } = await connectProjectFiles(page);
+  await newSource(page, "top.sv");
+  const editor = page.locator(".source-editor .cm-content");
+  await editor.fill(
+    "module top(input logic a, output logic y); assign y = ~a; endmodule\n",
+  );
+  await page
+    .getByRole("button", { name: "Project Settings", exact: true })
+    .click();
+  await page.getByLabel("Design top module", { exact: true }).fill("top");
+  await page.getByRole("button", { name: "OK", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Project Settings", exact: true }),
+  ).toBeHidden();
+  await page.keyboard.press("Control+Shift+s");
+  await expect(page.locator(".project-title")).not.toContainText("*");
+  await page
+    .getByRole("button", { name: "Build schematic", exact: true })
+    .click();
+  await expect(page.getByLabel("Schematic", { exact: true })).toBeVisible();
+  await expect
+    .poll(async () =>
+      Boolean(
+        (
+          (await rpc("restore_project_state", { path: config })) as {
+            snapshot?: unknown;
+          }
+        ).snapshot,
+      ),
+    )
+    .toBe(true);
+  const state = (await rpc("restore_project_state", { path: config })) as {
+    snapshot: { id: string; directory: string };
+  };
+  const captured = readFileSync(
+    join(state.snapshot.directory, "inputs/rtl/top.sv"),
+    "utf8",
+  );
+  await newSource(page, "dispose.sv");
+  await editor.fill("module broken; assign x = missing endmodule\n");
+  await expect
+    .poll(() => page.locator(".cm-lint-marker-error").count())
+    .toBeGreaterThan(0);
+  await sourceCommand(page, "rtl/dispose.sv", "Move to Trash…");
+  await page
+    .getByRole("dialog", { name: "Move to Trash", exact: true })
+    .getByRole("button", { name: "Move to Trash", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Unsaved changes", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("dialog", { name: "Unsaved changes", exact: true })
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  expect(existsSync(join(directory, "rtl/dispose.sv"))).toBe(true);
+  await page
+    .getByRole("dialog", { name: "Move to Trash", exact: true })
+    .getByRole("button", { name: "Move to Trash", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Unsaved changes", exact: true })
+    .getByRole("button", { name: "Discard", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Move to Trash", exact: true }),
+  ).toBeHidden();
+  expect(existsSync(join(directory, "rtl/dispose.sv"))).toBe(false);
+  expect(
+    readFileSync(join(state.snapshot.directory, "inputs/rtl/top.sv"), "utf8"),
+  ).toBe(captured);
+  await expect(
+    page.getByText("Sources changed · rebuild needed", { exact: true }),
+  ).toBeVisible();
+  await sourceCommand(page, "rtl", "Move to Trash…");
+  await expect(
+    page.getByRole("dialog", { name: "Move to Trash", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("dialog", { name: "Move to Trash", exact: true })
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Move to Trash", exact: true }),
+  ).toBeHidden();
+  writeFileSync(join(directory, "rtl", ".unregistered"), "keep");
+  await sourceCommand(page, "rtl", "Move to Trash…");
+  await expect(page.getByRole("alert")).toContainText(".unregistered");
+  await expect(
+    page
+      .getByRole("dialog", { name: "Move to Trash", exact: true })
+      .getByRole("button", { name: "Move to Trash", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page
+    .getByRole("button", { name: "New folder in Design Sources", exact: true })
+    .click();
+  await page.getByLabel("Folder name", { exact: true }).fill("disposable");
+  await page
+    .getByRole("button", { name: "Create Folder", exact: true })
+    .click();
+  await expect(page.getByRole("dialog", { name: "New Folder" })).toBeHidden();
+  await sourceCommand(page, "rtl/disposable", "New File…");
+  await expect(page.getByLabel("Destination directory")).toHaveValue(
+    join(directory, "rtl/disposable"),
+  );
+  await page.getByLabel("File name", { exact: true }).fill("nested.sv");
+  await page.getByRole("button", { name: "Create File", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "New File" })).toBeHidden();
+  expect(
+    readFileSync(join(directory, "rtl/disposable/nested.sv"), "utf8"),
+  ).toBe("");
+  await sourceCommand(page, "rtl/disposable", "Move to Trash…");
+  const trash = page.getByRole("dialog", {
+    name: "Move to Trash",
+    exact: true,
+  });
+  await expect(trash).toContainText("rtl/disposable/nested.sv");
+  await trash
+    .getByRole("button", { name: "Move to Trash", exact: true })
+    .click();
+  await expect(trash).toBeHidden();
+  expect(existsSync(join(directory, "rtl/disposable"))).toBe(false);
+});
+
+test("project settings configure simulations without JSON and preserve drafts through imports", async ({
+  page,
+}) => {
+  const app = await connectProjectFiles(page);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const rtl = join(app.directory, "RTL with spaces");
+  const external = mkdtempSync(join(tmpdir(), "hdlview settings inputs "));
+  mkdirSync(rtl);
+  writeFileSync(
+    join(rtl, "counter.sv"),
+    readFileSync("examples/counter/counter.sv"),
+  );
+  writeFileSync(
+    join(external, "tb.sv"),
+    readFileSync("examples/counter/tb.sv"),
+  );
+  writeFileSync(join(external, "model.v"), "module unused_model; endmodule\n");
+  writeFileSync(
+    join(external, "timing.sdc"),
+    "create_clock -period 10 [get_ports clk]\n",
+  );
+  const savedInitially = readFileSync(app.config, "utf8");
+  await expect(
+    page.getByRole("button", { name: "Configure Simulation…", exact: true }),
+  ).toBeVisible();
+  app.choose([join(rtl, "counter.sv")]);
+  await fileCommand(page, "Add New Files…");
+  await page.getByRole("button", { name: "Select Files", exact: true }).click();
+  await page.getByRole("button", { name: "Apply Import", exact: true }).click();
+  await finishImport(page);
+  await page
+    .getByRole("button", { name: "Project Settings", exact: true })
+    .click();
+  const settings = page.getByRole("dialog", {
+    name: "Project Settings",
+    exact: true,
+  });
+  const section = (name: string) =>
+    settings
+      .getByRole("navigation", { name: "Settings sections" })
+      .getByRole("button", { name, exact: true })
+      .click();
+  await settings
+    .getByLabel("Project name", { exact: true })
+    .fill("Configured counter");
+  await settings
+    .getByLabel("Design top module", { exact: true })
+    .fill("counter");
+  await settings
+    .getByLabel("Technology", { exact: true })
+    .selectOption("ihp_sg13g2");
+  await expect(settings).toContainText("Technology-specific models");
+  await section("Simulation");
+  await settings
+    .getByRole("button", { name: "Add Simulation Configuration", exact: true })
+    .click();
+  await settings.getByLabel("Testbench top module", { exact: true }).fill("tb");
+  await settings
+    .getByLabel("DUT instance path", { exact: true })
+    .fill("wrong.dut");
+  await settings.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(settings.getByRole("alert")).toContainText(
+    "begin with the testbench top",
+  );
+  await expect(
+    settings.getByLabel("DUT instance path", { exact: true }),
+  ).toBeFocused();
+  await settings
+    .getByLabel("DUT instance path", { exact: true })
+    .fill("tb.dut");
+  app.choose([join(external, "tb.sv")]);
+  await settings
+    .getByRole("button", { name: "Add Simulation Sources…", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Select Files", exact: true }).click();
+  await page.getByRole("button", { name: "Apply Import", exact: true }).click();
+  await finishImport(page);
+  await expect(
+    settings.getByLabel("Testbench top module", { exact: true }),
+  ).toHaveValue("tb");
+  await expect(
+    settings.getByLabel("DUT instance path", { exact: true }),
+  ).toHaveValue("tb.dut");
+  await settings
+    .getByRole("checkbox", { name: /Use testbench .*tb.sv/ })
+    .check();
+  await settings
+    .getByText("Advanced simulation settings", { exact: true })
+    .click();
+  await settings
+    .getByRole("button", { name: "Add runtime argument", exact: true })
+    .click();
+  await settings
+    .getByLabel("Runtime argument 1", { exact: true })
+    .fill("+seed=1");
+  app.choose([join(external, "model.v")]);
+  await settings
+    .getByRole("button", { name: "Browse Gate model files…", exact: true })
+    .click();
+  await expect(
+    settings.getByLabel("Gate model files path 1", { exact: true }),
+  ).toHaveValue(/model.v$/);
+  await settings
+    .getByRole("button", { name: "Duplicate Configuration", exact: true })
+    .click();
+  await settings
+    .getByLabel("Configuration name", { exact: true })
+    .fill("timing");
+  await settings
+    .getByRole("button", { name: "Rename Configuration", exact: true })
+    .click();
+  await settings
+    .getByLabel("SDF source", { exact: true })
+    .selectOption("external");
+  await expect(settings.getByLabel("SDF file", { exact: true })).toBeVisible();
+  writeFileSync(join(external, "delay.sdf"), "(DELAYFILE)\n");
+  app.choose([join(external, "delay.sdf")]);
+  await settings
+    .getByRole("button", { name: "Browse SDF…", exact: true })
+    .click();
+  await expect(settings.getByLabel("SDF file", { exact: true })).toHaveValue(
+    /delay.sdf$/,
+  );
+  await settings
+    .getByLabel("SDF source", { exact: true })
+    .selectOption("snapshot");
+  await settings
+    .getByLabel("Timing corner", { exact: true })
+    .fill("qualified_corner");
+  await settings
+    .getByLabel("Delay selection", { exact: true })
+    .selectOption("max");
+  await settings
+    .getByRole("button", { name: "Duplicate Configuration", exact: true })
+    .click();
+  await settings
+    .getByRole("button", { name: "Delete Configuration", exact: true })
+    .click();
+  await settings
+    .getByLabel("Settings simulation configuration", { exact: true })
+    .selectOption("default");
+  await section("Physical Design");
+  await expect(settings).toContainText("sg13g2_stdcell");
+  await settings.getByLabel("Clock port", { exact: true }).fill("clk");
+  await settings.getByLabel("Clock period (ns)", { exact: true }).fill("10");
+  await settings.getByLabel("Core utilization (%)", { exact: true }).fill("25");
+  await settings
+    .getByLabel("Placement density (%)", { exact: true })
+    .fill("35");
+  app.choose([join(external, "timing.sdc")]);
+  await settings
+    .getByRole("button", { name: "Browse SDC…", exact: true })
+    .click();
+  await expect(settings.getByLabel("SDC file", { exact: true })).toHaveValue(
+    /timing.sdc$/,
+  );
+  await settings
+    .getByText("Advanced LibreLane overrides", { exact: true })
+    .click();
+  await settings
+    .getByLabel("LibreLane overrides", { exact: true })
+    .fill('{"CUSTOM": [1, 2]}');
+  await section("General");
+  await expect(
+    settings.getByLabel("Design top module", { exact: true }),
+  ).toHaveValue("counter");
+  await expect(
+    settings.getByLabel("Project name", { exact: true }),
+  ).toHaveValue("Configured counter");
+  await section("Sources");
+  app.choose([external]);
+  await settings
+    .getByRole("button", { name: "Browse Include directories…", exact: true })
+    .click();
+  await expect(
+    settings.getByLabel("Include directories path 1", { exact: true }),
+  ).toHaveValue(/^@/);
+  await settings
+    .getByRole("button", { name: "Add Project defines", exact: true })
+    .click();
+  await settings
+    .getByLabel("Project defines name 1", { exact: true })
+    .fill("MODE");
+  await settings
+    .getByLabel("Project defines value 1", { exact: true })
+    .fill("1");
+  await settings
+    .getByRole("button", { name: "Add Project defines", exact: true })
+    .click();
+  await settings
+    .getByLabel("Project defines name 2", { exact: true })
+    .fill("MODE");
+  await settings.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(settings.getByRole("alert")).toContainText("Duplicate name");
+  await settings
+    .getByRole("button", { name: "Remove Project defines row 2", exact: true })
+    .click();
+  await settings.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(settings.getByRole("alert")).toHaveCount(0);
+  await expect(settings).toBeVisible();
+  expect(readFileSync(app.config, "utf8")).toEqual(savedInitially);
+  await section("General");
+  await settings
+    .getByLabel("Project name", { exact: true })
+    .fill("Discarded name");
+  await settings.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Project Settings", exact: true })
+    .click();
+  await expect(
+    settings.getByLabel("Project name", { exact: true }),
+  ).toHaveValue("Configured counter");
+  await section("Editor");
+  await settings.getByLabel("Live linting", { exact: true }).uncheck();
+  await page.keyboard.press("Escape");
+  await page
+    .getByRole("button", { name: "Project Settings", exact: true })
+    .click();
+  await section("Editor");
+  await expect(
+    settings.getByLabel("Live linting", { exact: true }),
+  ).toBeChecked();
+  for (const width of [900, 560]) {
+    await page.setViewportSize({ width, height: 800 });
+    await expect(
+      settings.getByRole("button", { name: "OK", exact: true }),
+    ).toBeInViewport();
+    expect(
+      await settings.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({ path: `test-results/settings-${width}.png` });
+  }
+  await page.setViewportSize({ width: 1500, height: 1000 });
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
+  await fileCommand(page, "Save Project");
+  await expect
+    .poll(() => JSON.parse(readFileSync(app.config, "utf8")).name)
+    .toBe("Configured counter");
+  const saved = JSON.parse(readFileSync(app.config, "utf8"));
+  expect(Object.keys(saved.simulations).sort()).toEqual(["default", "timing"]);
+  expect(saved.simulations.default.dut_scope).toEqual(["tb", "dut"]);
+  expect(saved.simulations.default.models).toHaveLength(1);
+  expect(saved.physical.sdc).toBeDefined();
+  expect(saved.physical.overrides).toEqual({
+    FP_CORE_UTIL: 25,
+    PL_TARGET_DENSITY_PCT: 35,
+    CUSTOM: [1, 2],
+  });
+  await page.locator(".source-file").filter({ hasText: "tb.sv" }).click();
+  await expect(page.getByLabel("Editor lint status")).toContainText(
+    /Checked|Limited analysis/,
+    { timeout: 15000 },
+  );
+  await page.getByRole("button", { name: /^Problems/ }).click();
+  await expect(page.getByLabel("Editor problems")).not.toContainText(
+    "configure a top or select a simulation configuration",
+  );
+  await expect(
+    page
+      .getByLabel("Editor problems")
+      .getByRole("button", { name: "Configure Simulation…", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Build schematic", exact: true })
+    .click();
+  await expect(page.locator(".nodebox").first()).toBeVisible({
+    timeout: 30000,
+  });
+  await expect(
+    page.getByRole("button", { name: "Run simulation" }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "Run simulation" }).click();
+  await expect(page.getByText("Waveforms", { exact: true })).toBeVisible({
+    timeout: 30000,
+  });
+  await page
+    .getByRole("button", { name: "Project Settings", exact: true })
+    .click();
+  await section("Simulation");
+  await settings.getByLabel("Simulation duration", { exact: true }).fill("2");
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
+  await expect(
+    page.getByText("Rebuild required to use updated settings", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Run simulation" }),
+  ).toBeDisabled();
+  await expect(page.getByText("Waveforms", { exact: true })).toBeVisible();
+  await fileCommand(page, "Save Project");
+  await fileCommand(page, "Close Project");
+  app.choose([app.config]);
+  await fileCommand(page, "Open Existing Project…");
+  await expect(page.getByText("Waveforms", { exact: true })).toBeVisible({
+    timeout: 30000,
+  });
+  await expect(
+    page.getByRole("button", { name: "Run simulation" }),
+  ).toBeDisabled();
+  await page
+    .getByRole("button", { name: "Project Settings", exact: true })
+    .click();
+  await section("Simulation");
+  await expect(
+    settings.getByLabel("Simulation duration", { exact: true }),
+  ).toHaveValue("2");
+  await settings
+    .getByLabel("Settings simulation configuration", { exact: true })
+    .selectOption("timing");
+  await settings
+    .getByText("Advanced simulation settings", { exact: true })
+    .click();
+  await expect(settings.getByLabel("SDF source", { exact: true })).toHaveValue(
+    "snapshot",
+  );
+  await expect(
+    settings.getByLabel("Timing corner", { exact: true }),
+  ).toHaveValue("qualified_corner");
+  await settings.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(errors).toEqual([]);
 });

@@ -9,8 +9,10 @@ pub mod waveform;
 pub use model::*;
 pub mod waveprocess;
 
+pub mod file_management;
 pub mod workspace;
 
 pub mod lifecycle;
 
 pub mod editor_lint;
+pub mod settings;
