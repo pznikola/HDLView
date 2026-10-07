@@ -41,7 +41,7 @@ async function finishImport(page: Page) {
   if (await done.isVisible()) await done.click();
 }
 test.beforeAll(() => {
-  const store = mkdtempSync(join(tmpdir(), "hdlview browser artifacts "));
+  const store = mkdtempSync(join(tmpdir(), "hdlview-browser-artifacts-"));
   const args = ["--store", store];
   if (process.env.HDLVIEW_TOOL_PROFILE)
     args.push("--profile", process.env.HDLVIEW_TOOL_PROFILE);
@@ -104,7 +104,7 @@ test("schematic and waveform selections preserve instance identity and stage bin
     .getByLabel("Open snapshot input")
     .fill(snapshot.directory + "/snapshot.json");
   await page.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.getByLabel("Schematic")).toBeVisible();
+  await expect(page.getByLabel("Schematic", { exact: true })).toBeVisible();
   await expect(page.locator(".nodebox").first()).toBeVisible({
     timeout: 20000,
   });
@@ -114,7 +114,7 @@ test("schematic and waveform selections preserve instance identity and stage bin
   ).toBeVisible();
   await page.getByRole("button", { name: "Collapse schematic buses" }).click();
   await page.getByRole("button", { name: "Run simulation" }).click();
-  await expect(page.getByText("Waveforms", { exact: true })).toBeVisible({
+  await expect(page.locator(".wave-panel")).toBeVisible({
     timeout: 30000,
   });
   await expect(
@@ -161,6 +161,10 @@ test("schematic and waveform selections preserve instance identity and stage bin
   ).toBe(layoutWorkers);
   await page.locator(".hierarchy button").filter({ hasText: "first" }).click();
   await expect(page.locator(".hierarchy button.active")).toContainText("first");
+  await expect(page.locator(".layout-indicator")).toBeHidden();
+  await page
+    .getByLabel("Schematic", { exact: true })
+    .screenshot({ path: test.info().outputPath("elaborated-counter.png") });
 
   await page
     .locator(".signal-list button")
@@ -210,7 +214,9 @@ test("schematic and waveform selections preserve instance identity and stage bin
   await expect
     .poll(() => waveScroll.evaluate((element) => element.scrollTop))
     .toBe(0);
-  const waveSplitter = page.getByRole("separator", { name: "Waveform height" });
+  const waveSplitter = page.getByRole("separator", {
+    name: "Bottom panel height",
+  });
   const paneHeight = () =>
     page.locator(".wave-panel").evaluate((element) => element.clientHeight);
   const schematicHeight = () =>
@@ -276,7 +282,7 @@ test("schematic and waveform selections preserve instance identity and stage bin
   await waveSplitter.focus();
   await page.keyboard.press("End");
   await page.keyboard.press("ArrowUp");
-  await expect(waveSplitter).toHaveAttribute("aria-valuenow", "70");
+  await expect(waveSplitter).toHaveAttribute("aria-valuenow", "65");
   await page.setViewportSize({ width: 1100, height: 650 });
   await expect
     .poll(() =>
@@ -289,7 +295,9 @@ test("schematic and waveform selections preserve instance identity and stage bin
   await expect.poll(paneHeight).toBeGreaterThanOrEqual(120);
   await page.keyboard.press("Home");
   await page.keyboard.press("ArrowDown");
-  await expect(waveSplitter).toHaveAttribute("aria-valuenow", "20");
+  expect(await waveSplitter.getAttribute("aria-valuenow")).toBe(
+    await waveSplitter.getAttribute("aria-valuemin"),
+  );
   await page.setViewportSize({ width: 1500, height: 1000 });
   await page.screenshot({
     path: resolve("test-results/workspace.png"),
@@ -298,19 +306,17 @@ test("schematic and waveform selections preserve instance identity and stage bin
   await page.reload();
   await fileCommand(page, "Open Existing Project…");
   await expect(page.locator(".project-title")).toContainText("counter");
-  await expect(page.getByText("Waveforms", { exact: true })).toBeVisible({
+  await expect(page.locator(".wave-panel")).toBeVisible({
     timeout: 15000,
   });
   await expect(
     page.locator(".wave-name").filter({ hasText: "fast" }).first(),
   ).toBeVisible();
   await expect(
-    page.getByRole("separator", { name: "Waveform height" }),
+    page.getByRole("separator", { name: "Bottom panel height" }),
   ).toHaveAttribute("aria-valuenow", "35");
   await page.getByRole("button", { name: "Close waveform session" }).click();
-  await expect(
-    page.getByRole("separator", { name: "Waveform height" }),
-  ).toBeHidden();
+  await expect(page.locator(".wave-panel")).toBeHidden();
   await expect(
     page.getByRole("button", { name: "Mapped gates", exact: true }),
   ).toBeEnabled();
@@ -444,7 +450,7 @@ test("create, import, edit, resolve conflicts, and rebuild external RTL without 
     .getByRole("dialog", { name: "Unsaved changes" })
     .getByRole("button", { name: "Cancel", exact: true })
     .click();
-  await expect(page.getByLabel("Schematic")).toBeHidden();
+  await expect(page.getByLabel("Schematic", { exact: true })).toBeHidden();
   await page.getByRole("button", { name: "Build schematic" }).click();
   await page
     .getByRole("button", { name: "Save All and Build", exact: true })
@@ -453,7 +459,7 @@ test("create, import, edit, resolve conflicts, and rebuild external RTL without 
     timeout: 30000,
   });
   await page.getByRole("button", { name: "Run simulation" }).click();
-  await expect(page.getByText("Waveforms", { exact: true })).toBeVisible({
+  await expect(page.locator(".wave-panel")).toBeVisible({
     timeout: 30000,
   });
   if (!trace) throw new Error("Simulation did not publish a trace");
@@ -548,6 +554,7 @@ test("create, import, edit, resolve conflicts, and rebuild external RTL without 
     .toContain("// dirty tab");
   await page.getByRole("button", { name: "Design", exact: true }).click();
   await page.getByRole("button", { name: "child", exact: true }).click();
+  await page.getByRole("button", { name: "Inspector", exact: true }).click();
   await page.getByRole("button", { name: "View source", exact: true }).click();
   await expect(editor).toContainText("module top");
   await expect(editor).not.toContainText("// editor change");
@@ -556,7 +563,7 @@ test("create, import, edit, resolve conflicts, and rebuild external RTL without 
   ).toBeVisible();
   await page.getByRole("button", { name: "Open Working File" }).click();
   await expect(editor).toContainText("// dirty tab");
-  await expect(page.getByText("Waveforms", { exact: true })).toBeVisible();
+  await expect(page.locator(".wave-panel")).toBeVisible();
   await page.getByRole("button", { name: "Close waveform session" }).click();
   await page.getByRole("button", { name: "Build schematic" }).click();
   await expect(
@@ -708,7 +715,9 @@ test("empty project creation and ordered SystemVerilog filelist import", async (
     "top.sv",
   ]);
   await page.getByRole("button", { name: "Build schematic" }).click();
-  await expect(page.getByLabel("Schematic")).toBeVisible({ timeout: 30000 });
+  await expect(page.getByLabel("Schematic", { exact: true })).toBeVisible({
+    timeout: 30000,
+  });
   await expect(page.locator(".error-banner")).toBeHidden();
   writeFileSync(join(directory, "rtl.f"), "top.sv\n-F lists/nested.f\n");
   await page.getByRole("button", { name: "Sources", exact: true }).click();
@@ -1229,7 +1238,9 @@ test("one unchanged testbench configuration runs RTL and generic gates", async (
     await page
       .getByRole("button", { name: "Build schematic", exact: true })
       .click();
-    await expect(page.getByLabel("Schematic")).toBeVisible({ timeout: 30000 });
+    await expect(page.getByLabel("Schematic", { exact: true })).toBeVisible({
+      timeout: 30000,
+    });
     await expect(
       page.getByRole("button", { name: "Run simulation" }),
     ).toBeEnabled({ timeout: 30000 });
@@ -1240,7 +1251,7 @@ test("one unchanged testbench configuration runs RTL and generic gates", async (
       page.getByRole("option", { name: "timing", exact: true }),
     ).toBeDisabled();
     await page.getByRole("button", { name: "Run simulation" }).click();
-    await expect(page.getByText("Waveforms", { exact: true })).toBeVisible({
+    await expect(page.locator(".wave-panel")).toBeVisible({
       timeout: 30000,
     });
     await expect(page.locator(".error-banner")).toBeHidden();
@@ -1343,7 +1354,9 @@ test("live lint checks unsaved buffers, navigation, contexts, and local settings
   await page
     .getByRole("button", { name: "Build schematic", exact: true })
     .click();
-  await expect(page.getByLabel("Schematic")).toBeVisible({ timeout: 30000 });
+  await expect(page.getByLabel("Schematic", { exact: true })).toBeVisible({
+    timeout: 30000,
+  });
   await page.getByRole("button", { name: "Sources", exact: true }).click();
   await page.locator('.source-file[data-source-path="top.sv"]').click();
   const content = page.locator(".cm-content");
@@ -1381,7 +1394,7 @@ test("live lint checks unsaved buffers, navigation, contexts, and local settings
   await expect(page.getByText("Sources changed · rebuild needed")).toHaveCount(
     0,
   );
-  await page.getByRole("button", { name: /^Problems / }).click();
+  await page.getByRole("tab", { name: /^Problems / }).click();
   const problems = page.getByLabel("Editor problems");
   await expect(problems).toContainText("unknown");
   await expect(problems).toContainText("no-trailing-spaces");
@@ -1804,7 +1817,9 @@ test("source explorer builds new files, preserves captured sources and validates
   await page
     .getByRole("button", { name: "Build schematic", exact: true })
     .click();
-  await expect(page.getByLabel("Schematic", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Schematic", { exact: true })).toBeVisible({
+    timeout: 40_000,
+  });
   await expect
     .poll(async () =>
       Boolean(
@@ -2166,7 +2181,7 @@ test("project settings configure simulations without JSON and preserve drafts th
     /Checked|Limited analysis/,
     { timeout: 15000 },
   );
-  await page.getByRole("button", { name: /^Problems/ }).click();
+  await page.getByRole("tab", { name: /^Problems/ }).click();
   await expect(page.getByLabel("Editor problems")).not.toContainText(
     "configure a top or select a simulation configuration",
   );
@@ -2185,7 +2200,7 @@ test("project settings configure simulations without JSON and preserve drafts th
     page.getByRole("button", { name: "Run simulation" }),
   ).toBeEnabled();
   await page.getByRole("button", { name: "Run simulation" }).click();
-  await expect(page.getByText("Waveforms", { exact: true })).toBeVisible({
+  await expect(page.locator(".wave-panel")).toBeVisible({
     timeout: 30000,
   });
   await page
@@ -2200,12 +2215,12 @@ test("project settings configure simulations without JSON and preserve drafts th
   await expect(
     page.getByRole("button", { name: "Run simulation" }),
   ).toBeDisabled();
-  await expect(page.getByText("Waveforms", { exact: true })).toBeVisible();
+  await expect(page.locator(".wave-panel")).toBeVisible();
   await fileCommand(page, "Save Project");
   await fileCommand(page, "Close Project");
   app.choose([app.config]);
   await fileCommand(page, "Open Existing Project…");
-  await expect(page.getByText("Waveforms", { exact: true })).toBeVisible({
+  await expect(page.locator(".wave-panel")).toBeVisible({
     timeout: 30000,
   });
   await expect(
@@ -2232,4 +2247,616 @@ test("project settings configure simulations without JSON and preserve drafts th
   ).toHaveValue("qualified_corner");
   await settings.getByRole("button", { name: "Cancel", exact: true }).click();
   expect(errors).toEqual([]);
+});
+
+test("professional symbols, source detail, themes and export preserve the bound workspace", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const OriginalWorker = window.Worker;
+    window.Worker = class extends OriginalWorker {
+      constructor(...args: ConstructorParameters<typeof Worker>) {
+        super(...args);
+        performance.mark("hdlview-layout-worker");
+      }
+    };
+  });
+  await page.exposeFunction(
+    "__HDLVIEW_TEST_API__",
+    (action: string, args: unknown) =>
+      new Promise((resolve, reject) => {
+        pending.push((value: unknown) => {
+          const r = value as { ok: boolean; result: unknown; error: string };
+          r.ok ? resolve(r.result) : reject(new Error(r.error));
+        });
+        backend.stdin.write(JSON.stringify({ action, args }) + "\n");
+      }),
+  );
+  await page.exposeFunction("__HDLVIEW_TEST_PICKER__", () => [
+    resolve("examples/schematic/hdlview.project.json"),
+  ]);
+  const profile = JSON.parse(
+    readFileSync(
+      process.env.HDLVIEW_TOOL_PROFILE ?? "tools/profiles/docker.json",
+      "utf8",
+    ),
+  );
+  await page.addInitScript(
+    (profile) =>
+      localStorage.setItem("hdlview-profile", JSON.stringify(profile)),
+    profile,
+  );
+  async function openStage(stage: string) {
+    const label = {
+      source: "Source RTL",
+      elaborated: "Elaborated RTL",
+      generic: "Generic gates",
+    }[stage];
+    if (!label) throw new Error("Unknown test stage");
+    await page.getByRole("button", { name: label, exact: true }).click();
+    await page
+      .getByRole("button", { name: "Build schematic", exact: true })
+      .click();
+    await expect(page.locator(".project-name small")).toContainText(label, {
+      timeout: 40000,
+    });
+    await expect(page.locator(".nodebox").first()).toBeVisible();
+    await expect(page.locator(".layout-indicator")).toBeHidden();
+  }
+  await page.goto("/");
+  await fileCommand(page, "Open Existing Project…");
+  await openStage("elaborated");
+  await expect(page.locator('[data-symbol="register"]')).toHaveCount(2);
+  await expect(page.locator('[data-symbol="memory"]')).toHaveCount(1);
+  await expect(page.locator('[data-symbol="decoder"]')).toHaveCount(1);
+  await expect(page.locator('[data-symbol="encoder"]')).toHaveCount(1);
+  await page.getByRole("button", { name: "Display", exact: true }).click();
+  const workers = await page.evaluate(
+    () => performance.getEntriesByName("hdlview-layout-worker").length,
+  );
+  await page.getByLabel("Canvas theme").selectOption("dark");
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("button", { name: "Display", exact: true }),
+  ).toBeFocused();
+  expect(
+    await page.evaluate(
+      () => performance.getEntriesByName("hdlview-layout-worker").length,
+    ),
+  ).toBe(workers);
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export SVG" }).click();
+  const exported = await download;
+  const saved = await exported.path();
+  expect(saved).not.toBeNull();
+  const svg = readFileSync(saved!, "utf8");
+  expect(svg).toContain("<style>");
+  expect(svg).toContain("#172630");
+  expect(svg).not.toContain('class="edge-hit"');
+  expect(svg).not.toMatch(/<svg[^>]*class="[^"]*zoomed-out/);
+  const parentCamera = await page
+    .locator("[data-world]")
+    .getAttribute("transform");
+  await page.locator('[data-symbol="encoder"]').dblclick();
+  await expect(
+    page.getByRole("button", { name: "Back to parent schematic" }),
+  ).toBeVisible();
+  await expect(page.locator(".layout-indicator")).toBeHidden();
+  await expect(page.locator('[data-symbol="encoder"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Back to parent schematic" }).click();
+  await expect(page.locator('[data-symbol="encoder"]')).toHaveCount(1);
+  await expect(page.locator("[data-world]")).toHaveAttribute(
+    "transform",
+    parentCamera!,
+  );
+  await page.getByRole("button", { name: "Display", exact: true }).click();
+  await page.getByLabel("Show compiler nodes").check();
+  await page.keyboard.press("Escape");
+  await expect(page.locator('[data-symbol="encoder"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Display", exact: true }).click();
+  await page.getByLabel("Show compiler nodes").uncheck();
+  await page.keyboard.press("Escape");
+  await expect(page.locator('[data-symbol="encoder"]')).toHaveCount(1);
+  await openStage("source");
+  await expect(page.locator('[data-symbol="function"]')).toHaveCount(1);
+  await expect(page.locator('[data-symbol="task"]')).toHaveCount(1);
+  await page
+    .getByRole("button", { name: /^Open AlwaysComb_.* details$/, exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Back to parent schematic" }),
+  ).toBeVisible();
+  await expect(page.locator(".layout-indicator")).toBeHidden();
+  await expect(page.locator(".edge.control_flow").first()).toBeVisible();
+  await expect(page.locator(".edge.control_flow").first()).toHaveAttribute(
+    "marker-end",
+    "url(#arrow-control_flow)",
+  );
+  await expect(page.locator(".edge.dependency").first()).toBeVisible();
+  await page
+    .getByRole("button", { name: "Open accumulate details", exact: true })
+    .click();
+  await expect(page.locator(".layout-indicator")).toBeHidden();
+  await expect(page.locator('[data-symbol="assignment"]')).toHaveCount(1);
+  await page.getByRole("button", { name: "Back to parent schematic" }).click();
+  await expect(page.locator('[data-symbol="task"]')).toHaveCount(1);
+  await page.getByRole("button", { name: "Back to parent schematic" }).click();
+  await openStage("generic");
+  expect(
+    await page.locator('[data-symbol="register"]').count(),
+  ).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Run simulation" }).click();
+  await expect(page.locator(".wave-panel")).toBeVisible({
+    timeout: 30000,
+  });
+});
+
+test("waveform selection reveals an original signal inside a collapsed mux tree", async ({
+  page,
+}) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdlview grouped mux "));
+  writeFileSync(
+    join(dir, "tree.sv"),
+    `module tree(input wire [3:0] a,b,c,d, input wire [1:0] select, output wire [3:0] y);
+wire [3:0] mid_low, mid_high;
+assign mid_low = select[0] ? b : a;
+assign mid_high = select[0] ? d : c;
+assign y = select[1] ? mid_high : mid_low;
+endmodule\n`,
+  );
+  writeFileSync(
+    join(dir, "tb.sv"),
+    "`timescale 1ns/1ps\nmodule tb; reg [3:0] a=1,b=2,c=3,d=4; reg [1:0] select=0; wire [3:0] y; tree dut(.*); initial begin #5 select=1; #5 select=2; #5 select=3; #5 $finish; end endmodule\n",
+  );
+  writeFileSync(
+    join(dir, "hdlview.project.json"),
+    JSON.stringify({
+      schema_version: 3,
+      name: "Grouped mux",
+      top: "tree",
+      sources: [{ path: "tree.sv", language: "system_verilog" }],
+      simulation_sources: ["tb.sv"],
+      standard: "1800-2017",
+      simulations: {
+        rtl: {
+          simulator: "icarus",
+          top: "tb",
+          dut_scope: ["tb", "dut"],
+          testbench: ["tb.sv"],
+          stop_time: "1us",
+        },
+      },
+    }),
+  );
+  const profile = JSON.parse(
+    readFileSync(
+      process.env.HDLVIEW_TOOL_PROFILE ?? "tools/profiles/docker.json",
+      "utf8",
+    ),
+  );
+  await page.addInitScript((profile) => {
+    localStorage.setItem("hdlview-profile", JSON.stringify(profile));
+    const OriginalWorker = window.Worker;
+    window.Worker = class extends OriginalWorker {
+      constructor(...args: ConstructorParameters<typeof Worker>) {
+        super(...args);
+        performance.mark("hdlview-layout-worker");
+      }
+    };
+  }, profile);
+  await page.exposeFunction(
+    "__HDLVIEW_TEST_API__",
+    (action: string, args: unknown) =>
+      new Promise((resolve, reject) => {
+        pending.push((value: unknown) => {
+          const r = value as { ok: boolean; result: unknown; error: string };
+          r.ok ? resolve(r.result) : reject(new Error(r.error));
+        });
+        backend.stdin.write(JSON.stringify({ action, args }) + "\n");
+      }),
+  );
+  await page.exposeFunction("__HDLVIEW_TEST_PICKER__", () => [
+    join(dir, "hdlview.project.json"),
+  ]);
+  await page.goto("/");
+  await fileCommand(page, "Open Existing Project…");
+  await page
+    .getByRole("button", { name: "Build schematic", exact: true })
+    .click();
+  await expect(page.locator('[data-symbol="mux"]')).toHaveCount(1, {
+    timeout: 40000,
+  });
+  await expect(page.locator('[data-symbol="mux"]')).toHaveAttribute(
+    "aria-label",
+    "MUX 4:1",
+  );
+  await page.getByRole("button", { name: "Run simulation" }).click();
+  await expect(page.locator(".wave-panel")).toBeVisible({
+    timeout: 30000,
+  });
+  const note = await page.locator(".snapshot-note").textContent();
+  await page.locator(".wave-name").filter({ hasText: "mid_low" }).click();
+  await expect(
+    page.getByRole("button", { name: "Back to parent schematic" }),
+  ).toBeVisible();
+  await expect(page.locator('[data-symbol="mux"]')).toHaveCount(3);
+  await expect(page.locator(".wave-name.active")).toContainText("mid_low");
+  await expect(page.locator(".snapshot-note")).toHaveText(note!);
+  await expect(page.locator(".layout-indicator")).toBeHidden();
+  const workers = await page.evaluate(
+    () => performance.getEntriesByName("hdlview-layout-worker").length,
+  );
+  const selected = page.locator(".symbol-pin.selected").first();
+  const start = Date.now();
+  await selected.locator(".pin-hit").click();
+  await expect(page.locator(".wave-name.active")).toContainText("mid_low");
+  console.log(
+    `loaded grouped selection feedback: ${Date.now() - start} ms (includes Playwright click/assertion)`,
+  );
+  expect(
+    await page.evaluate(
+      () => performance.getEntriesByName("hdlview-layout-worker").length,
+    ),
+  ).toBe(workers);
+  await page.getByRole("button", { name: "Back to parent schematic" }).click();
+  await expect(page.locator('[data-symbol="mux"]')).toHaveCount(1);
+});
+
+test("aligned schematic, resizable workspace and panel tabs with testbench-named traces", async ({
+  page,
+}) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdlview clarity "));
+  const source =
+    readFileSync("examples/counter/counter.sv", "utf8") +
+    "// Scroll fixture\n".repeat(300);
+  const tb = readFileSync("examples/counter/tb.sv", "utf8").replace(
+    "module tb;",
+    'module tb; initial begin $dumpfile("counter-results.vcd"); $dumpvars(0, tb); for (integer i=0; i<100; i=i+1) $display("log row %d", i); end',
+  );
+  writeFileSync(join(dir, "counter.sv"), source);
+  writeFileSync(join(dir, "tb.sv"), tb);
+  const config = JSON.parse(
+    readFileSync("examples/counter/hdlview.project.json", "utf8"),
+  );
+  delete config.simulations.timing;
+  writeFileSync(join(dir, "hdlview.project.json"), JSON.stringify(config));
+  const profile = JSON.parse(
+    readFileSync(
+      process.env.HDLVIEW_TOOL_PROFILE ?? "tools/profiles/docker.json",
+      "utf8",
+    ),
+  );
+  await page.addInitScript((profile) => {
+    localStorage.setItem("hdlview-profile", JSON.stringify(profile));
+    const OriginalWorker = window.Worker;
+    window.Worker = class extends OriginalWorker {
+      constructor(...args: ConstructorParameters<typeof Worker>) {
+        super(...args);
+        performance.mark("hdlview-layout-worker");
+      }
+    };
+  }, profile);
+  await page.exposeFunction(
+    "__HDLVIEW_TEST_API__",
+    (action: string, args: unknown) =>
+      new Promise((resolve, reject) => {
+        pending.push((value: unknown) => {
+          const r = value as { ok: boolean; result: unknown; error: string };
+          r.ok ? resolve(r.result) : reject(new Error(r.error));
+        });
+        backend.stdin.write(JSON.stringify({ action, args }) + "\n");
+      }),
+  );
+  await page.exposeFunction("__HDLVIEW_TEST_PICKER__", () => [
+    join(dir, "hdlview.project.json"),
+  ]);
+  await page.goto("/");
+  await fileCommand(page, "Open Existing Project…");
+  await page
+    .getByRole("button", { name: "Build schematic", exact: true })
+    .click();
+  await expect(page.locator(".nodebox").first()).toBeVisible({
+    timeout: 40000,
+  });
+  await expect(page.locator(".layout-indicator")).toBeHidden();
+  const inputs = await page
+    .locator('[data-boundary="input"] .pin-terminal')
+    .evaluateAll((nodes) =>
+      nodes.map((node) => node.getBoundingClientRect().x),
+    );
+  const outputs = await page
+    .locator('[data-boundary="output"] .pin-terminal')
+    .evaluateAll((nodes) =>
+      nodes.map((node) => node.getBoundingClientRect().x),
+    );
+  expect(new Set(inputs.map((x) => Math.round(x)))).toHaveProperty("size", 1);
+  expect(new Set(outputs.map((x) => Math.round(x)))).toHaveProperty("size", 1);
+  expect(Math.max(...inputs)).toBeLessThan(Math.min(...outputs));
+  const workers = await page.evaluate(
+    () => performance.getEntriesByName("hdlview-layout-worker").length,
+  );
+  await page.getByRole("button", { name: "Display", exact: true }).click();
+  await page.getByLabel("Show grid").check();
+  await page.keyboard.press("Escape");
+  const world = page.locator("[data-world]");
+  const grid = page.locator("#schematic-grid");
+  for (const theme of ["light", "dark"]) {
+    await page.getByRole("button", { name: "Display", exact: true }).click();
+    await page.getByLabel("Canvas theme").selectOption(theme);
+    await page.keyboard.press("Escape");
+    const before = await world.getAttribute("transform");
+    await page.getByRole("button", { name: "Zoom schematic in" }).click();
+    await expect(world).not.toHaveAttribute("transform", before!);
+    await expect(grid).toHaveAttribute(
+      "patternTransform",
+      (await world.getAttribute("transform"))!,
+    );
+    const dot = await grid.locator("circle").getAttribute("fill");
+    expect(dot).not.toBe(theme === "light" ? "#fcfdff" : "#172630");
+    const pin = page.locator('[data-boundary="input"] .symbol-pin').first();
+    const selectedView = await page
+      .locator('.explorer-tabs button[aria-pressed="true"]')
+      .textContent();
+    await pin.locator(".pin-hit").click();
+    await expect(pin).toHaveClass(/selected/);
+    await expect(
+      page.locator('.explorer-tabs button[aria-pressed="true"]'),
+    ).toHaveText(selectedView!);
+    await page.getByRole("button", { name: "Inspector", exact: true }).click();
+    await expect(page.locator(".selection-kind")).toHaveText("Pin");
+    await expect(page.locator(".pin-inspection")).toContainText("clk");
+    await expect(page.locator(".symbol-pin.selected")).toHaveCount(1);
+    await pin.focus();
+    await page.keyboard.press("Enter");
+    await expect(pin).toHaveClass(/selected/);
+  }
+  const point = await page.locator(".edge-hit").evaluateAll((paths) => {
+    for (const element of paths) {
+      const path = element as SVGPathElement;
+      for (const fraction of [0.5, 0.25, 0.75]) {
+        const local = path.getPointAtLength(path.getTotalLength() * fraction);
+        const point = new DOMPoint(local.x, local.y).matrixTransform(
+          path.getScreenCTM()!,
+        );
+        if (
+          document
+            .elementFromPoint(point.x, point.y)
+            ?.closest("[data-wire]") === path.closest("[data-wire]")
+        )
+          return { x: point.x, y: point.y };
+      }
+    }
+    return null;
+  });
+  expect(point).not.toBeNull();
+  await page.mouse.click(point!.x, point!.y);
+  await expect(page.locator(".wire.selected")).toHaveCount(1);
+  await expect(page.locator(".selection-kind")).toHaveText("Signal / wire");
+  await expect(page.locator(".symbol-pin.selected")).toHaveCount(0);
+  for (let i = 0; i < 16; i++)
+    await page.getByRole("button", { name: "Zoom schematic out" }).click();
+  await expect(grid).toHaveAttribute(
+    "patternTransform",
+    (await world.getAttribute("transform"))!,
+  );
+  expect(Number(await grid.getAttribute("width"))).toBeGreaterThan(24);
+  await page.getByRole("button", { name: "Fit", exact: true }).click();
+  await expect(grid).toHaveAttribute(
+    "patternTransform",
+    (await world.getAttribute("transform"))!,
+  );
+  const fitted = await world.getAttribute("transform");
+  const canvas = (await page
+    .getByLabel("Schematic", { exact: true })
+    .boundingBox())!;
+  await page.mouse.move(
+    canvas.x + canvas.width - 12,
+    canvas.y + canvas.height - 12,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    canvas.x + canvas.width - 44,
+    canvas.y + canvas.height - 32,
+  );
+  await page.mouse.up();
+  await expect(world).not.toHaveAttribute("transform", fitted!);
+  await expect(grid).toHaveAttribute(
+    "patternTransform",
+    (await world.getAttribute("transform"))!,
+  );
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export SVG" }).click();
+  const svg = readFileSync((await (await download).path())!, "utf8");
+  expect(svg).toContain("pin-terminal");
+  expect(svg).not.toContain("data-grid");
+  expect(svg).not.toContain("schematic-grid");
+  expect(svg).not.toContain(":hover");
+  expect(svg).not.toContain(":focus-visible");
+  expect(svg).not.toContain('class="edge-hit"');
+  expect(svg).not.toContain('class="pin-hit"');
+  expect(
+    await page.evaluate(
+      () => performance.getEntriesByName("hdlview-layout-worker").length,
+    ),
+  ).toBe(workers);
+  await page.getByRole("button", { name: "Sources", exact: true }).click();
+  await page.getByRole("treeitem", { name: /counter.sv/ }).dblclick();
+  await expect(page.locator(".cm-content")).toBeVisible();
+  for (const simulator of ["rtl", "verilator"]) {
+    const previousRun = await page.locator(".snapshot-note").textContent();
+    await page
+      .getByLabel("Simulation configuration", { exact: true })
+      .selectOption(simulator);
+    await page.getByRole("button", { name: "Run simulation" }).click();
+    await expect(page.locator(".snapshot-note")).not.toHaveText(previousRun!, {
+      timeout: 60000,
+    });
+    await expect(page.locator(".snapshot-note")).toContainText(
+      "Bound to simulation",
+      { timeout: 60000 },
+    );
+    await expect(page.locator(".wave-panel")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Run simulation" }),
+    ).toBeEnabled();
+    await expect(page.locator(".error-banner")).toBeHidden();
+  }
+  const camera = await world.getAttribute("transform");
+  const panes = page.locator(".workbench");
+  const panel = page.getByRole("region", { name: "Bottom panel", exact: true });
+  const main = page.locator("main"),
+    sidebar = page.locator(".sidebar");
+  const panelBox = (await panel.boundingBox())!,
+    mainBox = (await main.boundingBox())!;
+  expect(Math.abs(panelBox.x - mainBox.x)).toBeLessThan(1);
+  expect(Math.abs(panelBox.width - mainBox.width)).toBeLessThan(1);
+  const sidebarBox = (await sidebar.boundingBox())!;
+  expect(sidebarBox.y + sidebarBox.height).toBeLessThanOrEqual(panelBox.y);
+  await page.getByRole("button", { name: "Inspector", exact: true }).click();
+  const inspectorBox = (await page
+    .getByRole("region", { name: "Project inspector" })
+    .boundingBox())!;
+  expect(inspectorBox.x).toBeGreaterThanOrEqual(sidebarBox.x);
+  expect(inspectorBox.x + inspectorBox.width).toBeLessThanOrEqual(
+    sidebarBox.x + sidebarBox.width,
+  );
+  await page.getByRole("button", { name: "Sources", exact: true }).click();
+  await expect(
+    page.getByRole("treeitem", { name: /counter.sv/ }),
+  ).toBeVisible();
+  const sidebarResize = page.getByRole("separator", { name: "Sidebar width" });
+  await sidebarResize.focus();
+  await page.keyboard.press("End");
+  await expect(sidebarResize).toHaveAttribute("aria-valuenow", "420");
+  await page.keyboard.press("Home");
+  await expect(sidebarResize).toHaveAttribute("aria-valuenow", "224");
+  const sideHandle = (await sidebarResize.boundingBox())!;
+  await page.mouse.move(sideHandle.x + sideHandle.width / 2, sideHandle.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(sideHandle.x + 100, sideHandle.y + 20);
+  await page.mouse.up();
+  await expect
+    .poll(async () => Number(await sidebarResize.getAttribute("aria-valuenow")))
+    .toBeGreaterThan(224);
+  await expect
+    .poll(async () => Number(await sidebarResize.getAttribute("aria-valuenow")))
+    .toBeLessThan(420);
+  const editorResize = page.getByRole("separator", { name: "Editor width" });
+  await editorResize.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(editorResize).toHaveAttribute("aria-valuenow", "50");
+  await page.keyboard.press("ArrowLeft");
+  await expect(editorResize).toHaveAttribute("aria-valuenow", "45");
+  await expect(world).toHaveAttribute("transform", camera!);
+  const editor = page.locator(".cm-scroller");
+  await editor.evaluate((element) => {
+    element.scrollTop = 500;
+  });
+  const editorScroll = await editor.evaluate((element) => element.scrollTop);
+  await page.getByLabel("Radix", { exact: true }).selectOption("bin");
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  const waveState = await page.locator(".wave-toolbar").textContent();
+  const fullHeight = (await panes.boundingBox())!.height;
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  const logs = page.getByRole("region", { name: "Tool logs" });
+  await expect(logs).toBeVisible();
+  expect(
+    Math.abs((await panes.boundingBox())!.height - fullHeight),
+  ).toBeLessThan(1);
+  const paneBox = (await panes.boundingBox())!,
+    logBox = (await logs.boundingBox())!;
+  expect(paneBox.y + paneBox.height).toBeLessThanOrEqual(logBox.y);
+  expect(logBox.width).toBe(mainBox.width);
+  await logs.hover();
+  await page.mouse.wheel(0, 600);
+  await expect
+    .poll(() => logs.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0);
+  expect(await editor.evaluate((element) => element.scrollTop)).toBe(
+    editorScroll,
+  );
+  await page.getByRole("tab", { name: "Logs", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: /^Problems / })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(
+    page.getByRole("region", { name: "Problems panel" }),
+  ).toBeVisible();
+  await page.keyboard.press("Home");
+  await expect(
+    page.getByRole("tab", { name: "Waveforms", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".wave-toolbar")).toHaveText(waveState!);
+  await expect(page.getByLabel("Radix", { exact: true })).toHaveValue("bin");
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  await expect
+    .poll(() => logs.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0);
+  await page
+    .getByRole("button", { name: "Hide bottom panel", exact: true })
+    .click();
+  await expect(logs).toBeHidden();
+  await expect
+    .poll(async () => (await panes.boundingBox())!.height)
+    .toBeGreaterThan(fullHeight);
+  await expect(world).toHaveAttribute("transform", camera!);
+  await page
+    .getByRole("button", { name: "Show bottom panel", exact: true })
+    .click();
+  await expect(logs).toBeVisible();
+  expect(
+    Math.abs((await panes.boundingBox())!.height - fullHeight),
+  ).toBeLessThan(1);
+  await page.setViewportSize({ width: 1050, height: 620 });
+  const panelResize = page.getByRole("separator", {
+    name: "Bottom panel height",
+  });
+  await panelResize.focus();
+  await page.keyboard.press("End");
+  const narrowPanes = (await panes.boundingBox())!,
+    narrowLogs = (await logs.boundingBox())!;
+  const editorBox = (await editor.boundingBox())!;
+  expect(editorBox.y + editorBox.height).toBeLessThanOrEqual(narrowLogs.y);
+  expect(narrowPanes.y + narrowPanes.height).toBeLessThanOrEqual(narrowLogs.y);
+  expect(
+    (await page.locator(".workspace-top").boundingBox())!.height,
+  ).toBeGreaterThanOrEqual(259);
+  expect((await panel.boundingBox())!.height).toBeGreaterThanOrEqual(140);
+  expect(
+    await main.evaluate(
+      (element) => element.scrollHeight <= element.clientHeight,
+    ),
+  ).toBe(true);
+  await editorResize.focus();
+  await page.keyboard.press("Home");
+  expect(
+    (await page.locator(".editor-pane").boundingBox())!.width,
+  ).toBeGreaterThanOrEqual(199);
+  await page.keyboard.press("End");
+  expect(
+    (await page.locator(".design-pane").boundingBox())!.width,
+  ).toBeGreaterThanOrEqual(319);
+  await page.getByRole("tab", { name: "Waveforms", exact: true }).click();
+  await expect(page.locator(".wave-toolbar")).toHaveText(waveState!);
+  await expect(world).toHaveAttribute("transform", camera!);
+  await page
+    .getByRole("button", { name: "Hide Schematic", exact: true })
+    .click();
+  await expect(world).toBeHidden();
+  await page
+    .getByRole("button", { name: "Show Schematic", exact: true })
+    .click();
+  await expect(world).toHaveAttribute("transform", camera!);
+  expect(
+    await page.evaluate(
+      () => performance.getEntriesByName("hdlview-layout-worker").length,
+    ),
+  ).toBe(workers);
+  await page.screenshot({
+    path: test.info().outputPath("clarity-workspace.png"),
+  });
+  expect(readFileSync(join(dir, "counter.sv"), "utf8")).toBe(source);
+  expect(readFileSync(join(dir, "tb.sv"), "utf8")).toBe(tb);
 });

@@ -107,7 +107,11 @@ export function SourceEditor({
                 backgroundColor: "#101923",
                 color: "#dbe5ee",
               },
-              ".cm-scroller": { overflow: "auto", fontFamily: "monospace" },
+              ".cm-scroller": {
+                overflow: "auto",
+                overscrollBehavior: "contain",
+                fontFamily: "monospace",
+              },
               ".cm-gutters": {
                 backgroundColor: "#15202b",
                 color: "#8295a8",

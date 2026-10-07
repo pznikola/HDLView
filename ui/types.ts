@@ -133,11 +133,42 @@ export interface Signal {
   upto: boolean;
   source?: string;
 }
+export interface SourceSpan {
+  file: string;
+  start: [number, number];
+  end: [number, number];
+}
+export interface PinDisplay {
+  name: string;
+  width: number;
+  bits: (number | string)[];
+  role: "data" | "select" | "clock" | "enable" | "reset" | "set" | "power";
+  polarity?: boolean | null;
+  declared_direction?: string | null;
+  range?: [number, number] | null;
+}
+export interface NodeDisplay {
+  symbol: string;
+  title: string;
+  annotations: string[];
+  members: string[];
+  internal_signal_ids: string[];
+  detail?: string | null;
+  physical_only: boolean;
+  span?: SourceSpan | null;
+}
+export interface SchematicOptions {
+  functional_symbols: boolean;
+  full_control_wiring: boolean;
+  show_physical_cells: boolean;
+  detail?: string | null;
+}
 export interface Port {
   id: string;
   label: string;
   direction: string;
   signal_ids: string[];
+  display?: PinDisplay | null;
 }
 export interface Node {
   id: string;
@@ -146,6 +177,7 @@ export interface Node {
   ports: Port[];
   child_scope?: string[];
   source?: string;
+  display?: NodeDisplay | null;
 }
 export interface Edge {
   id: string;
@@ -153,6 +185,8 @@ export interface Edge {
   targets: string[];
   signal_ids: string[];
   label: string;
+  semantics?: "electrical" | "dependency" | "control_flow";
+  bits?: (number | string)[];
 }
 export interface Graph {
   nodes: Node[];
@@ -160,6 +194,9 @@ export interface Graph {
   signals: Signal[];
   truncated: boolean;
   total_cells: number;
+  hidden_physical_cells?: number;
+  omitted_cells?: number;
+  detail?: string | null;
 }
 export interface Variable {
   id: number;

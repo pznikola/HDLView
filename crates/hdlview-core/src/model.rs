@@ -297,6 +297,44 @@ pub struct Cell {
     pub source: Option<String>,
     #[serde(default)]
     pub attributes: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parameters: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behavior: Option<BehaviorGraph>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceSpan {
+    pub file: String,
+    pub start: (u64, u64),
+    pub end: (u64, u64),
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BehaviorNode {
+    pub id: String,
+    pub label: String,
+    pub kind: String,
+    #[serde(default)]
+    pub signals: Vec<String>,
+    pub source: Option<String>,
+    pub span: Option<SourceSpan>,
+    pub call: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed: Option<bool>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BehaviorEdge {
+    pub source: String,
+    pub target: String,
+    pub label: String,
+    pub semantics: EdgeSemantics,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BehaviorGraph {
+    pub nodes: Vec<BehaviorNode>,
+    pub edges: Vec<BehaviorEdge>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Module {
@@ -406,6 +444,45 @@ pub struct ViewNode {
     pub ports: Vec<ViewPort>,
     pub child_scope: Option<Vec<String>>,
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<NodeDisplay>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NodeDisplay {
+    pub symbol: String,
+    pub title: String,
+    #[serde(default)]
+    pub annotations: Vec<String>,
+    #[serde(default)]
+    pub members: Vec<String>,
+    #[serde(default)]
+    pub internal_signal_ids: Vec<String>,
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub physical_only: bool,
+    pub span: Option<SourceSpan>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PinRole {
+    #[default]
+    Data,
+    Select,
+    Clock,
+    Enable,
+    Reset,
+    Set,
+    Power,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PinDisplay {
+    pub name: String,
+    pub width: usize,
+    pub bits: Vec<Bit>,
+    pub role: PinRole,
+    pub polarity: Option<bool>,
+    pub declared_direction: Option<String>,
+    pub range: Option<(i64, i64)>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViewPort {
@@ -413,6 +490,16 @@ pub struct ViewPort {
     pub label: String,
     pub direction: String,
     pub signal_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<PinDisplay>,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeSemantics {
+    #[default]
+    Electrical,
+    Dependency,
+    ControlFlow,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViewEdge {
@@ -421,6 +508,28 @@ pub struct ViewEdge {
     pub targets: Vec<String>,
     pub signal_ids: Vec<String>,
     pub label: String,
+    #[serde(default)]
+    pub semantics: EdgeSemantics,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bits: Vec<Bit>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SchematicOptions {
+    pub functional_symbols: bool,
+    pub full_control_wiring: bool,
+    pub show_physical_cells: bool,
+    pub detail: Option<String>,
+}
+impl Default for SchematicOptions {
+    fn default() -> Self {
+        Self {
+            functional_symbols: true,
+            full_control_wiring: false,
+            show_physical_cells: false,
+            detail: None,
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignalRef {
@@ -438,6 +547,12 @@ pub struct GraphView {
     pub signals: Vec<SignalRef>,
     pub truncated: bool,
     pub total_cells: usize,
+    #[serde(default)]
+    pub hidden_physical_cells: usize,
+    #[serde(default)]
+    pub omitted_cells: usize,
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 pub fn identity(snapshot: &str, path: &[String], kind: &str) -> String {

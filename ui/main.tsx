@@ -1,10 +1,18 @@
+import { SymbolGallery } from "./components/SymbolGallery";
 import React, { useCallback, useEffect, useState, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import { parseProfile } from "./profile";
 import { Schematic } from "./components/Schematic";
+import { readSchematicPreferences } from "./schematic-display";
 import { Waveform } from "./components/Waveform";
-import { nextSelection, type Selection, formatValue } from "./selection";
+import { Workspace, EditorSchematic } from "./components/Workspace";
+import {
+  nextSelection,
+  type Selection,
+  type ConnectionTarget,
+  formatValue,
+} from "./selection";
 import type {
   Snapshot,
   Run,
@@ -64,7 +72,30 @@ function App() {
   const [rep, setRep] = useState<Representation>("elaborated");
   const [snapshot, setSnapshot] = useState<Snapshot>();
   const navigation = useScopeNavigation();
-  const { scope, navigate: setScope, reset: resetScope } = navigation;
+  const { scope, navigate: navigateScope, reset: resetScope } = navigation;
+  const [schematicPreferences, setSchematicPreferences] = useState(
+    readSchematicPreferences,
+  );
+  const [details, setDetails] = useState<string[]>([]);
+  const detail = details.at(-1);
+  const functionalSymbols = schematicPreferences.functional_symbols;
+  const showPhysicalCells = schematicPreferences.show_physical_cells;
+  function setScope(next: string[]) {
+    if (JSON.stringify(next) !== JSON.stringify(scope)) setDetails([]);
+    navigateScope(next);
+  }
+  function openDetail(id: string) {
+    setDetails((previous) =>
+      previous.at(-1) === id ? previous : [...previous, id],
+    );
+    setInspect(undefined);
+  }
+  useEffect(() => {
+    localStorage.setItem(
+      "hdlview-schematic-display",
+      JSON.stringify(schematicPreferences),
+    );
+  }, [schematicPreferences]);
   const [graph, setGraph] = useState<Graph>();
   const [run, setRun] = useState<Run>();
   const [wave, setWave] = useState<WaveInfo>();
@@ -77,8 +108,10 @@ function App() {
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [logs, setLogs] = useState("");
-  const [drawer, setDrawer] = useState(false);
-  const [drawerTab, setDrawerTab] = useState<"logs" | "problems">("logs");
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelTab, setPanelTab] = useState<"waveforms" | "logs" | "problems">(
+    "waveforms",
+  );
   const [modal, setModal] = useState<string>();
   const [text, setText] = useState("");
   const [aux, setAux] = useState("");
@@ -89,21 +122,22 @@ function App() {
     ? [...run.dut_scope, ...(selection?.scope || scope).slice(1)]
     : [];
   const fail = useCallback((e: unknown) => setError(String(e)), []);
-  const [explorer, setExplorer] = useState<"sources" | "design">("sources");
+  const [explorer, setExplorer] = useState<"sources" | "design" | "inspector">(
+    "sources",
+  );
   const [editorCollapsed, setEditorCollapsed] = useState(false);
   const [schematicCollapsed, setSchematicCollapsed] = useState(false);
-  const [editorWidth, setEditorWidth] = useState(45);
-  const [waveformHeight, setWaveformHeight] = useState(35);
   const clearWorkspace = useCallback(() => {
     generation.current += 1;
     setRestoring(false);
     setRep("elaborated");
     setEditorCollapsed(false);
     setSchematicCollapsed(false);
-    setEditorWidth(45);
-    setWaveformHeight(35);
+    setPanelOpen(false);
+    setPanelTab("waveforms");
     setSnapshot(undefined);
     setGraph(undefined);
+    setDetails([]);
     setRun(undefined);
     setWave(undefined);
     setBindings([]);
@@ -208,6 +242,7 @@ function App() {
       setGraph(undefined);
       setRep(s.representation);
       resetScope([s.project.top]);
+      setDetails([]);
       setRun(undefined);
       setWave(undefined);
       setBindings([]);
@@ -227,6 +262,8 @@ function App() {
     if (current !== generation.current) return;
     setRun(r);
     setWave(info);
+    setPanelTab("waveforms");
+    setPanelOpen(true);
     setBindings(binding);
     setVisible(
       info.variables
@@ -247,6 +284,11 @@ function App() {
       scope,
       focus,
       split_buses: splitBuses,
+      options: {
+        functional_symbols: functionalSymbols,
+        show_physical_cells: showPhysicalCells,
+        detail,
+      },
     })
       .then((g) => {
         if (active) setGraph(g);
@@ -257,7 +299,16 @@ function App() {
     return () => {
       active = false;
     };
-  }, [snapshot, scope, focus, splitBuses, fail]);
+  }, [
+    snapshot,
+    scope,
+    focus,
+    splitBuses,
+    functionalSymbols,
+    showPhysicalCells,
+    detail,
+    fail,
+  ]);
   useEffect(() => {
     if (!job || job.status !== "running") return;
     let active = true;
@@ -292,13 +343,14 @@ function App() {
             setRestoring(false);
           }
         });
-      if (drawer) api<string>("logs").then(setLogs).catch(fail);
+      if (panelOpen && panelTab === "logs")
+        api<string>("logs").then(setLogs).catch(fail);
     }, 500);
     return () => {
       active = false;
       clearInterval(id);
     };
-  }, [job, drawer, acceptSnapshot, acceptRun, fail, markBuilt]);
+  }, [job, panelOpen, panelTab, acceptSnapshot, acceptRun, fail, markBuilt]);
   const checkpoint = useCallback(async () => {
     if (!path || !snapshot || snapshot.project_path !== path || restoring)
       return;
@@ -388,18 +440,28 @@ function App() {
       fail(e);
     }
   }
-  function pickSignal(ids: string[]) {
+  function pickSignal(ids: string[], connection?: ConnectionTarget) {
     // The graph supplies the clicked declaration/endpoint first. A missing pin
     // must never fall through to an electrically connected but delayed net.
     const id = ids[0];
-    if (!id) return;
+    if (!id && !connection) return;
+    setInspect(
+      connection?.kind === "pin"
+        ? graph?.nodes.find((n) => n.id === connection.nodeId)
+        : undefined,
+    );
     const binding = bindings.find((b) => b.signal_id === id);
     const variableId =
       binding && ["exact", "manual"].includes(binding.status)
         ? binding.variable_ids[0]
         : undefined;
     setSelection((p) =>
-      nextSelection(p, { origin: "schematic", signalId: id, variableId }),
+      nextSelection(p, {
+        origin: "schematic",
+        signalId: id,
+        variableId,
+        connection,
+      }),
     );
     if (variableId !== undefined)
       setVisible((v) => (v.includes(variableId) ? v : [...v, variableId]));
@@ -426,6 +488,10 @@ function App() {
         match.signal_id.slice(match.signal_id.indexOf(marker) + marker.length),
       ) as string[];
       setFocus(undefined);
+      const hidden = graph?.nodes.find((node) =>
+        node.display?.internal_signal_ids.includes(match.signal_id),
+      );
+      if (hidden?.display?.detail) openDetail(hidden.display.detail);
       const parent = segments.slice(0, -1);
       setScope(
         snapshot.design.scopes
@@ -463,6 +529,15 @@ function App() {
       fail(e);
     }
   }
+  const pinTarget = selection?.connection;
+  const pinOwner =
+    pinTarget?.kind === "pin"
+      ? graph?.nodes.find((node) => node.id === pinTarget.nodeId)
+      : undefined;
+  const inspectedPin =
+    pinTarget?.kind === "pin"
+      ? pinOwner?.ports.find((port) => port.id === pinTarget.portId)
+      : undefined;
   const selectedSignal = graph?.signals.find(
     (s) => s.id === selection?.signalId,
   );
@@ -617,34 +692,252 @@ function App() {
           <button onClick={() => setError("")}>Dismiss</button>
         </div>
       )}
-      <main inert={!!working.settingsSection}>
-        <aside className="sidebar">
-          <div className="explorer-tabs">
-            <button
-              className={explorer === "sources" ? "active" : ""}
-              onClick={() => setExplorer("sources")}
-            >
-              Sources
-            </button>
-            <button
-              className={explorer === "design" ? "active" : ""}
-              onClick={() => setExplorer("design")}
-            >
-              Design
-            </button>
-          </div>
-          {explorer === "sources" ? (
-            <ProjectSources
-              controller={working}
-              onOpen={(file) => {
-                setEditorCollapsed(false);
-                void working.openFile(file).catch(fail);
-              }}
-              busy={busy || working.job?.status === "running"}
-              onError={fail}
-            />
-          ) : (
-            <>
+      <Workspace
+        key={path}
+        inert={!!working.settingsSection}
+        panelOpen={panelOpen}
+        sidebar={
+          <aside className="sidebar">
+            <div className="explorer-tabs" aria-label="Project views">
+              <button
+                aria-pressed={explorer === "sources"}
+                className={explorer === "sources" ? "active" : ""}
+                onClick={() => setExplorer("sources")}
+              >
+                Sources
+              </button>
+              <button
+                aria-pressed={explorer === "design"}
+                className={explorer === "design" ? "active" : ""}
+                onClick={() => setExplorer("design")}
+              >
+                Design
+              </button>
+              <button
+                aria-pressed={explorer === "inspector"}
+                className={explorer === "inspector" ? "active" : ""}
+                onClick={() => setExplorer("inspector")}
+              >
+                Inspector
+              </button>
+            </div>
+            <div className="sidebar-content" hidden={explorer !== "sources"}>
+              <ProjectSources
+                controller={working}
+                onOpen={(file) => {
+                  setEditorCollapsed(false);
+                  void working.openFile(file).catch(fail);
+                }}
+                busy={busy || working.job?.status === "running"}
+                onError={fail}
+              />
+            </div>
+            <div className="sidebar-content" hidden={explorer !== "inspector"}>
+              <section className="inspector" aria-label="Project inspector">
+                <div className="panel-heading">INSPECTOR</div>
+                {inspectedPin && (
+                  <p className="pin-inspection">
+                    Pin {inspectedPin.display?.name ?? inspectedPin.label} ·{" "}
+                    {pinOwner?.label} ·{" "}
+                    {inspectedPin.display?.declared_direction ??
+                      inspectedPin.direction}
+                  </p>
+                )}
+                {selectedSignal ? (
+                  <>
+                    <p className="selection-kind">
+                      {selection?.connection?.kind === "pin"
+                        ? "Pin"
+                        : "Signal / wire"}
+                    </p>
+                    <h3>{selectedSignal.path.at(-1)}</h3>
+                    <p className="path">{selectedSignal.path.join(".")}</p>
+                    <dl>
+                      <dt>Width</dt>
+                      <dd>{selectedSignal.width} bits</dd>
+                      <dt>Waveform</dt>
+                      <dd>{selectedBinding?.status || "No trace loaded"}</dd>
+                    </dl>
+                    <p className="hint">{selectedBinding?.evidence}</p>
+                    <button onClick={() => setFocus(selectedSignal.id)}>
+                      Explore connected cells
+                    </button>
+                    {run && (
+                      <button
+                        onClick={() => {
+                          setText("");
+                          setModal("Manual binding");
+                        }}
+                      >
+                        Map waveform signal
+                      </button>
+                    )}
+                    {selectedSignal.source && (
+                      <button
+                        onClick={() => {
+                          if (selectedSignal.source)
+                            viewSource(selectedSignal.source);
+                        }}
+                      >
+                        View source
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <p className="hint">
+                    {inspectedPin
+                      ? "No waveform declaration for this pin."
+                      : "Select a signal, wire, or cell to inspect it."}
+                  </p>
+                )}
+                {inspect && (
+                  <>
+                    <h3>{inspect.label}</h3>
+                    <p>{inspect.kind}</p>
+                    {inspect.display?.annotations.map((annotation) => (
+                      <p className="hint" key={annotation}>
+                        {annotation}
+                      </p>
+                    ))}
+                    {inspect.display?.detail && (
+                      <button
+                        onClick={() =>
+                          openDetail(inspect.display?.detail ?? "")
+                        }
+                      >
+                        Inspect original structure
+                      </button>
+                    )}
+                    {inspect.display?.members.length ? (
+                      <details>
+                        <summary>Grouped compiler nodes</summary>
+                        <ul>
+                          {inspect.display.members.map((id) => (
+                            <li key={id}>{id}</li>
+                          ))}
+                        </ul>
+                      </details>
+                    ) : null}
+                    {inspect.child_scope && (
+                      <button onClick={() => setScope(inspect.child_scope!)}>
+                        Enter instance
+                      </button>
+                    )}
+                    <div className="pin-list">
+                      {inspect.ports
+                        .filter((p) => p.display?.role !== "power")
+                        .map((p) => (
+                          <button
+                            key={p.id}
+                            onClick={() =>
+                              pickSignal(p.signal_ids, {
+                                kind: "pin",
+                                nodeId: inspect.id,
+                                portId: p.id,
+                              })
+                            }
+                          >
+                            {p.direction === "output" ? "→" : "←"} {p.label}
+                          </button>
+                        ))}
+                    </div>
+                    {inspect.ports.some((p) => p.display?.role === "power") && (
+                      <details>
+                        <summary>Power connections</summary>
+                        <div className="pin-list">
+                          {inspect.ports
+                            .filter((p) => p.display?.role === "power")
+                            .map((p) => (
+                              <button
+                                key={p.id}
+                                onClick={() =>
+                                  pickSignal(p.signal_ids, {
+                                    kind: "pin",
+                                    nodeId: inspect.id,
+                                    portId: p.id,
+                                  })
+                                }
+                              >
+                                {p.label}
+                              </button>
+                            ))}
+                        </div>
+                      </details>
+                    )}
+                    {inspect.source && (
+                      <button
+                        onClick={() => {
+                          if (inspect.source) viewSource(inspect.source);
+                        }}
+                      >
+                        View source
+                      </button>
+                    )}
+                    <details>
+                      <summary>Process / cell details</summary>
+                      <pre>
+                        {JSON.stringify(
+                          snapshot?.design.modules[
+                            snapshot.design.scopes.find(
+                              (s) =>
+                                JSON.stringify(s.path) ===
+                                JSON.stringify(scope),
+                            )?.module || ""
+                          ]?.cells.find((c) => c.name === inspect.label)
+                            ?.attributes,
+                          null,
+                          2,
+                        )}
+                      </pre>
+                    </details>
+                  </>
+                )}
+                {snapshot?.physical_run && (
+                  <details>
+                    <summary>
+                      Physical results: {snapshot.physical_run.status}
+                    </summary>
+                    <pre>
+                      {JSON.stringify(
+                        snapshot.physical_run.state.metrics,
+                        null,
+                        2,
+                      )}
+                    </pre>
+                    {snapshot.physical_run.reports.map((p) => (
+                      <button
+                        className="path"
+                        key={p}
+                        onClick={() =>
+                          void api<string>("report", {
+                            snapshot_id: snapshot.id,
+                            path: p,
+                          })
+                            .then((content) => {
+                              setText(content);
+                              setModal("Report");
+                            })
+                            .catch(fail)
+                        }
+                      >
+                        {p.split("/").slice(-2).join("/")}
+                      </button>
+                    ))}
+                  </details>
+                )}
+                <div className="diagnostics">
+                  {[
+                    ...(snapshot?.diagnostics || []),
+                    ...(run?.diagnostics || []),
+                  ].map((d, i) => (
+                    <p key={i} className={d.severity}>
+                      {d.message}
+                    </p>
+                  ))}
+                </div>
+              </section>
+            </div>
+            <div className="sidebar-content" hidden={explorer !== "design"}>
               <div className="panel-heading">
                 DESIGN HIERARCHY{" "}
                 <span>{snapshot?.design.scopes.length || 0}</span>
@@ -673,7 +966,9 @@ function App() {
                       .map((s) => (
                         <button
                           key={JSON.stringify(s.path)}
-                          style={{ paddingLeft: 12 + (s.path.length - 1) * 16 }}
+                          style={{
+                            paddingLeft: 12 + (s.path.length - 1) * 16,
+                          }}
                           className={
                             JSON.stringify(scope) === JSON.stringify(s.path)
                               ? "active"
@@ -791,540 +1086,441 @@ function App() {
                     ))}
                 </details>
               )}
-            </>
-          )}
-        </aside>
-        <div className="workspace">
-          <div className="workspace-tools">
-            <button onClick={() => setEditorCollapsed(!editorCollapsed)}>
-              {editorCollapsed ? "Show Editor" : "Hide Editor"}
-            </button>
-            <button onClick={() => setSchematicCollapsed(!schematicCollapsed)}>
-              {schematicCollapsed ? "Show Schematic" : "Hide Schematic"}
-            </button>
-            {working.stale && snapshot && (
-              <span>
-                {pendingSettings
-                  ? "Rebuild required to use updated settings"
-                  : "Sources changed · rebuild needed"}
-              </span>
-            )}
-            {project && (!project.top || !project.sources.length) && (
-              <span className="workflow-guidance">
-                {!project.top
-                  ? "Set the design top before building."
-                  : "Add design sources before building."}{" "}
-                <button
-                  onClick={() =>
-                    working.setSettingsSection(
-                      !project.top ? "general" : "sources",
-                    )
-                  }
-                >
-                  Configure Project…
-                </button>
-              </span>
-            )}
-            {project &&
-              ["mapped", "post_layout"].includes(rep) &&
-              !project.physical && (
-                <span className="workflow-guidance">
-                  Clock settings are required.{" "}
-                  <button
-                    onClick={() => working.setSettingsSection("physical")}
-                  >
-                    Configure Physical Design…
-                  </button>
-                </span>
-              )}
-            {project &&
-              simulation &&
-              simulations?.[simulation] &&
-              !simulations[simulation].testbench.length && (
-                <span className="workflow-guidance">
-                  Select testbench files before simulation.{" "}
-                  <button
-                    onClick={() => working.setSettingsSection("simulation")}
-                  >
-                    Configure Simulation…
-                  </button>
-                </span>
-              )}
-          </div>
-          <div
-            className="workspace-panes"
-            style={{
-              gridTemplateRows:
-                run && wave
-                  ? `minmax(120px, ${100 - waveformHeight}fr) 8px minmax(120px, ${waveformHeight}fr)`
-                  : "minmax(0, 1fr) auto",
-            }}
-          >
-            <div
-              className="workbench"
-              style={{
-                gridTemplateColumns:
-                  !editorCollapsed && working.activeTab && !schematicCollapsed
-                    ? `${editorWidth}% 8px minmax(0,1fr)`
-                    : "minmax(0,1fr)",
-              }}
-            >
-              {working.activeTab && (
-                <div
-                  className="editor-pane"
-                  style={{ display: editorCollapsed ? "none" : undefined }}
-                >
-                  <div className="editor-tabs">
-                    {working.tabs.map((tab) => (
-                      <div
-                        key={tab.id}
-                        className={working.active === tab.id ? "active" : ""}
-                      >
-                        <button
-                          title={tab.label}
-                          onClick={() => working.setActive(tab.id)}
-                        >
-                          {tab.label}
-                          {tab.text !== tab.saved ? " *" : ""}
-                        </button>
-                        <button
-                          aria-label={`Close ${tab.label}`}
-                          onClick={() => void working.closeTab(tab).catch(fail)}
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="editor-tools">
-                    {working.activeTab.readonly ? (
-                      <>
-                        <span>Captured source · read-only</span>
-                        <button
-                          disabled={!project}
-                          onClick={() => {
-                            const tab = working.activeTab;
-                            if (tab)
-                              void working.openWorkingFile(tab).catch(fail);
-                          }}
-                        >
-                          Open Working File
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        onClick={() => {
-                          const tab = working.activeTab;
-                          if (tab) void working.saveTab(tab).catch(fail);
-                        }}
-                      >
-                        Save
-                      </button>
-                    )}
-                  </div>
-                  {!!lint.status && (
-                    <div
-                      className="lint-status"
-                      aria-label="Editor lint status"
-                    >
-                      <span>{lint.status}</span>
-                      {lint.context &&
-                        lint.context.choices.length > 1 &&
-                        lint.context.context.kind === "simulation" && (
-                          <label>
-                            Analysis context{" "}
-                            <select
-                              aria-label="Lint simulation configuration"
-                              value={lint.context.context.configuration ?? ""}
-                              onChange={(event) =>
-                                lint.setContext(event.target.value)
-                              }
-                            >
-                              <option value="">Syntax and style only</option>
-                              {lint.context.choices.map((name) => (
-                                <option key={name} value={name}>
-                                  {name}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        )}
-                      {lint.context?.context.kind === "simulation" &&
-                        lint.context.choices.length === 1 && (
-                          <span>
-                            Simulation: {lint.context.context.configuration}
-                          </span>
-                        )}
-                    </div>
-                  )}
-                  <SourceEditor
-                    tab={working.activeTab}
-                    tabIds={working.tabs.map((t) => t.id)}
-                    onChange={working.updateTab}
-                    diagnostics={editorDiagnostics}
-                  />
-                </div>
-              )}
-              {!editorCollapsed && working.activeTab && !schematicCollapsed && (
-                <div
-                  className="pane-splitter"
-                  role="separator"
-                  aria-label="Editor width"
-                  aria-orientation="vertical"
-                  tabIndex={0}
-                  aria-valuenow={editorWidth}
-                  aria-valuemin={20}
-                  aria-valuemax={80}
-                  onKeyDown={(e) => {
-                    if (e.key === "ArrowLeft")
-                      setEditorWidth((w) => Math.max(20, w - 5));
-                    if (e.key === "ArrowRight")
-                      setEditorWidth((w) => Math.min(80, w + 5));
-                  }}
-                  onPointerDown={(e) =>
-                    e.currentTarget.setPointerCapture(e.pointerId)
-                  }
-                  onPointerMove={(e) => {
-                    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
-                    const bounds =
-                      e.currentTarget.parentElement?.getBoundingClientRect();
-                    if (bounds)
-                      setEditorWidth(
-                        Math.min(
-                          80,
-                          Math.max(
-                            20,
-                            (100 * (e.clientX - bounds.left)) / bounds.width,
-                          ),
-                        ),
-                      );
-                  }}
-                  onPointerUp={(e) =>
-                    e.currentTarget.releasePointerCapture(e.pointerId)
-                  }
-                />
-              )}
-              {!schematicCollapsed && (
-                <div className="design-pane">
-                  <div className="breadcrumbs">
-                    <button
-                      aria-label="Previous scope"
-                      disabled={!navigation.canBack}
-                      onClick={navigation.back}
-                    >
-                      ←
-                    </button>
-                    <button
-                      aria-label="Next scope"
-                      disabled={!navigation.canForward}
-                      onClick={navigation.forward}
-                    >
-                      →
-                    </button>
-                    {scope.map((s, i) => (
-                      <React.Fragment key={i}>
-                        <button
-                          onClick={() => {
-                            setScope(scope.slice(0, i + 1));
-                            setFocus(undefined);
-                          }}
-                        >
-                          {s}
-                        </button>
-                        <span>/</span>
-                      </React.Fragment>
-                    ))}
-                    {focus && (
-                      <button onClick={() => setFocus(undefined)}>
-                        Clear cone focus
-                      </button>
-                    )}
-                    <span className="snapshot-note">
-                      {run
-                        ? "Bound to simulation " + run.id.slice(0, 8)
-                        : "Schematic exploration"}
-                    </span>
-                  </div>
-                  {graph ? (
-                    <Schematic
-                      graph={graph}
-                      splitBuses={splitBuses}
-                      onSplitBuses={() => setSplitBuses(!splitBuses)}
-                      selected={selection?.signalId}
-                      onSignal={pickSignal}
-                      onScope={(s) => {
-                        setScope(s);
-                        setFocus(undefined);
-                      }}
-                      onInspect={(node) => {
-                        setInspect(node);
-                        setSelection((previous) =>
-                          nextSelection(previous, {
-                            origin: "schematic",
-                            scope: node.child_scope,
-                          }),
-                        );
-                      }}
-                      onError={fail}
-                    />
-                  ) : (
-                    <div className="welcome">
-                      <div className="welcome-symbol">⌘</div>
-                      <h1>See your hardware.</h1>
-                      <p>
-                        Explore RTL structure, follow signals, and inspect
-                        simulation results in one workspace.
-                      </p>
-                      <div className="welcome-actions">
-                        <button
-                          onClick={() => {
-                            setText("");
-                            setModal("Open snapshot");
-                          }}
-                        >
-                          Open saved snapshot
-                        </button>
-                        <button
-                          onClick={() => {
-                            setJob(undefined);
-                            api<Job>("probe", { profile })
-                              .then(setJob)
-                              .catch(fail);
-                          }}
-                        >
-                          Check toolchain
-                        </button>
-                      </div>
-                      <p className="hint">
-                        Sources stay on your machine. Each waveform is bound to
-                        one design snapshot.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
-            {run && wave && (
+          </aside>
+        }
+        panel={
+          <section className="bottom-panel" aria-label="Bottom panel">
+            <div className="panel-tabs">
               <div
-                className="wave-splitter"
-                role="separator"
-                aria-label="Waveform height"
-                aria-orientation="horizontal"
-                aria-controls="waveform-pane"
-                tabIndex={0}
-                aria-valuenow={Math.round(waveformHeight)}
-                aria-valuemin={20}
-                aria-valuemax={70}
-                aria-valuetext={`${Math.round(waveformHeight)}%`}
-                onKeyDown={(e) => {
-                  if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(e.key))
+                role="tablist"
+                aria-label="Panel views"
+                onKeyDown={(event) => {
+                  if (
+                    !["ArrowLeft", "ArrowRight", "Home", "End"].includes(
+                      event.key,
+                    )
+                  )
                     return;
-                  e.preventDefault();
-                  setWaveformHeight((height) =>
-                    e.key === "Home"
-                      ? 20
-                      : e.key === "End"
-                        ? 70
-                        : Math.min(
-                            70,
-                            Math.max(
-                              20,
-                              height + (e.key === "ArrowUp" ? 5 : -5),
-                            ),
-                          ),
+                  event.preventDefault();
+                  const tabs = Array.from(
+                    event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                      '[role="tab"]',
+                    ),
                   );
+                  const current = tabs.findIndex((tab) => tab === event.target);
+                  const index =
+                    event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? tabs.length - 1
+                        : (current +
+                            (event.key === "ArrowRight"
+                              ? 1
+                              : tabs.length - 1)) %
+                          tabs.length;
+                  tabs[index]?.focus();
+                  tabs[index]?.click();
                 }}
-                onPointerDown={(e) => {
-                  if (e.button !== 0) return;
-                  e.preventDefault();
-                  e.currentTarget.focus();
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                }}
-                onPointerMove={(e) => {
-                  if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
-                  const bounds =
-                    e.currentTarget.parentElement?.getBoundingClientRect();
-                  if (bounds)
-                    setWaveformHeight(
-                      Math.min(
-                        70,
-                        Math.max(
-                          20,
-                          (100 *
-                            (bounds.bottom -
-                              e.clientY -
-                              e.currentTarget.offsetHeight / 2)) /
-                            (bounds.height - e.currentTarget.offsetHeight),
-                        ),
-                      ),
-                    );
-                }}
-                onPointerUp={(e) => {
-                  if (e.currentTarget.hasPointerCapture(e.pointerId))
-                    e.currentTarget.releasePointerCapture(e.pointerId);
-                }}
-              />
-            )}
-            {run && wave ? (
-              <Waveform
-                key={run.id}
-                run={run}
-                info={wave}
-                visible={visible}
-                selected={selection?.variableId}
-                onSelect={pickWave}
-                onVisible={setVisible}
-                onCursor={(time) => {
-                  void cursor(time);
-                }}
-              />
-            ) : (
-              <div className="wave-empty">
-                <strong>Waveform workspace</strong>
-                <span>Run a simulation or import a matching trace.</span>
-                <button
-                  disabled={!snapshot || busy}
-                  onClick={() => {
-                    setText("");
-                    setAux(
-                      JSON.stringify([
-                        project?.simulations && simulation ? "tb" : "tb",
-                        "dut",
-                      ]),
-                    );
-                    setModal("Import waveform");
-                  }}
-                >
-                  Import VCD / FST
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-        <aside className="inspector">
-          <div className="panel-heading">INSPECTOR</div>
-          {selectedSignal ? (
-            <>
-              <h3>{selectedSignal.path.at(-1)}</h3>
-              <p className="path">{selectedSignal.path.join(".")}</p>
-              <dl>
-                <dt>Width</dt>
-                <dd>{selectedSignal.width} bits</dd>
-                <dt>Waveform</dt>
-                <dd>{selectedBinding?.status || "No trace loaded"}</dd>
-              </dl>
-              <p className="hint">{selectedBinding?.evidence}</p>
-              <button onClick={() => setFocus(selectedSignal.id)}>
-                Explore connected cells
-              </button>
-              {run && (
-                <button
-                  onClick={() => {
-                    setText("");
-                    setModal("Manual binding");
-                  }}
-                >
-                  Map waveform signal
-                </button>
-              )}
-              {selectedSignal.source && (
-                <button
-                  onClick={() => {
-                    if (selectedSignal.source)
-                      viewSource(selectedSignal.source);
-                  }}
-                >
-                  View source
-                </button>
-              )}
-            </>
-          ) : (
-            <p className="hint">
-              Select a signal, wire, or cell to inspect it.
-            </p>
-          )}
-          {inspect && (
-            <>
-              <h3>{inspect.label}</h3>
-              <p>{inspect.kind}</p>
-              {inspect.child_scope && (
-                <button onClick={() => setScope(inspect.child_scope!)}>
-                  Enter instance
-                </button>
-              )}
-              <div className="pin-list">
-                {inspect.ports.map((p) => (
-                  <button key={p.id} onClick={() => pickSignal(p.signal_ids)}>
-                    {p.direction === "output" ? "→" : "←"} {p.label}
+              >
+                {(["waveforms", "logs", "problems"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    id={`panel-tab-${tab}`}
+                    role="tab"
+                    aria-selected={panelTab === tab}
+                    aria-controls={`panel-${tab}`}
+                    tabIndex={panelTab === tab ? 0 : -1}
+                    className={panelTab === tab ? "active" : ""}
+                    onClick={() => {
+                      setPanelTab(tab);
+                      setPanelOpen(true);
+                      if (tab === "logs")
+                        api<string>("logs").then(setLogs).catch(fail);
+                    }}
+                  >
+                    {tab === "waveforms"
+                      ? "Waveforms"
+                      : tab === "logs"
+                        ? "Logs"
+                        : `Problems ${lint.result?.diagnostics.length ?? 0}`}
                   </button>
                 ))}
               </div>
-              {inspect.source && (
+              <button
+                aria-label={
+                  panelOpen ? "Hide bottom panel" : "Show bottom panel"
+                }
+                aria-expanded={panelOpen}
+                onClick={() => setPanelOpen(!panelOpen)}
+              >
+                {panelOpen ? "⌄" : "⌃"}
+              </button>
+            </div>
+            <div className="bottom-content" hidden={!panelOpen}>
+              <div
+                id="panel-waveforms"
+                role="tabpanel"
+                aria-labelledby="panel-tab-waveforms"
+                hidden={panelTab !== "waveforms"}
+              >
+                {run && wave ? (
+                  <Waveform
+                    key={run.id}
+                    active={panelOpen && panelTab === "waveforms"}
+                    run={run}
+                    info={wave}
+                    visible={visible}
+                    selected={selection?.variableId}
+                    onSelect={pickWave}
+                    onVisible={setVisible}
+                    onCursor={(time) => {
+                      void cursor(time);
+                    }}
+                  />
+                ) : (
+                  <div className="wave-empty">
+                    <strong>Waveform workspace</strong>
+                    <span>Run a simulation or import a matching trace.</span>
+                    <button
+                      disabled={!snapshot || busy}
+                      onClick={() => {
+                        setText("");
+                        setAux(
+                          JSON.stringify([
+                            project?.simulations && simulation ? "tb" : "tb",
+                            "dut",
+                          ]),
+                        );
+                        setModal("Import waveform");
+                      }}
+                    >
+                      Import VCD / FST
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div
+                id="panel-logs"
+                role="tabpanel"
+                aria-labelledby="panel-tab-logs"
+                hidden={panelTab !== "logs"}
+              >
+                <section className="log-drawer" aria-label="Tool logs">
+                  <pre>{logs || "Tool logs will appear here."}</pre>
+                </section>
+              </div>
+              <div
+                id="panel-problems"
+                role="tabpanel"
+                aria-labelledby="panel-tab-problems"
+                hidden={panelTab !== "problems"}
+              >
+                <section className="log-drawer" aria-label="Problems panel">
+                  <EditorProblems
+                    result={lint.result}
+                    error={lint.error}
+                    status={lint.status}
+                    onConfigure={
+                      lint.context?.context.kind === "simulation" &&
+                      !lint.context.context.configuration
+                        ? () => working.setSettingsSection("simulation")
+                        : undefined
+                    }
+                    onNavigate={(location) => {
+                      if (
+                        location.file &&
+                        location.from !== undefined &&
+                        location.to !== undefined
+                      )
+                        void working
+                          .openFile(location.file, {
+                            from: location.from,
+                            to: location.to,
+                          })
+                          .catch(fail);
+                    }}
+                  />
+                </section>
+              </div>
+            </div>
+          </section>
+        }
+      >
+        <div className="workspace-tools">
+          <button onClick={() => setEditorCollapsed(!editorCollapsed)}>
+            {editorCollapsed ? "Show Editor" : "Hide Editor"}
+          </button>
+          <button onClick={() => setSchematicCollapsed(!schematicCollapsed)}>
+            {schematicCollapsed ? "Show Schematic" : "Hide Schematic"}
+          </button>
+          {working.stale && snapshot && (
+            <span>
+              {pendingSettings
+                ? "Rebuild required to use updated settings"
+                : "Sources changed · rebuild needed"}
+            </span>
+          )}
+          {project && (!project.top || !project.sources.length) && (
+            <span className="workflow-guidance">
+              {!project.top
+                ? "Set the design top before building."
+                : "Add design sources before building."}{" "}
+              <button
+                onClick={() =>
+                  working.setSettingsSection(
+                    !project.top ? "general" : "sources",
+                  )
+                }
+              >
+                Configure Project…
+              </button>
+            </span>
+          )}
+          {project &&
+            ["mapped", "post_layout"].includes(rep) &&
+            !project.physical && (
+              <span className="workflow-guidance">
+                Clock settings are required.{" "}
+                <button onClick={() => working.setSettingsSection("physical")}>
+                  Configure Physical Design…
+                </button>
+              </span>
+            )}
+          {project &&
+            simulation &&
+            simulations?.[simulation] &&
+            !simulations[simulation].testbench.length && (
+              <span className="workflow-guidance">
+                Select testbench files before simulation.{" "}
                 <button
+                  onClick={() => working.setSettingsSection("simulation")}
+                >
+                  Configure Simulation…
+                </button>
+              </span>
+            )}
+        </div>
+        <EditorSchematic
+          editorCollapsed={editorCollapsed}
+          schematicCollapsed={schematicCollapsed}
+          editor={
+            working.activeTab && (
+              <div
+                className="editor-pane"
+                style={{ display: editorCollapsed ? "none" : undefined }}
+              >
+                <div className="editor-tabs">
+                  {working.tabs.map((tab) => (
+                    <div
+                      key={tab.id}
+                      className={working.active === tab.id ? "active" : ""}
+                    >
+                      <button
+                        title={tab.label}
+                        onClick={() => working.setActive(tab.id)}
+                      >
+                        {tab.label}
+                        {tab.text !== tab.saved ? " *" : ""}
+                      </button>
+                      <button
+                        aria-label={`Close ${tab.label}`}
+                        onClick={() => void working.closeTab(tab).catch(fail)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className="editor-tools">
+                  {working.activeTab.readonly ? (
+                    <>
+                      <span>Captured source · read-only</span>
+                      <button
+                        disabled={!project}
+                        onClick={() => {
+                          const tab = working.activeTab;
+                          if (tab)
+                            void working.openWorkingFile(tab).catch(fail);
+                        }}
+                      >
+                        Open Working File
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        const tab = working.activeTab;
+                        if (tab) void working.saveTab(tab).catch(fail);
+                      }}
+                    >
+                      Save
+                    </button>
+                  )}
+                </div>
+                {!!lint.status && (
+                  <div className="lint-status" aria-label="Editor lint status">
+                    <span>{lint.status}</span>
+                    {lint.context &&
+                      lint.context.choices.length > 1 &&
+                      lint.context.context.kind === "simulation" && (
+                        <label>
+                          Analysis context{" "}
+                          <select
+                            aria-label="Lint simulation configuration"
+                            value={lint.context.context.configuration ?? ""}
+                            onChange={(event) =>
+                              lint.setContext(event.target.value)
+                            }
+                          >
+                            <option value="">Syntax and style only</option>
+                            {lint.context.choices.map((name) => (
+                              <option key={name} value={name}>
+                                {name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                    {lint.context?.context.kind === "simulation" &&
+                      lint.context.choices.length === 1 && (
+                        <span>
+                          Simulation: {lint.context.context.configuration}
+                        </span>
+                      )}
+                  </div>
+                )}
+                <SourceEditor
+                  tab={working.activeTab}
+                  tabIds={working.tabs.map((t) => t.id)}
+                  onChange={working.updateTab}
+                  diagnostics={editorDiagnostics}
+                />
+              </div>
+            )
+          }
+          schematic={
+            <div className="design-pane" hidden={schematicCollapsed}>
+              <div className="breadcrumbs">
+                <button
+                  aria-label="Previous scope"
+                  disabled={!navigation.canBack}
                   onClick={() => {
-                    if (inspect.source) viewSource(inspect.source);
+                    setDetails([]);
+                    navigation.back();
                   }}
                 >
-                  View source
+                  ←
                 </button>
-              )}
-              <details>
-                <summary>Process / cell details</summary>
-                <pre>
-                  {JSON.stringify(
-                    snapshot?.design.modules[
-                      snapshot.design.scopes.find(
-                        (s) => JSON.stringify(s.path) === JSON.stringify(scope),
-                      )?.module || ""
-                    ]?.cells.find((c) => c.name === inspect.label)?.attributes,
-                    null,
-                    2,
-                  )}
-                </pre>
-              </details>
-            </>
-          )}
-          {snapshot?.physical_run && (
-            <details>
-              <summary>
-                Physical results: {snapshot.physical_run.status}
-              </summary>
-              <pre>
-                {JSON.stringify(snapshot.physical_run.state.metrics, null, 2)}
-              </pre>
-              {snapshot.physical_run.reports.map((p) => (
                 <button
-                  className="path"
-                  key={p}
-                  onClick={() =>
-                    void api<string>("report", {
-                      snapshot_id: snapshot.id,
-                      path: p,
-                    })
-                      .then((content) => {
-                        setText(content);
-                        setModal("Report");
-                      })
-                      .catch(fail)
-                  }
+                  aria-label="Next scope"
+                  disabled={!navigation.canForward}
+                  onClick={() => {
+                    setDetails([]);
+                    navigation.forward();
+                  }}
                 >
-                  {p.split("/").slice(-2).join("/")}
+                  →
                 </button>
-              ))}
-            </details>
-          )}
-          <div className="diagnostics">
-            {[
-              ...(snapshot?.diagnostics || []),
-              ...(run?.diagnostics || []),
-            ].map((d, i) => (
-              <p key={i} className={d.severity}>
-                {d.message}
-              </p>
-            ))}
-          </div>
-        </aside>
-      </main>
+                {scope.map((s, i) => (
+                  <React.Fragment key={i}>
+                    <button
+                      onClick={() => {
+                        setScope(scope.slice(0, i + 1));
+                        setFocus(undefined);
+                      }}
+                    >
+                      {s}
+                    </button>
+                    <span>/</span>
+                  </React.Fragment>
+                ))}
+                {detail && (
+                  <>
+                    <button
+                      onClick={() =>
+                        setDetails((previous) => previous.slice(0, -1))
+                      }
+                    >
+                      Back to parent schematic
+                    </button>
+                    <span>Details</span>
+                  </>
+                )}
+                {focus && (
+                  <button onClick={() => setFocus(undefined)}>
+                    Clear cone focus
+                  </button>
+                )}
+                <span className="snapshot-note">
+                  {run
+                    ? "Bound to simulation " + run.id.slice(0, 8)
+                    : "Schematic exploration"}
+                </span>
+              </div>
+              {graph ? (
+                <Schematic
+                  graph={graph}
+                  preferences={schematicPreferences}
+                  onPreferences={setSchematicPreferences}
+                  onDetail={openDetail}
+                  splitBuses={splitBuses}
+                  onSplitBuses={() => setSplitBuses(!splitBuses)}
+                  selected={selection?.signalId}
+                  target={selection?.connection}
+                  inspected={inspect?.id}
+                  onSignal={pickSignal}
+                  onScope={(s) => {
+                    setScope(s);
+                    setFocus(undefined);
+                  }}
+                  onInspect={(node) => {
+                    setInspect(node);
+                    setSelection((previous) =>
+                      nextSelection(previous, {
+                        origin: "schematic",
+                        scope: node.child_scope,
+                      }),
+                    );
+                  }}
+                  onError={fail}
+                />
+              ) : (
+                <div className="welcome">
+                  <div className="welcome-symbol">⌘</div>
+                  <h1>See your hardware.</h1>
+                  <p>
+                    Explore RTL structure, follow signals, and inspect
+                    simulation results in one workspace.
+                  </p>
+                  <div className="welcome-actions">
+                    <button
+                      onClick={() => {
+                        setText("");
+                        setModal("Open snapshot");
+                      }}
+                    >
+                      Open saved snapshot
+                    </button>
+                    <button
+                      onClick={() => {
+                        setJob(undefined);
+                        api<Job>("probe", { profile }).then(setJob).catch(fail);
+                      }}
+                    >
+                      Check toolchain
+                    </button>
+                  </div>
+                  <p className="hint">
+                    Sources stay on your machine. Each waveform is bound to one
+                    design snapshot.
+                  </p>
+                </div>
+              )}
+            </div>
+          }
+        />
+      </Workspace>
       <footer inert={!!working.settingsSection}>
         <span className={`status-dot ${busy ? "busy" : ""}`} />
         <span>{job ? `${job.kind}: ${job.status}` : "Ready"}</span>
@@ -1343,57 +1539,7 @@ function App() {
             ? "Docker toolchain"
             : "Native toolchain"}
         </span>
-        <button
-          onClick={() => {
-            setDrawer(drawerTab === "logs" ? !drawer : true);
-            setDrawerTab("logs");
-            api<string>("logs").then(setLogs).catch(fail);
-          }}
-        >
-          Logs {drawer && drawerTab === "logs" ? "⌄" : "⌃"}
-        </button>
-        <button
-          onClick={() => {
-            setDrawer(drawerTab === "problems" ? !drawer : true);
-            setDrawerTab("problems");
-          }}
-        >
-          Problems {lint.result?.diagnostics.length ?? 0}{" "}
-          {drawer && drawerTab === "problems" ? "⌄" : "⌃"}
-        </button>
       </footer>
-      {drawer && (
-        <section className="log-drawer">
-          {drawerTab === "logs" ? (
-            <pre>{logs || "Tool logs will appear here."}</pre>
-          ) : (
-            <EditorProblems
-              result={lint.result}
-              error={lint.error}
-              status={lint.status}
-              onConfigure={
-                lint.context?.context.kind === "simulation" &&
-                !lint.context.context.configuration
-                  ? () => working.setSettingsSection("simulation")
-                  : undefined
-              }
-              onNavigate={(location) => {
-                if (
-                  location.file &&
-                  location.from !== undefined &&
-                  location.to !== undefined
-                )
-                  void working
-                    .openFile(location.file, {
-                      from: location.from,
-                      to: location.to,
-                    })
-                    .catch(fail);
-              }}
-            />
-          )}
-        </section>
-      )}
       <ProjectDialogs
         controller={working}
         onError={fail}
@@ -1471,4 +1617,10 @@ function App() {
     </>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  new URLSearchParams(location.search).has("symbol-gallery") ? (
+    <SymbolGallery />
+  ) : (
+    <App />
+  ),
+);

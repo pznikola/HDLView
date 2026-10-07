@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use hdlview_core::service::Service;
 use tauri::Manager;
+use tauri_plugin_dialog::DialogExt;
 #[tauri::command]
 async fn api(
     action: String,
@@ -10,6 +11,24 @@ async fn api(
     let service = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         service.request(&action, args).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn save_schematic_svg(svg: String, app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(file) = app
+            .dialog()
+            .file()
+            .add_filter("SVG schematic", &["svg"])
+            .set_file_name("hdlview-schematic.svg")
+            .blocking_save_file()
+        else {
+            return Ok(());
+        };
+        let path = file.into_path().map_err(|e| e.to_string())?;
+        hdlview_core::schematic::save_svg(&path, &svg).map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -29,7 +48,7 @@ fn main() {
             app.manage(Service::new(path));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![api])
+        .invoke_handler(tauri::generate_handler![api, save_schematic_svg])
         .run(tauri::generate_context!())
         .expect("Cannot launch HDLView");
 }

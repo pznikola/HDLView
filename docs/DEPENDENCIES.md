@@ -49,3 +49,7 @@ Reference repositories such as NetlistSVG, d3-hwschematic, DigitalJS, TerosHDL, 
 ## Source-file Trash runtime
 
 Linux file management uses system `/usr/bin/gio` (`libglib2.0-bin`) for desktop Trash. GIO is part of GLib, licensed LGPL-2.1-or-later: https://gitlab.gnome.org/GNOME/glib. It is an external host program, not vendored application code or a new Cargo/npm dependency. The Debian package declares the runtime package; native/AppImage users install it separately. Editing, imports, and compilation remain available when Trash is unavailable.
+
+HDLView's hardware SVG geometry and schematic themes are original application code. The
+symbol gallery and fixtures reuse that code; no upstream skin, diagram framework, font,
+or additional runtime dependency was added for schematic rendering.

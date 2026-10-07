@@ -6,6 +6,7 @@ const ROW = 30,
   LABEL = 240;
 export function Waveform({
   run,
+  active,
   info,
   visible,
   selected,
@@ -14,6 +15,7 @@ export function Waveform({
   onCursor,
 }: {
   run: Run;
+  active: boolean;
   info: WaveInfo;
   visible: number[];
   selected?: number;
@@ -66,7 +68,7 @@ export function Waveform({
   );
   const ids = useMemo(() => shown.map((row) => row.id), [shown]);
   useEffect(() => {
-    if (selected === undefined || !container.current) return;
+    if (!active || selected === undefined || !container.current) return;
     const index = displayed.findIndex((row) => row.id === selected);
     if (index < 0) return;
     const element = container.current;
@@ -76,7 +78,7 @@ export function Waveform({
       top + ROW > element.scrollTop + element.clientHeight
     )
       element.scrollTop = top;
-  }, [selected, displayed]);
+  }, [active, selected, displayed]);
   useEffect(() => {
     const ob = new ResizeObserver(([entry]) => {
       if (entry)
@@ -89,7 +91,8 @@ export function Waveform({
     return () => ob.disconnect();
   }, []);
   useEffect(() => {
-    let active = true;
+    if (!active || !width || !count) return;
+    let current = true;
     api<WaveRow[]>("wave_window", {
       run_id: run.id,
       ids,
@@ -98,18 +101,18 @@ export function Waveform({
       pixels: Math.max(1, width - LABEL),
     })
       .then((data) => {
-        if (active) {
+        if (current) {
           setRows(data);
           setError("");
         }
       })
       .catch((e) => {
-        if (active) setError(String(e));
+        if (current) setError(String(e));
       });
     return () => {
-      active = false;
+      current = false;
     };
-  }, [run.id, ids, range, width]);
+  }, [active, run.id, ids, range, width, count]);
   useEffect(() => {
     const c = canvas.current;
     if (!c) return;
@@ -226,7 +229,6 @@ export function Waveform({
   return (
     <section className="wave-panel" id="waveform-pane">
       <div className="wave-toolbar">
-        <strong>Waveforms</strong>
         <span className="muted">{info.timescale} / tick</span>
         <button onClick={() => zoom(0.5)}>Zoom in</button>
         <button onClick={() => zoom(2)}>Zoom out</button>

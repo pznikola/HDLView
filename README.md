@@ -2,7 +2,7 @@
 
 Linux desktop HDL schematic and waveform explorer, with a Rust core and headless CLI.
 
-- Source/dataflow, elaborated RTL, generic gates, PDK-mapped gates, and post-layout views.
+- Source/dataflow, elaborated RTL, generic gates, PDK-mapped gates, and post-layout views with hardware symbols.
 - Verilog/SystemVerilog projects, using existing open-source compilers.
 - File-menu project creation/opening, grouped RTL/simulation imports, editable source tabs, and automatic project artifact restoration.
 - Live syntax, semantic, and style diagnostics for unsaved design and simulation buffers.
@@ -79,13 +79,57 @@ Disk creation, rename, and Trash happen immediately; **Save Project** persists t
 
 **File → Save Project** saves edited documents, project configuration, and current artifact references. `Ctrl+S` saves the active file; `Ctrl+Shift+S` saves the project. External edits offer Reload/Overwrite/Cancel. Closing a dirty tab/project/window offers Save/Discard/Cancel. Sources must be saved before building. Saved edits mark the schematic **Rebuild required**; captured source navigation remains read-only with a separate working-file action. UTF-8 BOM and LF/CRLF are preserved; unsupported encodings, mixed line endings, and CR-only files are reported.
 
-Drag the horizontal divider above Waveforms to resize its height. Focus the divider and use Up/Down to adjust it, or Home/End for the limits. The editor and schematic share the remaining space.
+Use **Sources**, **Design**, and **Inspector** to choose the left sidebar view. Selecting a schematic object updates its inspection details without switching the sidebar. The editor and schematic share the area beside it and can be hidden independently.
+
+**Waveforms**, **Logs**, and **Problems** share a panel across the full window width. Choose a tab to open it, or use its collapse button to give the upper panes more space. A successful simulation opens Waveforms. Switching tabs preserves waveform rows, cursor, zoom and radix; each view scrolls independently. Drag the sidebar, editor, or bottom-panel dividers to resize them. Focus a divider and use arrow keys, or Home/End for its limits. The sidebar stays between 224 and 420 pixels, leaving at least 360 pixels beside it on supported window sizes. The bottom panel defaults to 35%, with a 140-pixel minimum and limits that leave at least 260 pixels above it. The editor/schematic split stays within 20–80%, reserving 200/320 pixels respectively when space permits. Pane sizes start with defaults when reopening a project.
 
 **File → Open Existing Project…** selects JSON using the native picker and automatically reopens that project's last valid schematic and matching waveform. There is no separate Restore Session command. Restoration is local to this machine and the configuration's canonical path; tabs, pane sizes, scope, waveform cursor/zoom, and row selection start with defaults. Missing/corrupted artifacts produce warnings; changed working inputs retain the old immutable schematic with a rebuild indication. Opening never compiles or simulates automatically. **Close Project** leaves sources and artifacts on disk.
 
 Registered external roots appear as `@root/path`; include settings accept project-relative paths or that notation. Folder rescans preserve manual compilation order; filelist reimports apply reviewed order and retain source/header roles. Version-1 and version-2 Verilog/SystemVerilog configurations load without automatic rewriting. Their RTL/gate source lists merge in memory, preserving order and configuration-specific testbench lists. Explicit Save Project writes schema 3 without language-family, source-library, gate-source, or simulation-stage fields. Existing VHDL projects are unsupported and opening one leaves the current workspace intact. Legacy valid SV artifacts remain immutable and may show Rebuild required after migration.
 
 For a native installation, adapt [native.example.json](tools/profiles/native.example.json) in the Toolchain editor. Set plugin paths and relevant environment variables as well as executables. The Python environment must contain `pyslang==10.0.0` (needed to honor Verilog-2005 source-view settings). Standard-cell interface extraction also uses `pyslang`.
+
+## Schematic workspace
+
+The schematic uses gate, mux, register, arithmetic, memory and directional-port symbols.
+Open a module with its expansion button or double-click it. For a new Source RTL build,
+processes, functions and tasks open captured behavioral details; **Back to parent schematic**
+restores the previous camera. Dashed edges mean source dependencies and dotted edges mean
+procedural control. Unsupported constructs remain labeled and diagnosed; source behavior
+is not a physical gate diagram. Function arguments and expression temporaries without
+simulator declarations remain unavailable.
+
+Elaborated RTL can compact complete mux trees, decoders and priority encoders. Open those
+symbols to inspect original compiler nodes. Selecting a dumped internal signal in Waveforms
+opens its containing group. Symbols inspect objects; clicking pins/wires selects signals.
+Inputs align in declaration order on the left; outputs and inouts align on the right.
+Expanded bus bits follow their declared range. Small square terminals identify selectable
+pins; round dots mark actual electrical branches. Clicking a wire highlights its visible
+net/slice, while a pin selects its exact endpoint and gives connected wires a lighter highlight.
+Pin and Wire tooltips identify the target. Gate pins retain separate identities even when
+SDF delays make connected endpoints differ.
+
+Use **Display** for light/dark themes, **Show compiler nodes**, **Full clock/reset wiring**,
+**Show physical-only cells**, and grid. Light and no grid are the defaults. Clock/reset
+connectors use exact connectivity and known pin roles, never matching names. Physical-only
+cells are hidden only when their library interfaces are recognized; the toolbar reports
+how many. Unknown cells retain explicit ports and labeled boxes. These preferences do not
+change compilation or simulation. Selection/theme/cursor changes reuse layout. The grid
+follows pan and zoom, uses coarser spacing at low zoom, and is excluded from export.
+
+**Fit**, zoom buttons, mouse-wheel zoom and background dragging control the camera. Buses
+stay bundled unless expanded; partial connections show taps/joins and constants stay near
+consumers. **Export SVG** exports the current logical/detail view with its theme and labels,
+without selection overlays. The desktop opens a native Save dialog; the browser downloads
+the SVG. Try `examples/schematic/hdlview.project.json` for the ALU,
+decoder/encoder, memory, and function/task demonstration. Older artifacts remain readable;
+source details missing from old snapshots require an explicit rebuild.
+
+HDLView generates waveform instrumentation without editing the testbench. If a testbench
+uses its own `$dumpfile`, HDLView accepts the sole VCD/FST in that new run directory with
+the configured DUT scope when `trace.vcd` is absent. Multiple matching traces require an
+explicit choice through Import waveform; malformed or wrong-scope outputs remain errors.
+The actual selected path and hash are recorded in the run manifest.
 
 ## Live editor diagnostics
 
@@ -98,7 +142,7 @@ Checks pause during other jobs. Captured snapshot and auxiliary tabs are exclude
 Errors and warnings appear as underlines, gutter markers, and hover messages with
 the engine and diagnostic code. Open **Problems** beside **Logs** for the full list;
 click an entry to select its working-source range. F8/Shift+F8 navigate diagnostics
-in the active editor. Linting does not open the drawer or move the cursor.
+in the active editor. Linting does not open the panel or move the cursor.
 
 Design analysis uses working project settings. Simulation files use the selected
 owning configuration or their unique owner; **Lint simulation configuration**
@@ -160,6 +204,14 @@ Use **named port connections in gate testbenches**: physical tools may reorder d
 `hdlview rpc` is a local JSON-lines interface used by tests, sharing the same application service as Tauri. It is not a network service. See [architecture](docs/ARCHITECTURE.md).
 
 ## Verification and packaging
+
+The original SVG glyph gallery is available at `/?symbol-gallery` on the frontend dev
+server. Its light/dark Playwright baselines are reviewed images in
+`tests/symbol-gallery.spec.ts-snapshots/`; review geometry changes before refreshing them.
+`tools/qualify.py --schematics` adds captured-behavior/symbol/connectivity checks and the
+mixed schematic fixture to the real tool matrix; add `--mapped` for both PDK libraries.
+`node tools/benchmark-layout.mjs` measures mixed and high-fan-out graphs in the actual
+browser worker after a production build. No reference SVG skins or font assets are bundled.
 
 ```sh
 cargo test --workspace --exclude hdlview-desktop

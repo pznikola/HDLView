@@ -12,6 +12,7 @@ parser.add_argument("--profile", required=True)
 parser.add_argument("--store", default=".hdlview/qualification")
 parser.add_argument("--mapped", action="store_true")
 parser.add_argument("--physical", action="store_true")
+parser.add_argument("--schematics", action="store_true", help="qualify symbols and captured behavior")
 args = parser.parse_args()
 store = pathlib.Path(args.store)
 store.mkdir(parents=True, exist_ok=True)
@@ -38,7 +39,7 @@ def run(arguments, label):
 
 
 projects = [(name, pathlib.Path(f"examples/{name}/hdlview.project.json"),
-             ["source", "elaborated", "generic"]) for name in ["counter", "verilog"]]
+             ["source", "elaborated", "generic"]) for name in (["counter", "verilog", "schematic"] if args.schematics else ["counter", "verilog"])]
 if args.mapped or args.physical:
     original = pathlib.Path("examples/counter/hdlview.project.json")
     for technology, pdk, library, corner in [
@@ -70,6 +71,30 @@ for name, project_path, stages in projects:
         snapshot = run(["build", str(project_path), "--representation", stage], f"{name}/{stage}")
         if not snapshot:
             continue
+        if args.schematics:
+            view = run(["view", snapshot["directory"] + "/snapshot.json"], f"{name}/{stage}/view")
+            assert view, f"{name}/{stage}: graph view failed"
+            ports = {p["id"] for n in view["nodes"] for p in n["ports"]}
+            assert all(p in ports for e in view["edges"] for p in e["sources"] + e["targets"]), "dangling display endpoint"
+            if name == "schematic":
+                kinds = {n["display"]["symbol"] for n in view["nodes"]}
+                if stage == "source":
+                    assert {"process", "function", "task", "assignment"} <= kinds
+                    behavior = [c["behavior"] for c in snapshot["design"]["modules"]["showcase"]["cells"] if c.get("behavior")]
+                    captured = {n["kind"] for b in behavior for n in b["nodes"]}
+                    assert {"case", "loop", "event", "assignment", "function", "task", "return", "mux"} <= captured
+                    assert any(e["label"] == "next" for b in behavior for e in b["edges"])
+                    for b in behavior:
+                        for n in b["nodes"]:
+                            if n["kind"] == "assignment" and n["label"] == "count <=":
+                                assert n["signals"] == ["count"], "assignment bound to a read instead of its target"
+                    assert not any("Opaque source" in d["message"] for d in snapshot["diagnostics"]), snapshot["diagnostics"]
+                elif stage == "elaborated":
+                    assert {"register", "mux", "decoder", "encoder", "memory", "and", "xor", "operator"} <= kinds, kinds
+                else:
+                    assert "register" in kinds
+            if stage == "mapped":
+                assert any(n["display"]["symbol"] == "register" for n in view["nodes"]), f"{name}: no catalog register"
         configurations = ["rtl"]
         if name == "counter" and stage == "elaborated":
             configurations.append("verilator")

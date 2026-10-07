@@ -1,6 +1,6 @@
 use crate::{
-    editor_lint, file_management, graph, model::*, pipeline, project::*, runner::*, simulation,
-    waveform, waveprocess::WaveProcess, workspace,
+    editor_lint, file_management, model::*, pipeline, project::*, runner::*, simulation, waveform,
+    waveprocess::WaveProcess, workspace,
 };
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -593,12 +593,15 @@ impl Service {
             "view" => {
                 let snapshot = self.snapshot(string("snapshot_id")?)?;
                 let scope: Vec<String> = serde_json::from_value(v["scope"].clone())?;
-                Ok(serde_json::to_value(graph::view_with_options(
+                let options: SchematicOptions =
+                    serde_json::from_value(v.get("options").cloned().unwrap_or_else(|| json!({})))?;
+                Ok(serde_json::to_value(crate::schematic::view(
                     &snapshot,
                     &scope,
                     v["focus"].as_str(),
                     v["limit"].as_u64().unwrap_or(2000) as usize,
                     v["split_buses"].as_bool().unwrap_or(false),
+                    &options,
                 )?)?)
             }
             "bindings" => {

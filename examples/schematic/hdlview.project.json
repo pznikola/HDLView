@@ -1,0 +1,45 @@
+{
+  "technology": "sky130",
+  "schema_version": 3,
+  "name": "Schematic showcase",
+  "top": "showcase",
+  "sources": [
+    {
+      "path": "showcase.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "include_dirs": [],
+  "defines": {},
+  "parameters": {},
+  "assets": [],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "tb",
+      "dut_scope": ["tb", "dut"],
+      "testbench": ["tb.sv"],
+      "args": [],
+      "stop_time": "1us",
+      "sdf": null,
+      "models": [],
+      "defines": {},
+      "timing_corner": null,
+      "delay_selection": null,
+      "use_snapshot_sdf": false
+    }
+  },
+  "physical": {
+    "pdk": "sky130A",
+    "library": "sky130_fd_sc_hd",
+    "clock_port": "clk",
+    "clock_period_ns": 10.0,
+    "sdc": null,
+    "overrides": {
+      "FP_CORE_UTIL": 25,
+      "PL_TARGET_DENSITY_PCT": 35
+    }
+  },
+  "simulation_sources": ["tb.sv"]
+}

@@ -185,15 +185,78 @@ Interaction acceptance:
 
 Provide hierarchy, schematic, waveform, and collapsible diagnostic/job panels. Include pan/zoom/fit, search, breadcrumbs, navigation history, instance/process exploration, buses, source navigation, highlighting, bounded fan-in/fan-out, and current-view SVG export. Handle constants, feedback, multiple drivers, inouts, and unknown cells explicitly.
 
-The left sidebar has **Sources** immediately after opening/creating a project and **Design** after compilation. Sources groups directories/files under Design Sources, Simulation Sources, and Filelists and Auxiliary Files. Compilation order is a separate settings list. Clicking a source opens an editor tab with root/directory labels distinguishing duplicate basenames.
+The left sidebar switches between **Sources**, **Design**, and **Inspector**. Sources is available immediately after opening/creating a project; Design shows compiled hierarchy and Inspector shows current selection details. Selection does not automatically switch the sidebar. Sources groups directories/files under Design Sources, Simulation Sources, and Filelists and Auxiliary Files. Compilation order is a separate settings list. Clicking a source opens an editor tab with root/directory labels distinguishing duplicate basenames.
 
-Place editor and schematic beside each other with a keyboard-accessible adjustable splitter and independent collapse controls. Waveforms remain below both, with a keyboard-accessible horizontal divider for height adjustment. Resizing preserves selection, cursor/zoom, and schematic layout; virtualized waveform rows follow the visible pane height. Use CodeMirror 6 with minimal extensions and the Verilog stream mode for highlighting, line numbers, indentation, search/replace, history, dirty tabs and document Save. File → Save Project and `Ctrl+Shift+S` save modified files and configuration; `Ctrl+S` saves the active file.
+Place editor and schematic beside each other with a keyboard-accessible adjustable splitter and independent collapse controls. A full-window-width bottom panel switches between Waveforms, Logs and Problems. Sidebar width, editor width and bottom-panel height have keyboard-accessible resize dividers with minimum/maximum constraints. Hidden views retain their state. Resizing preserves selection, cursor/zoom, and schematic layout; virtualized waveform rows follow the visible pane height. Use CodeMirror 6 with minimal extensions and the Verilog stream mode for highlighting, line numbers, indentation, search/replace, history, dirty tabs and document Save. File → Save Project and `Ctrl+Shift+S` save modified files and configuration; `Ctrl+S` saves the active file.
 
 Preserve UTF-8 BOM and line endings; explicitly diagnose unsupported encoding, missing files, and permissions. Compare current content against the opened/saved revision before writing. A conflict retains the buffer and offers Reload, Overwrite, or Cancel. Modified-tab closure, project switching, and desktop closure offer Save/Discard/Cancel; save failures prevent leaving. Building with unsaved changes offers Save All and Build or Cancel. Saved source/config changes mark the displayed design stale without automatic rebuild.
 
 Schematic source navigation opens captured snapshot text read-only at the recorded location. A separate Open Working File action uses original-source mappings. Never apply old snapshot line numbers to edited working files. Existing snapshots and waveform sessions remain immutable.
 
 Lay out only the current module or bounded neighborhood; automatically limit large views to 2,000 nodes/cells and offer focused exploration. Use deterministic port ordering, orthogonal layered layout, and snapshot-scoped caching. Selection/cursor movement must not request layout.
+
+### Professional schematic presentation
+
+Keep the custom React/SVG renderer and pinned ELK worker. Rust owns symbol classification,
+pin roles, grouping, connectivity and captured behavior; TypeScript owns original SVG
+geometry, colors, text dimensions, camera and interaction. Geometry definitions supply
+both drawing paths and fixed layout anchors. Retain raw compiler parameters for widths,
+signedness, clock/reset polarity/values and memory dimensions. New artifact metadata is
+optional; project schema remains 3 and old artifacts are never rewritten.
+
+Provide curved AND/OR/XOR and inverted gates, buffers/inverters/tri-state enables,
+trapezoid mux/demux/decoder/encoder symbols, clocked D/Q registers/latches, arithmetic,
+comparison/shift/reduction operators, memories, directional input/output/inout ports,
+source process/function/task symbols, hierarchy blocks, constants and bus taps/joins.
+Unknown types and incompatible library interfaces remain explicit labeled boxes.
+Distinguish binary, bitwise and one-hot mux semantics, including undefined multiple
+one-hot selection. Show sequential polarity and synchronous/asynchronous reset details;
+missing legacy metadata is unavailable, not inferred from signal names.
+
+Capture structured Slang expressions/statements, assignments, blocking/nonblocking
+semantics, case/if/loop sequencing, event controls, calls, formal arguments, returns and
+source spans. Open a process/function/task in a focused behavioral view with Back and
+parent camera restoration. Source edges distinguish dependency from procedural control;
+these views are explanations of HDL, not physical gates. Unsupported constructs remain
+opaque with diagnostics. Expression temporaries and formal arguments have no invented
+waveform declarations. Richer source details require rebuilding older snapshots.
+
+Conservatively recognize complete uniform binary mux trees, full comparison-bank decoders
+and constant-code priority encoders in elaborated RTL. Keep original widths, constants,
+selects, defaults and priority, and reject conflicting drivers or externally consumed
+intermediate outputs. Groups reference original nodes/pins and open their original
+structure. Compiler-node display disables grouping. Mapped and post-layout cells remain
+individual exact instances from the exported simulation netlist. A small SKY130/IHP
+catalog validates actual pin names/directions/widths before using a symbol; expose drive
+variants and power details in inspection. Hide only positively identified fillers, taps
+and decoupling cells, with explicit counts and reveal controls.
+
+Use left-to-right orthogonal layout, directional boundary constraints, fixed data/control
+anchors, label-aware dimensions, deterministic ordering and space for feedback. Convert
+fan-out to supported simple routes with original-net mappings; represent multiple-driver
+and inout connectivity through explicit junctions, without Cartesian expansion. Draw
+junction dots only at real connections. Bundle buses, preserve ordered slice correspondence,
+and render constants near consumers. Distinguish off-view connectivity from undriven nets.
+Prefer declared user labels; keep compiler names in inspection/tooltips. Zoom suppresses
+secondary labels while exports retain them.
+
+Display offers light/dark canvas (light default), compiler nodes, full clock/reset wiring,
+physical cells and grid (off default). Clock/reset connectors require validated semantic
+roles and exact net identity; mixed data/control nets remain wired. Preferences stay local
+and outside compilation fingerprints. Selection, theme and cursor changes do not lay out.
+Cache by snapshot-scoped graph/metadata, semantic view options and geometry version.
+Pins retain their original identities, including separate delayed gate endpoints. Waveform
+selection reveals an internal grouped signal through its detail view; clicking a symbol
+inspects its object/pins. Export standalone SVG with chosen theme/styles, required labels
+and behavioral legend, excluding interaction/selection overlays.
+
+Qualification includes counter and mixed ALU/decoder/encoder/memory/hierarchy fixtures,
+both PDKs, source details, old snapshots, all glyph families, bus constants/slices,
+feedback/inouts/multiple drivers, grouped cross-probing, themes and export. Use semantic
+and routing tests, a reviewed symbol gallery, real native/Docker browser workflows and a
+packaged Linux schematic/export smoke. Measure mixed/high-fan-out 1,000-node layouts and
+loaded selection feedback against the existing targets; reuse physical artifacts rather
+than rerunning unrelated implementation flows.
 
 Waveforms use Wellen outside the UI thread. Query only visible rows/windows, preserve aliases, X/Z values, radix, bus bits, integer timestamps/timescale, and pixel-level activity indications. Serialize timestamps as strings. Do not assume every format is demand-loaded; measure indexing time and peak memory independently. Add disk-backed indexing if needed for the supported memory budget.
 
@@ -284,7 +347,7 @@ and autofix. Pin CodeMirror lint 6.9.5 and retain actual dependency notices.
 Run after 750 ms without typing and after working-file open/save/reload, context
 or relevant settings changes, and application focus. Exclude captured and auxiliary
 tabs. Show red/yellow underlines, gutter markers, engine/code hover messages,
-Problems in the Logs drawer, clickable ranges/related locations, and F8/Shift+F8.
+Problems in the shared bottom panel, clickable ranges/related locations, and F8/Shift+F8.
 Checks must not steal focus, open panels, reset history/selection/scroll, write
 originals, mark rebuilds, or create snapshots.
 
@@ -334,6 +397,61 @@ artifacts. Run Rust/frontend checks, native and Docker browser workflows, and a
 packaged Linux editor smoke. Target feedback within two seconds on documented
 small fixtures, measuring debounce plus preparation and engines. Record measured
 limits in qualification before considering persistent workers.
+
+## 11. Schematic clarity and workspace amendment
+
+Keep the shared SVG/ELK renderer and schema 3. Align compact 24-unit boundary
+port glyphs in fixed input/output columns, with inputs left and outputs/inouts
+right. Preserve compiler declaration order in new Yosys builds and declared bus
+range order in expanded views without changing bit identities or old artifacts.
+All routing anchors must equal rendered node-border terminals, including bottom
+controls; center side labels on their connection lines and reserve control labels
+inside symbols. Increment the geometry/cache version for these changes.
+
+Use persistent four-unit square terminals for pins and round dots for true
+electrical branch junctions. Normalize/deduplicate routes only within an exact
+net/slice, retain original edge mappings, validate ELK junction hints, and never
+join foreign crossings or procedural edges. Wire hit strokes stay eight screen
+pixels; only pin terminals/labels activate pins. Typed presentation selections
+keep exact endpoint identities and lighter connected-wire context. Keyboard,
+hover, focus, tooltips, cross-probing and missing-binding behavior remain available
+without layout work. Exports keep corrected geometry/junctions but omit hit
+regions, transient highlights and grid.
+
+Transform the grid with the schematic camera. Use 24-unit world spacing and
+powers-of-four coarser levels when the projected spacing falls below eight pixels;
+all levels share the world origin. Themes/grid remain local presentation settings.
+
+Prefer a valid expected trace.vcd after simulation. If absent, inspect only VCD/FST
+files in that newly created run directory using Wellen headers and exact DUT
+scope. Skip symlinks, reject escaping paths, accept exactly one qualifying trace,
+and record its actual path/hash in run provenance. Multiple, missing, malformed
+or wrong-scope traces are explicit errors; never search original sources/old runs.
+Generated instrumentation continues to leave user HDL untouched.
+
+Use one Sources/Design/Inspector sidebar on the left, with editor/schematic beside
+it. Put Waveforms, Logs and Problems in a single full-window-width tabbed panel
+below both areas. Keep the selected sidebar view when selecting a schematic object.
+A successful simulation opens Waveforms. Keep inactive views mounted so tabs,
+collapse and resizing preserve editor history, explorer expansion, camera,
+waveform rows/cursor/zoom/radix and independent scroll positions. Pause hidden
+waveform queries. The sidebar defaults to 260 pixels within 224–420 pixels, leaving
+at least 360 pixels beside it on supported windows. The bottom panel defaults to
+35%, at least 140 pixels, at most 65%, and leaves at least 260 pixels above. Resize
+handles support pointer capture and keyboard arrows/Home/End. The editor/schematic
+split stays within 20–80%, with 200/320-pixel minimums when space permits; window shrinking
+clamps effective sizes. Presentation changes must not request graph layout.
+Reopening uses default pane sizes, consistent with existing restoration behavior.
+
+Acceptance covers unused/disconnected boundary ports, inouts/range directions,
+all symbol anchors/long labels, shared trunks/multiple drivers/foreign crossings,
+pin versus wire selection/keyboard/SDF identities, both grid themes/camera/coarse
+levels, testbench-named traces with Icarus/Verilator and rejection paths, shared
+sidebar views, full-width panel tabs, resizing, independent scrolling, narrow
+windows and state preservation, native/Docker browser workflows,
+packaged Linux smoke and existing layout/selection performance targets. Update
+qualification with measured results and limitations; no new dependencies, migration
+or full physical-flow rerun is required.
 
 ## Primary documentation
 

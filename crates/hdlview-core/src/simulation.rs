@@ -3,6 +3,7 @@ use crate::{
     pipeline::{diagnostics_from_log, model_files},
     project::*,
     runner::*,
+    waveform,
 };
 use anyhow::{bail, Context, Result};
 use std::{collections::BTreeMap, fs, path::PathBuf};
@@ -233,11 +234,18 @@ pub fn simulate(
     if sdf.is_some() {
         diagnostics.push(Diagnostic{severity:"warning".into(),message:"Icarus SDF delay simulation: complete timing-check coverage is not supported. Consult annotation diagnostics and STA reports.".into(),source:None});
     }
-    if !trace.exists() {
-        bail!("Simulator completed without producing {}", trace.display())
-    }
+    let trace = collect_trace(&dir, &trace, &dut_scope, &r.cancel)?;
     let trace_hash = file_hash(&trace)?;
-    let manifest = json_manifest(snapshot, cfg, &files, &models, &sdf)?;
+    let mut manifest = json_manifest(snapshot, cfg, &files, &models, &sdf)?;
+    manifest["trace"] =
+        serde_json::json!({"path": trace, "hash": trace_hash, "dut_scope": dut_scope});
+    if trace.file_name().is_some_and(|name| name != "trace.vcd") {
+        diagnostics.push(Diagnostic {
+            severity: "info".into(),
+            message: format!("Using testbench-generated waveform {}", trace.display()),
+            source: None,
+        });
+    }
     atomic_json(&dir.join("manifest.json"), &manifest)?;
     let id = hash(serde_json::to_vec(&(
         snapshot.id.clone(),
@@ -259,6 +267,91 @@ pub fn simulate(
     };
     atomic_json(&dir.join("run.json"), &run)?;
     Ok(run)
+}
+fn collect_trace(
+    dir: &std::path::Path,
+    expected: &std::path::Path,
+    dut: &[String],
+    cancel: &CancelToken,
+) -> Result<PathBuf> {
+    cancel.check()?;
+    let root = fs::canonicalize(dir)?;
+    fn validate(path: &std::path::Path, root: &std::path::Path, dut: &[String]) -> Result<()> {
+        if !fs::symlink_metadata(path)?.is_file() {
+            bail!(
+                "Waveform must be a regular file (no symlinks): {}",
+                path.display()
+            )
+        }
+        if !fs::canonicalize(path)?.starts_with(root) {
+            bail!(
+                "Waveform path is outside the simulation directory: {}",
+                path.display()
+            )
+        }
+        if !waveform::contains_dut(path, dut)
+            .with_context(|| format!("Malformed waveform {}", path.display()))?
+        {
+            bail!(
+                "Waveform {} has no variables under DUT scope {}",
+                path.display(),
+                dut.join(".")
+            )
+        }
+        Ok(())
+    }
+    if expected.try_exists()? {
+        validate(expected, &root, dut)?;
+        return Ok(expected.to_path_buf());
+    }
+    let mut pending = vec![root.clone()];
+    let mut candidates = Vec::new();
+    let mut failures = Vec::new();
+    while let Some(directory) = pending.pop() {
+        cancel.check()?;
+        for entry in fs::read_dir(&directory)? {
+            cancel.check()?;
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else if kind.is_file()
+                && entry
+                    .path()
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.eq_ignore_ascii_case("vcd") || s.eq_ignore_ascii_case("fst"))
+            {
+                match validate(&entry.path(), &root, dut) {
+                    Ok(()) => candidates.push(entry.path()),
+                    Err(error) => failures.push(error.to_string()),
+                }
+            }
+        }
+    }
+    candidates.sort();
+    match candidates.as_slice() {
+        [trace] => Ok(trace.clone()),
+        [] => bail!(
+            "Simulator produced no usable waveform under {} for DUT {}. Expected {}. {}",
+            dir.display(),
+            dut.join("."),
+            expected.display(),
+            failures.join("; ")
+        ),
+        _ => bail!(
+            "Multiple waveforms contain DUT {}: {}. Import the intended waveform explicitly.",
+            dut.join("."),
+            candidates
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 fn json_manifest(
     s: &DesignSnapshot,
@@ -300,6 +393,72 @@ pub(crate) fn rtl_parameter_overrides(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn trace(path: &std::path::Path, scope: &str) {
+        fs::write(path, format!("$timescale 1 ns $end\n$scope module tb $end\n$scope module {scope} $end\n$var wire 1 ! data $end\n$upscope $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n")).unwrap();
+    }
+    #[test]
+    fn collects_only_unambiguous_current_run_traces() {
+        let dir = tempfile::tempdir().unwrap();
+        let expected = dir.path().join("trace.vcd");
+        let alternative = dir.path().join("testbench.vcd");
+        let scope = vec!["tb".into(), "dut".into()];
+        let cancel = CancelToken::default();
+        trace(&alternative, "dut");
+        trace(&dir.path().join("wrong.vcd"), "other");
+        assert_eq!(
+            collect_trace(dir.path(), &expected, &scope, &cancel).unwrap(),
+            alternative
+        );
+        let nested = dir.path().join("waves");
+        fs::create_dir(&nested).unwrap();
+        trace(&nested.join("duplicate.vcd"), "dut");
+        assert!(collect_trace(dir.path(), &expected, &scope, &cancel)
+            .unwrap_err()
+            .to_string()
+            .contains("Multiple waveforms"));
+        trace(&expected, "dut");
+        assert_eq!(
+            collect_trace(dir.path(), &expected, &scope, &cancel).unwrap(),
+            expected
+        );
+        fs::write(&expected, "invalid VCD").unwrap();
+        assert!(collect_trace(dir.path(), &expected, &scope, &cancel)
+            .unwrap_err()
+            .to_string()
+            .contains("Malformed waveform"));
+    }
+    #[test]
+    fn missing_wrong_scope_symlinks_and_cancellation_fail_safely() {
+        let dir = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let expected = dir.path().join("trace.vcd");
+        let scope = vec!["tb".into(), "dut".into()];
+        let cancel = CancelToken::default();
+        trace(&external.path().join("outside.vcd"), "dut");
+        std::os::unix::fs::symlink(
+            external.path().join("outside.vcd"),
+            dir.path().join("link.vcd"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(external.path(), dir.path().join("external")).unwrap();
+        assert!(collect_trace(dir.path(), &expected, &scope, &cancel).is_err());
+        fs::create_dir(&expected).unwrap();
+        assert!(collect_trace(dir.path(), &expected, &scope, &cancel)
+            .unwrap_err()
+            .to_string()
+            .contains("regular file"));
+        fs::remove_dir(&expected).unwrap();
+        trace(&expected, "other");
+        assert!(collect_trace(dir.path(), &expected, &scope, &cancel)
+            .unwrap_err()
+            .to_string()
+            .contains("DUT scope"));
+        cancel.cancel();
+        assert!(collect_trace(dir.path(), &expected, &scope, &cancel)
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled"));
+    }
     #[test]
     fn sdf_restrictions_fail_before_creating_a_job_directory() {
         let d = tempfile::tempdir().unwrap();

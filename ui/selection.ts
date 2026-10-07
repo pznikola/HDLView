@@ -1,9 +1,13 @@
+export type ConnectionTarget =
+  | { kind: "pin"; nodeId: string; portId: string }
+  | { kind: "wire"; edgeId: string; wireId: string };
 export interface Selection {
   origin: "schematic" | "waveform" | "hierarchy";
   sequence: number;
   signalId?: string;
   variableId?: number;
   scope?: string[];
+  connection?: ConnectionTarget;
 }
 export function nextSelection(
   previous: Selection | undefined,

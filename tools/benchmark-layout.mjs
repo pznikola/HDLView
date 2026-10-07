@@ -34,56 +34,103 @@ try {
     name.startsWith("layout.worker-"),
   );
   const result = await page.evaluate(async (workerFile) => {
-    const graph = {
-      nodes: [],
-      edges: [],
-      signals: [],
-      truncated: false,
-      total_cells: 1000,
-    };
-    for (let i = 0; i < 1000; i++) {
-      graph.nodes.push({
-        id: `n${i}`,
-        label: `cell${i}`,
-        kind: "$and",
-        ports: [
-          { id: `n${i}:A`, direction: "input" },
-          { id: `n${i}:Y`, direction: "output" },
-        ],
+    const results = [];
+    for (const pattern of ["mixed_balanced", "high_fanout"]) {
+      const graph = {
+        nodes: [],
+        edges: [],
+        signals: [],
+        truncated: false,
+        total_cells: 1000,
+      };
+      const pin = (id, direction, role = "data") => ({
+        id,
+        label: id.split(":").at(-1),
+        direction,
+        signal_ids: [id],
+        display: {
+          name: id.split(":").at(-1),
+          width: 1,
+          bits: [id],
+          role,
+          polarity: true,
+        },
       });
-      if (i)
-        graph.edges.push({
-          id: `e${i}`,
-          sources: [`n${Math.floor((i - 1) / 2)}:Y`],
-          targets: [`n${i}:A`],
-          label: "",
+      for (let i = 0; i < 1000; i++) {
+        const symbol =
+          pattern === "mixed_balanced"
+            ? ["and", "mux", "register", "operator"][i % 4]
+            : "and";
+        const input = symbol === "register" ? "D" : "A";
+        graph.nodes.push({
+          id: `n${i}`,
+          label: `cell${i}`,
+          kind: symbol,
+          display: {
+            symbol,
+            title: symbol === "operator" ? "+" : symbol.toUpperCase(),
+            annotations: [],
+            members: [],
+            internal_signal_ids: [],
+            physical_only: false,
+          },
+          ports: [
+            pin(`n${i}:${input}`, "input"),
+            ...(symbol === "register"
+              ? [
+                  pin(`n${i}:CLK`, "input", "clock"),
+                  pin(`n${i}:RESET`, "input", "reset"),
+                ]
+              : [
+                  pin(`n${i}:B`, "input"),
+                  ...(symbol === "mux"
+                    ? [pin(`n${i}:S`, "input", "select")]
+                    : []),
+                ]),
+            pin(`n${i}:Y`, "output"),
+          ],
         });
+        if (i)
+          graph.edges.push({
+            id: `e${i}`,
+            sources: [
+              `n${pattern === "high_fanout" ? 0 : Math.floor((i - 1) / 2)}:Y`,
+            ],
+            targets: [`n${i}:${input}`],
+            signal_ids: [`e${i}`],
+            label: "",
+            bits: [i + 2],
+          });
+      }
+      const worker = new Worker(`/assets/${workerFile}`, { type: "module" });
+      const start = performance.now();
+      const result = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          worker.terminate();
+          reject(new Error("layout timeout"));
+        }, 60000);
+        worker.onmessage = ({ data }) => {
+          clearTimeout(timer);
+          worker.terminate();
+          data.error
+            ? reject(new Error(data.error))
+            : resolve({
+                pattern,
+                nodes: 1000,
+                edges: 999,
+                layout_ms: performance.now() - start,
+              });
+        };
+        worker.onerror = (error) => {
+          clearTimeout(timer);
+          worker.terminate();
+          reject(new Error(error.message));
+        };
+        worker.postMessage({ sequence: 1, graph });
+      });
+      results.push(result);
     }
-    const worker = new Worker(`/assets/${workerFile}`, { type: "module" });
-    const start = performance.now();
-    return await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        worker.terminate();
-        reject(new Error("layout timeout"));
-      }, 60000);
-      worker.onmessage = ({ data }) => {
-        clearTimeout(timer);
-        worker.terminate();
-        data.error
-          ? reject(new Error(data.error))
-          : resolve({
-              nodes: 1000,
-              edges: 999,
-              layout_ms: performance.now() - start,
-            });
-      };
-      worker.onerror = (error) => {
-        clearTimeout(timer);
-        worker.terminate();
-        reject(new Error(error.message));
-      };
-      worker.postMessage({ sequence: 1, graph });
-    });
+    return results;
   }, workerFile);
   await mkdir(".hdlview/benchmarks", { recursive: true });
   await writeFile(

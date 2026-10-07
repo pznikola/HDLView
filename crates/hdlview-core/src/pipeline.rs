@@ -213,9 +213,10 @@ fn compile_directory(
             diagnostics.extend(diagnostics_from_log(&log));
         }
         match representation {
-            Representation::Elaborated => {
-                graph::from_yosys(&read_json(&dir.join("elaborated.json"))?, &project.top)?
-            }
+            Representation::Elaborated => graph::from_yosys_text(
+                &fs::read_to_string(dir.join("elaborated.json"))?,
+                &project.top,
+            )?,
             Representation::Generic => {
                 let script=format!("read_rtlil elaborated.il\nsynth -top {}\nwrite_verilog -noattr -noexpr -norename netlist.v\nwrite_json generic.json\n",project.top);
                 diagnostics.extend(diagnostics_from_log(&yosys(
@@ -227,7 +228,7 @@ fn compile_directory(
                 netlist = Some(dir.join("netlist.v"));
                 // Re-import the exact simulation file with Yosys generic gate definitions.
                 yosys(&runner,"read_verilog -lib +/simcells.v\nread_verilog netlist.v\nhierarchy -check -top ".to_owned().add(&project.top).add("\nwrite_json graph.json\n").as_str(),vec![],"import-generic")?;
-                graph::from_yosys(&read_json(&dir.join("graph.json"))?, &project.top)?
+                graph::from_yosys_text(&fs::read_to_string(dir.join("graph.json"))?, &project.top)?
             }
             Representation::Mapped | Representation::PostLayout => {
                 let physical =
@@ -291,7 +292,7 @@ fn compile_directory(
                 )?));
                 netlist = Some(finalfile);
                 physical_run = Some(physical);
-                graph::from_yosys(&read_json(&dir.join("graph.json"))?, &project.top)?
+                graph::from_yosys_text(&fs::read_to_string(dir.join("graph.json"))?, &project.top)?
             }
             _ => unreachable!(),
         }

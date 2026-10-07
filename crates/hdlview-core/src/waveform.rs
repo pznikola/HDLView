@@ -29,12 +29,37 @@ fn walk(h: &Hierarchy, scope: ScopeRef, path: &[String], out: &mut Vec<(Vec<Stri
         walk(h, child, &p, out);
     }
 }
+/// Inspect only the header; collecting a run must not load every transition.
+pub(crate) fn contains_dut(path: &Path, dut_scope: &[String]) -> Result<bool> {
+    check_format(path)?;
+    let header = viewers::read_header_from_file(path, &LoadOptions::default())?;
+    let h = header.hierarchy;
+    fn has_vars(h: &Hierarchy, s: ScopeRef) -> bool {
+        h[s].vars(h).next().is_some() || h[s].scopes(h).any(|child| has_vars(h, child))
+    }
+    fn matches(h: &Hierarchy, s: ScopeRef, path: &[String]) -> bool {
+        if path.first().is_none_or(|name| h[s].name(h) != name) {
+            return false;
+        }
+        if path.len() == 1 {
+            has_vars(h, s)
+        } else {
+            h[s].scopes(h).any(|child| matches(h, child, &path[1..]))
+        }
+    }
+    let found = h.scopes().any(|scope| matches(&h, scope, dut_scope));
+    Ok(found)
+}
+fn check_format(path: &Path) -> Result<()> {
+    let mut input = std::io::BufReader::new(std::fs::File::open(path)?);
+    if viewers::detect_file_format(&mut input) == FileFormat::Ghw {
+        bail!("GHW waveforms are no longer supported; import VCD or FST")
+    }
+    Ok(())
+}
 impl WaveStore {
     pub fn open(path: &Path) -> Result<Self> {
-        let mut input = std::io::BufReader::new(std::fs::File::open(path)?);
-        if viewers::detect_file_format(&mut input) == FileFormat::Ghw {
-            bail!("GHW waveforms are no longer supported; import VCD or FST")
-        }
+        check_format(path)?;
         let header = viewers::read_header_from_file(path, &LoadOptions::default())?;
         let body = viewers::read_body(header.body, &header.hierarchy, None)?;
         let h = header.hierarchy;

@@ -23,8 +23,9 @@
 | `tools/library_interfaces.py`    | Slang-derived blackbox interfaces from simulation models                                             |
 | `tools/collect_physical.py`      | Strict JSON conversion of non-finite physical metrics                                                |
 | `ui/components/Schematic.tsx`    | SVG renderer and view-scoped layout cache                                                            |
-| `ui/layout.worker.ts`            | Port-aware ELK graph conversion/layout                                                               |
+| `ui/layout.worker.ts`            | Cancellable ELK layout                                                                               |
 | `ui/components/Waveform.tsx`     | Canvas rendering, row virtualization, bus expansion                                                  |
+| `ui/components/Workspace.tsx`    | Shared sidebar, full-width panel and constrained presentation sizing                                 |
 | `ui/project-workspace.tsx`       | Project wizard/imports, editor tabs, file operations, save and transition prompts                    |
 | `ui/components/SourceEditor.tsx` | Minimal CodeMirror extensions and per-tab editing history                                            |
 | `ui/projects.ts`                 | Typed core service requests and native picker boundary                                               |
@@ -44,6 +45,12 @@ Optional `ImportRecord.exclusions` retains removed file/directory membership thr
 `identity(snapshot, path_segments, kind)` uses JSON-encoded path segments. Dots inside escaped identifiers cannot collide with hierarchy separators. Yosys wire numbers stay local to their module. Module definitions and instance occurrences remain separate.
 
 A `SimulationRun` contains the snapshot ID, representation, actual trace hash, DUT scope, simulator, and diagnostics. Both IDs and stage must match when opening/binding a run. Native source edits cannot change captured inputs. Reopening checks the captured source/netlist/SDF hashes.
+
+Simulation trace collection inspects only the newly created run directory. A valid
+expected trace takes precedence; when absent, Wellen header inspection requires one
+VCD/FST with the exact DUT scope and dumped variables. Symlinks are excluded, resolved
+paths must stay inside that run, and ambiguous/malformed/wrong-scope results fail
+explicitly. The selected trace and content hash are included in both run and manifest.
 
 Bindings use explicit testbench/DUT root mapping and exact declaration/range matching, or a saved manual mapping. There is no fuzzy/basename fallback. Connected gate-cell pins have separate identities, allowing interconnect-delayed waveform values to differ. Compiler-only signals stay unavailable.
 
@@ -74,7 +81,7 @@ Other jobs cancel/pause lint; background lint never guards File transitions. Eac
 engine times out after at most 10 seconds. Only one completed lint job and its latest
 logs remain; temporary inputs are removed on success, failure, or cancellation.
 CodeMirror diagnostic effects preserve document history/selection; Problems is an
-explicit drawer tab. Project-local lint toggles stay in presentation preferences
+explicit bottom-panel tab. Project-local lint toggles stay in presentation preferences
 outside project schema and compilation fingerprints.
 
 Large views use ELK layered layout with its documented [longest-path layering](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-layering-strategy.html) and [simple node placement](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-nodePlacement-strategy.html) to bound interactive work. Small views retain the default fuller heuristics. Layout workers are cancellable; selection never causes layout.
@@ -84,6 +91,67 @@ Project schema 3 records technology, shared simulation membership/headers, and d
 Creation drafts have an independent service key and actual target configuration path. Existing preview/application operations work on either key, but draft imports do not replace the active project. Final creation validates and atomically publishes the completed configuration; a new-file hard link prevents clobbering a configuration created concurrently. Closing releases the single visible parser/session and leaves artifacts on disk.
 
 `lifecycle.rs` stores versioned machine-local checkpoints under the service cache's `project-state/`, keyed by the canonical configuration path. Each checkpoint references a snapshot and optional run; snapshots retain fingerprinted project provenance. Opening validates provenance/artifacts/binding and compares original input hashes/current configuration before returning a schematic, optional waveform path, stale flag, and warnings. Heavy waveform reopening uses the existing cancellable job. The old global session is not migrated automatically. React resets presentation defaults and guards stale responses across project activation.
+
+## Schematic presentation
+
+`schematic.rs` classifies compiler/library cells, controls physical-cell visibility,
+recognizes bounded elaborated groups and constructs captured behavioral detail views.
+`graph.rs` retains raw parameters and ordered connectivity. Declared RTL aliases precede
+hidden compiler names; gate pins retain their independent endpoint as the first identity.
+New optional cell behavior/parameter fields leave old artifact bytes and hashes intact.
+Absent metadata never becomes a guessed reset or synthesized source explanation.
+
+`source_graph.py` captures Slang statements/expressions, spans, call targets and formal
+signatures alongside process summaries. Detail edges distinguish data dependencies and
+sequencing. Assignment outputs bind written declarations; operand inputs bind upstream
+references, and control-flow edges never acquire waveform values. Formals/temporaries
+remain unbound. Capture and focused views are bounded; unsupported AST constructs emit
+opaque nodes and diagnostics.
+
+`schematic-symbols.ts` supplies original SVG paths, measured text bounds and fixed pin
+anchors to both `SchematicSymbol.tsx` and `schematic-layout.ts`. The layout converter clones
+only layout helpers, folds proven control nets into connectors, localizes constants, adds
+ordered bus joins/splits and multi-driver junctions, and maps every route back to original
+connectivity/selection identities. Power pins remain available in inspection outside
+logical routing. It never changes snapshot connectivity or delayed endpoint bindings.
+Boundary ports use two fixed-order invisible ELK columns with partitions; component
+packing is disabled for these views. Helpers flatten back into original objects after
+layout. New Yosys exports use a local ordered-port decoder without changing generic JSON
+fingerprints; expanded display bits reverse storage partitions into declared range order.
+
+The worker normalizes simple electrical routes by exact original net/slice identity,
+unions shared orthogonal trunks, and derives round junctions from connected branches.
+ELK junction hints are validated against these routes. Terminals, bends, procedural
+edges and unrelated crossings have no connection dot. Renderer/ELK share border anchors
+including bottom controls. The presentation selection distinguishes pins from wires;
+a pin retains its endpoint identity while a wire selects its entire visible exact slice.
+
+`Schematic.tsx` caches layouts and parent cameras by graph metadata/options and geometry
+version. Display themes, grid, inspection and selection are presentation state; only
+semantic view changes or full-wiring changes cause new layout. Local preferences live in
+`schematic-display.ts`, outside project configuration/fingerprints. SVG exports contain
+styles and labels at logical coordinates, without transient hit/selection/expand overlays.
+The camera transforms the world-anchored 24-unit grid; coarser powers-of-four levels
+keep dots at least eight pixels apart. No grid is exported.
+
+`Workspace.tsx` owns presentation sizing: an upper grid contains the shared
+Sources/Design/Inspector sidebar and editor/schematic workspace; a full-width
+bottom panel switches between Waveforms, Logs and Problems. Its resize handles
+support pointer capture, keyboard adjustment and bounded dimensions. The
+editor/schematic split remains within 20–80%, reserving 200/320 pixels respectively
+when space permits. The sidebar
+is 224–420 pixels; the bottom panel defaults to 35%, constrained to retain 260
+pixels above and 140 pixels below on supported windows. Sidebar views and bottom
+views stay mounted when hidden, preserving explorer expansion, editor history,
+waveform range/radix/cursor and scroll positions. Hidden waveforms pause window
+queries. Schematic collapse does not unmount the renderer or reset its camera.
+Selecting objects never changes the selected sidebar view. Sizing and panel
+selection are independent of graph identity and compilation fingerprints.
+Source dependency/control routes include arrowheads; electrical wires remain undirected.
+The desktop SVG command selects a destination through the official dialog plugin off the
+main thread; the independent core publishes the completed file atomically. Browser export
+uses a download without filesystem IPC.
+`SymbolGallery.tsx` uses the same production geometry for reviewed visual regression.
 
 ## Extension rules
 

@@ -118,7 +118,14 @@ fn main() -> Result<()> {
             } else {
                 scope
             };
-            serde_json::to_value(graph::view(&s, &scope, focus.as_deref(), 2000)?)?
+            serde_json::to_value(schematic::view(
+                &s,
+                &scope,
+                focus.as_deref(),
+                2000,
+                false,
+                &SchematicOptions::default(),
+            )?)?
         }
         Commands::Rpc => {
             let service = Service::new(cli.store);

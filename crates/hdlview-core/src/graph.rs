@@ -1,5 +1,9 @@
 use crate::model::*;
 use anyhow::{bail, Context, Result};
+use serde::{
+    de::{IgnoredAny, MapAccess, Visitor},
+    Deserialize, Deserializer,
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -13,6 +17,54 @@ fn truth(v: &Value) -> bool {
 }
 fn source(v: &Value) -> Option<String> {
     v.get("src").and_then(Value::as_str).map(String::from)
+}
+// Yosys emits module ports in port-ID order. Preserve that order locally,
+// without changing JSON map ordering in project fingerprints or old artifacts.
+pub fn from_yosys_text(text: &str, top: &str) -> Result<Design> {
+    #[derive(Deserialize)]
+    struct Export {
+        modules: BTreeMap<String, OrderedModule>,
+    }
+    #[derive(Deserialize)]
+    struct OrderedModule {
+        #[serde(default, deserialize_with = "port_names")]
+        ports: Vec<String>,
+    }
+    fn port_names<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+        struct Names;
+        impl<'de> Visitor<'de> for Names {
+            type Value = Vec<String>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a Yosys port map")
+            }
+            fn visit_map<A: MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut names = Vec::new();
+                while let Some((name, _)) = map.next_entry::<String, IgnoredAny>()? {
+                    names.push(name);
+                }
+                Ok(names)
+            }
+        }
+        d.deserialize_map(Names)
+    }
+    let order: Export = serde_json::from_str(text)?;
+    let mut design = from_yosys(&serde_json::from_str(text)?, top)?;
+    for (name, module) in &mut design.modules {
+        let names = &order.modules[name].ports;
+        module
+            .ports
+            .sort_by_key(|p| names.iter().position(|n| n == &p.name));
+        for cell in &mut module.cells {
+            if let Some(child) = order.modules.get(&cell.kind) {
+                cell.ports
+                    .sort_by_key(|p| child.ports.iter().position(|n| n == &p.name));
+            }
+        }
+    }
+    Ok(design)
 }
 pub fn from_yosys(json: &Value, top: &str) -> Result<Design> {
     let mut design = Design::default();
@@ -74,17 +126,29 @@ pub fn from_yosys(json: &Value, top: &str) -> Result<Design> {
                                     .collect()
                             })
                             .unwrap_or_default();
-                        Cell {
+                        let parameters = c
+                            .get("parameters")
+                            .map(|value| {
+                                serde_json::from_value(value.clone()).with_context(|| {
+                                    format!("Invalid Yosys parameters at {name}/{n}")
+                                })
+                            })
+                            .transpose()?
+                            .unwrap_or_default();
+                        Ok(Cell {
                             name: n.clone(),
                             kind: c["type"].as_str().unwrap_or("unknown").into(),
                             ports,
                             source: source(&c["attributes"]),
                             attributes: serde_json::from_value(c["attributes"].clone())
                                 .unwrap_or_default(),
-                        }
+                            parameters,
+                            behavior: None,
+                        })
                     })
-                    .collect()
+                    .collect::<Result<Vec<_>>>()
             })
+            .transpose()?
             .unwrap_or_default();
         design.modules.insert(
             name.clone(),
@@ -185,6 +249,16 @@ pub fn view_with_options(
     limit: usize,
     split_buses: bool,
 ) -> Result<GraphView> {
+    view_for_schematic(s, scope, focus, limit, split_buses, true)
+}
+pub fn view_for_schematic(
+    s: &DesignSnapshot,
+    scope: &[String],
+    focus: Option<&str>,
+    limit: usize,
+    split_buses: bool,
+    show_physical_cells: bool,
+) -> Result<GraphView> {
     let sc = s
         .design
         .scopes
@@ -212,6 +286,7 @@ pub fn view_with_options(
     let mut selected: Vec<&Cell> = m
         .cells
         .iter()
+        .filter(|c| show_physical_cells || !crate::schematic::is_physical(c))
         .filter(|c| {
             focus.is_none()
                 || c.ports
@@ -233,6 +308,38 @@ pub fn view_with_options(
             )
         }
     }
+    let hidden_physical_cells = if show_physical_cells {
+        0
+    } else {
+        m.cells
+            .iter()
+            .filter(|c| crate::schematic::is_physical(c))
+            .count()
+    };
+    let omitted_cells = m
+        .cells
+        .len()
+        .saturating_sub(hidden_physical_cells + selected.len());
+    let mut full_drivers = BTreeSet::new();
+    let mut full_loads = BTreeSet::new();
+    for port in m.cells.iter().flat_map(|c| &c.ports) {
+        if port.direction != "input" {
+            full_drivers.extend(port.bits.clone());
+        }
+        if port.direction != "output" {
+            full_loads.extend(port.bits.clone());
+        }
+    }
+    let named_signals: BTreeSet<_> = m
+        .signals
+        .iter()
+        .filter(|s| !s.hidden)
+        .map(|signal| {
+            let mut path = scope.to_vec();
+            path.push(signal.name.clone());
+            identity(&s.id, &path, "signal")
+        })
+        .collect();
     selected.sort_by(|a, b| a.name.cmp(&b.name));
     let mut nodes = Vec::new();
     let mut endpoints: BTreeMap<Bit, (Vec<String>, Vec<String>)> = BTreeMap::new();
@@ -276,7 +383,13 @@ pub fn view_with_options(
                     p.bits.as_slice(),
                 )]
             };
-            for (partition, (label, bits)) in partitions.into_iter().enumerate() {
+            // Wire storage is least-significant first; display declarations from
+            // their left bound to their right bound without changing partition IDs.
+            let mut partitions: Vec<_> = partitions.into_iter().enumerate().collect();
+            if boundary && split_buses {
+                partitions.reverse();
+            }
+            for (partition, (label, bits)) in partitions {
                 let pid = format!(
                     "{id}:{}:{partition}",
                     serde_json::to_string(&p.name).unwrap()
@@ -297,6 +410,9 @@ pub fn view_with_options(
                     .collect::<BTreeSet<_>>()
                     .into_iter()
                     .collect();
+                signal_ids.sort_by(|a, b| {
+                    (!named_signals.contains(a), a).cmp(&(!named_signals.contains(b), b))
+                });
                 if boundary {
                     let declaration = identity(&s.id, &path, "signal");
                     if signal_ids.contains(&declaration) {
@@ -323,6 +439,25 @@ pub fn view_with_options(
                         p.direction.clone()
                     },
                     signal_ids,
+                    display: Some(PinDisplay {
+                        name: p.name.clone(),
+                        width: bits.len(),
+                        bits: bits.to_vec(),
+                        role: PinRole::Data,
+                        polarity: None,
+                        declared_direction: boundary.then(|| p.direction.clone()),
+                        range: declarations
+                            .filter(|sig| !split_buses && sig.bits.len() > 1)
+                            .map(|sig| {
+                                let low = sig.offset;
+                                let high = low + sig.bits.len() as i64 - 1;
+                                if sig.upto {
+                                    (low, high)
+                                } else {
+                                    (high, low)
+                                }
+                            }),
+                    }),
                 });
             }
         }
@@ -333,6 +468,7 @@ pub fn view_with_options(
             ports: vp,
             child_scope: child,
             source,
+            display: None,
         });
     };
     for p in &m.ports {
@@ -364,9 +500,11 @@ pub fn view_with_options(
                         label: value.clone(),
                         direction: "output".into(),
                         signal_ids: vec![],
+                        display: None,
                     }],
                     child_scope: None,
                     source: None,
+                    display: None,
                 });
             }
             drivers = vec![port];
@@ -374,6 +512,12 @@ pub fn view_with_options(
         if drivers.is_empty() || loads.is_empty() {
             let undriven = drivers.is_empty();
             let kind = if undriven { "undriven" } else { "unconnected" };
+            let outside = if undriven {
+                full_drivers.contains(&bit)
+            } else {
+                full_loads.contains(&bit)
+            };
+            let kind = if outside { "off_view" } else { kind };
             let id = format!("{}:{kind}:{bit:?}", identity(&s.id, scope, "scope"));
             let port = format!("{id}:pin");
             nodes.push(ViewNode {
@@ -385,9 +529,11 @@ pub fn view_with_options(
                     label: String::new(),
                     direction: if undriven { "output" } else { "input" }.into(),
                     signal_ids: bybit.get(&bit).cloned().unwrap_or_default(),
+                    display: None,
                 }],
                 child_scope: None,
                 source: None,
+                display: None,
             });
             if undriven {
                 drivers.push(port)
@@ -447,6 +593,12 @@ pub fn view_with_options(
                         String::new()
                     }
                 ),
+                semantics: if s.representation == Representation::Source {
+                    EdgeSemantics::Dependency
+                } else {
+                    EdgeSemantics::Electrical
+                },
+                bits: bs,
             }
         })
         .collect();
@@ -454,8 +606,11 @@ pub fn view_with_options(
         nodes,
         edges,
         signals,
-        truncated: m.cells.len() > limit,
+        truncated: omitted_cells > 0,
         total_cells: m.cells.len(),
+        hidden_physical_cells,
+        omitted_cells,
+        detail: None,
     })
 }
 
@@ -463,6 +618,19 @@ pub fn view_with_options(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn compiler_port_order_survives_json_decoding() {
+        let text = r#"{"modules":{"top":{"ports":{"z":{"direction":"input","bits":[2]},"a":{"direction":"output","bits":[3]},"m":{"direction":"input","bits":[4]}},"cells":{},"netnames":{}}}}"#;
+        let design = from_yosys_text(text, "top").unwrap();
+        assert_eq!(
+            design.modules["top"]
+                .ports
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["z", "a", "m"]
+        );
+    }
     #[test]
     fn instances_and_aliases_are_distinct() {
         let d=from_yosys(&json!({"modules":{"top":{"ports":{},"netnames":{},"cells":{"a":{"type":"leaf"},"b":{"type":"leaf"}}},"leaf":{"ports":{},"cells":{},"netnames":{"x":{"bits":[2]},"alias":{"bits":[2]}}}}}),"top").unwrap();

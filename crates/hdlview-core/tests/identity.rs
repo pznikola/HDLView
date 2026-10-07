@@ -87,6 +87,8 @@ fn cell_endpoints_are_distinct_from_connected_net() {
         ],
         source: None,
         attributes: BTreeMap::new(),
+        parameters: BTreeMap::new(),
+        behavior: None,
     }];
     let refs = graph::signal_refs(&s, &["top".into(), "first".into()]).unwrap();
     assert_eq!(refs.len(), 3);
@@ -108,6 +110,8 @@ fn bounded_graph_does_not_expand_entire_design() {
             ports: vec![],
             source: None,
             attributes: BTreeMap::new(),
+            parameters: BTreeMap::new(),
+            behavior: None,
         })
         .collect();
     let g = graph::view(&s, &["top".into(), "first".into()], None, 2000).unwrap();
@@ -165,7 +169,7 @@ fn expanded_buses_preserve_declared_indices_and_inouts() {
             .iter()
             .map(|p| p.label.as_str())
             .collect::<Vec<_>>(),
-        vec!["count[7]", "count[6]", "count[5]", "count[4]"]
+        vec!["count[4]", "count[5]", "count[6]", "count[7]"]
     );
     assert!(g.nodes[0].ports.iter().all(|p| p.direction == "inout"));
     assert_eq!(g.edges.len(), 4);
@@ -174,4 +178,41 @@ fn expanded_buses_preserve_declared_indices_and_inouts() {
         .edges
         .iter()
         .all(|e| e.signal_ids == vec![g.signals[0].id.clone()]));
+}
+
+#[test]
+fn expanded_boundary_bits_follow_declared_range_without_changing_ids() {
+    let (mut snapshot, _, _) = fixture();
+    for upto in [false, true] {
+        snapshot.design.modules.get_mut("top").unwrap().ports = vec![Port {
+            name: "bus".into(),
+            direction: "input".into(),
+            bits: vec![Bit::Wire(2), Bit::Wire(3), Bit::Wire(4), Bit::Wire(5)],
+        }];
+        snapshot.design.modules.get_mut("top").unwrap().signals = vec![Signal {
+            name: "bus".into(),
+            bits: vec![Bit::Wire(2), Bit::Wire(3), Bit::Wire(4), Bit::Wire(5)],
+            offset: 4,
+            upto,
+            signed: false,
+            hidden: false,
+            source: None,
+        }];
+        let view = graph::view_with_options(&snapshot, &["top".into()], None, 2000, true).unwrap();
+        let boundary = view.nodes.iter().find(|n| n.kind == "port").unwrap();
+        let names: Vec<_> = boundary.ports.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(
+            names,
+            if upto {
+                vec!["bus[4]", "bus[5]", "bus[6]", "bus[7]"]
+            } else {
+                vec!["bus[7]", "bus[6]", "bus[5]", "bus[4]"]
+            }
+        );
+        assert!(boundary.ports[0].id.ends_with(":3"));
+        assert_eq!(
+            boundary.ports[0].display.as_ref().unwrap().bits,
+            vec![Bit::Wire(5)]
+        );
+    }
 }

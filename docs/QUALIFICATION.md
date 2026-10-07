@@ -1,6 +1,119 @@
-# Qualification — 6 October 2026
+# Qualification — 7 October 2026
 
 This file records exercised workflows separately from proposed release targets. Version 0.1.0 is an engineering preview; it is not a claim of complete HDL-language coverage or signoff-quality timing simulation.
+
+## Schematic clarity and workspace qualification
+
+Geometry version 3 uses compact boundary columns, centered side labels, shared
+border anchors and square pin terminals. Electrical routes are normalized only
+within original net/slice identities; round dots indicate actual branches, not
+bends, terminals or unrelated crossings. The camera transforms both grid spacing
+and origin; pin/wire selection remains presentation state. Sources, Design and
+Inspector share the left sidebar. Waveforms, Logs and Problems share one full-width
+bottom panel with independent scrolling and constrained, keyboard-accessible
+resize handles.
+
+- **77 Rust tests** (66 core, 11 identity) and **40 frontend tests** pass; workspace
+  formatting/Clippy with denied warnings, frontend formatting/ESLint/TypeScript
+  and production compilation pass. Coverage includes compiler port order,
+  ascending/descending nonzero bus ranges with unchanged bit IDs, actual ELK
+  endpoints for every symbol family, disconnected columns/inouts, shared trunks,
+  multiple-driver junctions and foreign crossings. Missing, malformed, wrong-scope,
+  ambiguous and symlinked trace candidates fail safely.
+- All **17 browser workflows pass with each provider**, native and Docker, including reviewed light/dark gallery
+  fixtures, camera-relative grid pan/zoom/Fit/coarse levels, exact terminal versus
+  wire/keyboard selection, exports without hits/grid, both simulators with named
+  traces, shared sidebar views, full-width panel tabs, independent scrolling,
+  pointer/keyboard size limits, narrow windows and preserved camera/editor/waveform
+  state. Inspector changes only when explicitly selected.
+  Loaded grouped selection measured **38–56 ms**, including click/assertion overhead;
+  worker instrumentation confirms presentation changes do not start layout.
+- A temporary copy of the reported `04_adder_N` project builds and simulates with
+  Icarus 13 and Verilator **5.045 native / 5.042 Docker**. All four runs collect
+  the testbench's `adder_N.vcd`, verify `hdlview_sim.adder_N_tb.i_adder_N`, and
+  record its actual path/hash in run and manifest. Traces contain **63 Icarus /
+  55 Verilator variables**, ending at **102,000 ps**. Hash checks confirm the
+  original external sources/configuration were unchanged. Local evidence:
+  `.hdlview/clarity-adder-{native,docker}.json`. A native Icarus testbench-named
+  `counter.fst` also collects successfully with **20 variables / 132,000 ps**;
+  `.hdlview/clarity/fst.json` records the actual path/hash.
+- Real Chromium worker benchmarks on the documented workstation measured
+  **1,945.6 ms mixed symbols** and **1,813.4 ms high fan-out** for 1,000 nodes /
+  999 edges, including the new normalization step. These satisfy the three-second
+  fixture target, not a guarantee for arbitrary routing. Raw results remain in
+  `.hdlview/benchmarks/layout-result.json`.
+
+The production Debian package passes CLI trace parsing, runtime dependency resolution,
+and an isolated 11.27-second startup with empty stderr. A native GTK picker in the
+packaged application reopens the adder snapshot and its matching testbench-named
+trace. The desktop smoke covers the working testbench editor, shared Inspector
+with an exact root-level `b_i` binding, all three bottom-panel views, pointer and
+keyboard resizing, and the 1000×650 minimum window. Switching panels retains cursor
+23,800 and range 0–51,000. Native SVG export contains 75 square terminals in 73,623
+bytes and excludes hit regions, selection, grid and hover/focus rules. Local evidence:
+`.hdlview/package-smoke-results.json` and
+`.hdlview/clarity/workspace-desktop-smoke.json`. Final size-limit regressions also
+pass with both providers after the full suites.
+
+Generated adder instances still expose an existing binding limitation: Yosys stores
+`gen_full_adders[0].i_full_adder` as one hierarchy segment, while the trace uses
+separate scope segments. Those internal endpoints remain unavailable rather than
+being guessed; root-level bindings and collected waveform data are valid.
+
+A feasibility run using a cache directory containing spaces exposed Verilator's
+GNU Make restriction on build-directory spaces. The actual adder and browser
+qualification use space-free artifact caches, while working projects may reside
+in paths containing spaces and are captured normally. This change does not
+introduce a Verilator build-directory workaround. No physical flow was rerun and
+no project/artifact schema or dependency was changed.
+
+## Professional schematics qualification
+
+The renderer now shares original SVG geometry and fixed anchors with the ELK worker.
+Raw cell parameters, optional captured behavior and display metadata are additive;
+project schema remains 3. Unsupported source constructs/library interfaces stay explicit.
+The reviewed light/dark gallery covers 30 examples of logic, selectors, sequential,
+operator, memory, behavioral, hierarchy, unknown, directional-port and constant symbols.
+No new dependency or copied reference skin is distributed.
+
+Repeatable checks: run the Rust/frontend commands in README, the browser suite with a
+qualified native/Docker profile, and `tools/qualify.py --schematics` (`--mapped` for PDKs).
+The latter checks symbol families, captured sequencing/calls/targets, endpoint connectivity
+and real testbench results. Source memory aggregates can still be opaque; elaborated
+memory interfaces use compiler metadata. Recognition is intentionally bounded: binary
+mux trees up to 63 members, decoder inputs up to five bits and complete constant-code
+priority chains. No recognition is applied across mapped gate instances.
+
+- **73 Rust tests** and **37 frontend tests** pass, including legacy optional metadata,
+  polarity, exact cell interfaces, bus/routing identity, bounded views, grouping and atomic
+  SVG publication. Rust formatting/Clippy, frontend formatting/ESLint/TypeScript and
+  production compilation pass.
+- All **16 browser workflows** passed with native and Docker providers across the
+  qualification runs, including the two reviewed symbol-gallery images. Actual tool-backed
+  checks covered source detail and call navigation, parent camera restoration, compiler
+  nodes, theme/export, unchanged bindings, and waveform selection into a collapsed mux tree.
+  A concurrent Docker run exceeded the existing five-second file-creation layout wait;
+  that test passed after adopting the normal 40-second tool/layout timeout.
+- `tools/qualify.py --schematics` completed **38 native checks** and **46 Docker checks**
+  with `--mapped`, including exact exported netlist simulation for SKY130 and IHP.
+  The counter, Verilog and mixed showcase fixtures built and simulated successfully.
+  Existing SKY130 post-layout artifacts reopen without changing their bytes/hashes;
+  **213 physical-only cells** are hidden by classification. No full physical flow was
+  rerun. The available historical IHP physical example is VHDL and remains unsupported;
+  it is not evidence of current IHP post-layout qualification.
+- The Debian package passes CLI waveform parsing, runtime dependency resolution and
+  isolated desktop startup with no stderr. An interactive host smoke exercised native
+  project selection, Docker elaboration/simulation, hierarchy navigation, both schematic
+  themes, native SVG saving, and close/reopen restoration. Standalone exports were parsed
+  as XML and checked for embedded styles and absence of transient selection/hit overlays.
+  Generated package/smoke evidence remains under ignored `.hdlview/` and `target/`.
+- On this Linux workstation (Ryzen 5 5600H, 12 logical CPUs, approximately 16 GB RAM,
+  SSD, kernel 6.8.0), a real Chromium worker laid out **1,000 nodes / 999 edges** in
+  **1,842.4 ms** for mixed symbols and **1,582.0 ms** for high fan-out. Loaded grouped
+  selection measured **30–52 ms**, including Playwright click/assertion overhead; worker
+  instrumentation confirmed selection/theme/cursor changes did not start layout.
+  These are fixture measurements, not guarantees for arbitrary routing or full
+  Tauri-to-screen latency. Raw layout results are in `.hdlview/benchmarks/layout-result.json`.
 
 ## Source explorer and file management qualification
 
@@ -194,7 +307,7 @@ The synthetic 100,000-cell graph test limits the returned view to 2,000 cells. S
 - Source views show unsupported generate constructs as opaque/unavailable. Source dependencies are not electrical gate connectivity.
 - RTL DUT overrides are generated as `defparam` assignments in an isolated harness. Gate simulation uses the already-specialized netlist; hierarchy probes and explicit parameter overrides inside a shared testbench may require user adjustments after synthesis.
 - Waveform binding supports exact declared paths/ranges and explicit same-range manual mappings. General compiler-renamed aliases and arbitrary slice remapping are not yet inferred. Missing signals remain unavailable.
-- Bus rows can expand to 256 individual bits. The schematic retains bus connectivity and pin identities; schematic buses can expand into individual routes, with a 20,000-pin-bit limit per view. Richer standard-cell symbols remain extension work.
+- Bus rows can expand to 256 individual bits. The schematic retains bus connectivity and pin identities; schematic buses can expand into individual routes, with a 20,000-pin-bit limit per view. The schematic catalog intentionally covers a verified subset; unsupported interfaces retain labeled boxes.
 - Snapshot content is immutable by checked fingerprints, but artifact directories are not a relocatable archive format. Working inputs may use project-relative or registered-root references; captured inputs are local to the snapshot. Recursive imports skip directory symlinks, and VHDL inputs are rejected.
 - Docker builds with image-contained PDKs use a content-addressed cache keyed by captured inputs, configuration, immutable image, tool versions, and application binary. Native installations and externally mounted PDKs conservatively rebuild. Layouts and visible waveform signals are cached; a disk-backed waveform index is not implemented.
 - A native profile must include compatible model files, Python bindings, plugins, and PDKs. Native/Docker parity has been checked on small workflows, not exhaustively across all language/library features.
