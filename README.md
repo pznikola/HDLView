@@ -59,7 +59,11 @@ docker build -f tools/Dockerfile -t hdlview-tools:2025.12 .
 
 The base image alone supports many compilation tasks, but **does not provide the complete qualified physical toolchain**. The derived image pins pyslang, LibreLane 3, and Magic. Its LibreLane profile intentionally bypasses the base image's legacy LibreLane 2 wrapper to use the matching newer OpenROAD and OpenSTA binaries.
 
-Open `examples/counter/hdlview.project.json` or `examples/verilog/hdlview.project.json`. The default desktop profile matches [tools/profiles/docker.json](tools/profiles/docker.json). Select a representation, build, then run a simulation.
+Open `examples/00_mux/hdlview.project.json` for a small first design, or
+`examples/04_adder_N/hdlview.project.json` for a hierarchical adder. All 18
+[SystemVerilog examples](examples/README.md) have ready-to-run project and simulation
+settings. The default desktop profile matches [tools/profiles/docker.json](tools/profiles/docker.json).
+Select a representation, build, then run the **rtl** simulation configuration.
 
 Use **File → Create New Project…** to choose a name, directory, and **SKY130** or **IHP SG13G2** technology. Add files, folders, or `.f`/`.flist` inputs, review them, then finish with **Create New Project**. Files stay in their original locations; cancelling the wizard writes no configuration. Empty projects can be created. Set the top in **Project Settings** before building; mapped/physical builds also require a clock port and period.
 
@@ -121,8 +125,9 @@ follows pan and zoom, uses coarser spacing at low zoom, and is excluded from exp
 stay bundled unless expanded; partial connections show taps/joins and constants stay near
 consumers. **Export SVG** exports the current logical/detail view with its theme and labels,
 without selection overlays. The desktop opens a native Save dialog; the browser downloads
-the SVG. Try `examples/schematic/hdlview.project.json` for the ALU,
-decoder/encoder, memory, and function/task demonstration. Older artifacts remain readable;
+the SVG. Try `examples/08_alu/hdlview.project.json` for arithmetic and logic, or
+`examples/16_mem/hdlview.project.json` for memory. The internal schematic gallery
+fixture is `tests/fixtures/schematic/hdlview.project.json`. Older artifacts remain readable;
 source details missing from old snapshots require an explicit rebuild.
 
 HDLView generates waveform instrumentation without editing the testbench. If a testbench
@@ -183,17 +188,20 @@ Python environment selected by their profile.
 ## Headless workflows
 
 ```sh
-cargo run -p hdlview -- --profile tools/profiles/docker.json build examples/counter/hdlview.project.json --representation elaborated
+cargo run -p hdlview -- --profile tools/profiles/docker.json build examples/04_adder_N/hdlview.project.json --representation elaborated
 # The JSON result includes directory and id.
 target/debug/hdlview simulate /absolute/artifact/directory/snapshot.json --configuration rtl
-target/debug/hdlview view /absolute/artifact/directory/snapshot.json --scope counter.first
+target/debug/hdlview view /absolute/artifact/directory/snapshot.json --scope adder_N
 target/debug/hdlview wave /absolute/path/trace.vcd
 ```
 
 Representations: `source`, `elaborated`, `generic`, `mapped`, `post_layout`.
 
+The counter regression fixture includes physical constraints and an SDF configuration
+for the following timing workflow. The public exercises need physical settings configured first.
+
 ```sh
-target/debug/hdlview --profile tools/profiles/docker.json build examples/counter/hdlview.project.json --representation post_layout
+target/debug/hdlview --profile tools/profiles/docker.json build tests/fixtures/counter/hdlview.project.json --representation post_layout
 target/debug/hdlview simulate /absolute/artifact/directory/snapshot.json --configuration timing
 ```
 

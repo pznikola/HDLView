@@ -38,10 +38,10 @@ def run(arguments, label):
     return value
 
 
-projects = [(name, pathlib.Path(f"examples/{name}/hdlview.project.json"),
+projects = [(name, pathlib.Path(f"tests/fixtures/{name}/hdlview.project.json"),
              ["source", "elaborated", "generic"]) for name in (["counter", "verilog", "schematic"] if args.schematics else ["counter", "verilog"])]
 if args.mapped or args.physical:
-    original = pathlib.Path("examples/counter/hdlview.project.json")
+    original = pathlib.Path("tests/fixtures/counter/hdlview.project.json")
     for technology, pdk, library, corner in [
         ("sky130", "sky130A", "sky130_fd_sc_hd", "nom_tt_025C_1v80"),
         ("ihp_sg13g2", "ihp-sg13g2", "sg13g2_stdcell", "nom_typ_1p20V_25C"),

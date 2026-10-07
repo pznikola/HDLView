@@ -1,0 +1,29 @@
+{
+  "schema_version": 3,
+  "name": "00_mux",
+  "technology": "sky130",
+  "top": "mux",
+  "sources": [
+    {
+      "path": "rtl/mux.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {
+    "N": "8"
+  },
+  "simulation_sources": ["dv/mux_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "mux_tb",
+      "dut_scope": ["mux_tb", "i_mux"],
+      "testbench": ["dv/mux_tb.sv"],
+      "stop_time": "2us",
+      "defines": {
+        "N": "8"
+      }
+    }
+  }
+}

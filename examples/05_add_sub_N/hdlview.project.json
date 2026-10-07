@@ -1,0 +1,37 @@
+{
+  "schema_version": 3,
+  "name": "05_add_sub_N",
+  "technology": "sky130",
+  "top": "add_sub_N",
+  "sources": [
+    {
+      "path": "rtl/add_sub_N.sv",
+      "language": "system_verilog"
+    },
+    {
+      "path": "rtl/adder_N.sv",
+      "language": "system_verilog"
+    },
+    {
+      "path": "rtl/full_adder.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {
+    "N": "8"
+  },
+  "simulation_sources": ["dv/add_sub_N_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "add_sub_N_tb",
+      "dut_scope": ["add_sub_N_tb", "i_add_sub_N"],
+      "testbench": ["dv/add_sub_N_tb.sv"],
+      "stop_time": "2us",
+      "defines": {
+        "N": "8"
+      }
+    }
+  }
+}

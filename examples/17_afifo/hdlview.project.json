@@ -1,0 +1,49 @@
+{
+  "schema_version": 3,
+  "name": "17_afifo",
+  "technology": "sky130",
+  "top": "afifo",
+  "sources": [
+    {
+      "path": "rtl/afifo.sv",
+      "language": "system_verilog"
+    },
+    {
+      "path": "rtl/mem.sv",
+      "language": "system_verilog"
+    },
+    {
+      "path": "rtl/rd_pointer.sv",
+      "language": "system_verilog"
+    },
+    {
+      "path": "rtl/sync_ff.sv",
+      "language": "system_verilog"
+    },
+    {
+      "path": "rtl/wr_pointer.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {
+    "DSIZE": "8",
+    "ASIZE": "6"
+  },
+  "simulation_sources": ["dv/afifo_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "afifo_tb",
+      "dut_scope": ["afifo_tb", "u_fifo"],
+      "testbench": ["dv/afifo_tb.sv"],
+      "stop_time": "2us",
+      "defines": {
+        "DSIZE": "8",
+        "ASIZE": "6",
+        "WR_PERIOD": "3.3",
+        "RD_PERIOD": "4.1"
+      }
+    }
+  }
+}

@@ -31,7 +31,7 @@ when compatibility or claimed tool coverage matters.
 4. Reproduce the affected stage in an isolated artifact store. For example:
 
    ```sh
-   target/debug/hdlview --store .hdlview/skill-debug --profile tools/profiles/docker.json build examples/counter/hdlview.project.json --representation elaborated
+   target/debug/hdlview --store .hdlview/skill-debug --profile tools/profiles/docker.json build tests/fixtures/counter/hdlview.project.json --representation elaborated
    ```
 
    Use the returned snapshot directory for simulation. A snapshot carries its

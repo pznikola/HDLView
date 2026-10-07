@@ -1,0 +1,29 @@
+{
+  "schema_version": 3,
+  "name": "09_shift_register",
+  "technology": "sky130",
+  "top": "shift_register",
+  "sources": [
+    {
+      "path": "rtl/shift_register.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {
+    "N": "8"
+  },
+  "simulation_sources": ["dv/shift_register_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "shift_register_tb",
+      "dut_scope": ["shift_register_tb", "i_shift_register"],
+      "testbench": ["dv/shift_register_tb.sv"],
+      "stop_time": "2us",
+      "defines": {
+        "N": "8"
+      }
+    }
+  }
+}

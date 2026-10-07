@@ -1,0 +1,29 @@
+{
+  "schema_version": 3,
+  "name": "13_bin2gray",
+  "technology": "sky130",
+  "top": "bin2gray",
+  "sources": [
+    {
+      "path": "rtl/bin2gray.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {
+    "N": "6"
+  },
+  "simulation_sources": ["dv/bin2gray_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "bin2gray_tb",
+      "dut_scope": ["bin2gray_tb", "i_bin2gray"],
+      "testbench": ["dv/bin2gray_tb.sv"],
+      "stop_time": "2us",
+      "defines": {
+        "N": "6"
+      }
+    }
+  }
+}

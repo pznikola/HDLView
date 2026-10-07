@@ -2,6 +2,44 @@
 
 This file records exercised workflows separately from proposed release targets. Version 0.1.0 is an engineering preview; it is not a claim of complete HDL-language coverage or signoff-quality timing simulation.
 
+## Bundled SystemVerilog exercises
+
+The public examples now contain exercises `00_mux` through `17_afifo`, with 50
+required RTL/package/testbench files and 18 portable schema-3 configurations.
+The configurations use the original Makefile parameter/define defaults, Icarus,
+and a 2 µs limit. No physical constraints or machine-specific tool paths are added.
+The counter, Verilog range and schematic showcase fixtures moved to
+`tests/fixtures/`; their contents remain byte-for-byte unchanged.
+
+- All **72 source/elaborated workflows** pass through the actual HDLView CLI:
+  18 projects × two representations × native/Docker providers. Checks include
+  graph endpoint connectivity, simulation snapshot/stage binding, testbench
+  assertion output, Wellen waveform parsing, exact DUT scope and trace provenance.
+  All testbenches finish before the harness limit.
+- **12 binding checks** cover the mux, hierarchical ALU and asynchronous FIFO
+  in both representations and providers. Their public ports have exact bindings;
+  compiler-only/generated internal signals retain explicit unavailable statuses.
+- The native tools are Yosys **0.62+9**, pyslang **10.0.0** and Icarus **13.0
+  development build**. Docker uses `hdlview-tools:2025.12`, image
+  `sha256:26f11a10c89c2e5416a57ff73ec7f514fc2204d35078da46517bb1461bc2cc0d`,
+  with Yosys **0.60**, pyslang **10.0.0** and Icarus **13.0 development build**.
+- Hash checks confirm the external originals are unchanged. The copied
+  `15_sync_ff` testbench alone seeds its expected-value queue with the reset
+  value, preventing an empty-queue startup comparison. Its **101 checks pass**
+  in both providers and representations without disabling assertions.
+- All **17 browser regressions pass with each provider** after relocation,
+  and `tools/qualify.py --schematics` passes **38 native checks** using the
+  retained fixtures. Frontend ESLint, formatting, TypeScript and **40 unit tests**
+  pass. Python tooling syntax and final source/fixture hash checks also pass.
+
+Source views explicitly report opaque generate-instance arrays in exercises
+04, 05, 07 and 08, and memory aggregates in 11, 16 and 17. Elaborated views
+resolve their circuit structure. The existing generated-hierarchy binding
+limitation described below remains; no name guessing is introduced.
+This qualification does not claim gate/physical compatibility for every exercise,
+and no physical flows were rerun. Local reports are
+`.hdlview/examples/{native,docker}-results.json` and `.hdlview/examples/bindings.json`.
+
 ## Schematic clarity and workspace qualification
 
 Geometry version 3 uses compact boundary columns, centered side labels, shared

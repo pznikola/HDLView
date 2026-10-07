@@ -1,0 +1,29 @@
+{
+  "schema_version": 3,
+  "name": "01_simpleRegister",
+  "technology": "sky130",
+  "top": "simpleRegister",
+  "sources": [
+    {
+      "path": "rtl/simpleRegister.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {
+    "N": "8"
+  },
+  "simulation_sources": ["dv/simpleRegister_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "simpleRegister_tb",
+      "dut_scope": ["simpleRegister_tb", "i_simpleRegister"],
+      "testbench": ["dv/simpleRegister_tb.sv"],
+      "stop_time": "2us",
+      "defines": {
+        "N": "8"
+      }
+    }
+  }
+}

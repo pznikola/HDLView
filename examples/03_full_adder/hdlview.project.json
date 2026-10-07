@@ -1,0 +1,25 @@
+{
+  "schema_version": 3,
+  "name": "03_full_adder",
+  "technology": "sky130",
+  "top": "full_adder",
+  "sources": [
+    {
+      "path": "rtl/full_adder.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {},
+  "simulation_sources": ["dv/full_adder_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "full_adder_tb",
+      "dut_scope": ["full_adder_tb", "i_full_adder"],
+      "testbench": ["dv/full_adder_tb.sv"],
+      "stop_time": "2us",
+      "defines": {}
+    }
+  }
+}

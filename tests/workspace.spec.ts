@@ -47,7 +47,7 @@ test.beforeAll(() => {
     args.push("--profile", process.env.HDLVIEW_TOOL_PROFILE);
   const build = spawnSync(
     "target/debug/hdlview",
-    [...args, "build", "examples/counter/hdlview.project.json"],
+    [...args, "build", "tests/fixtures/counter/hdlview.project.json"],
     { encoding: "utf8" },
   );
   if (build.status !== 0) throw new Error(build.stderr);
@@ -87,7 +87,7 @@ test("schematic and waveform selections preserve instance identity and stage bin
       }),
   );
   await page.exposeFunction("__HDLVIEW_TEST_PICKER__", () => [
-    resolve("examples/counter/hdlview.project.json"),
+    resolve("tests/fixtures/counter/hdlview.project.json"),
   ]);
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -544,7 +544,7 @@ test("create, import, edit, resolve conflicts, and rebuild external RTL without 
   await editor.click();
   await page.keyboard.press("Control+End");
   await page.keyboard.type("// dirty tab\n");
-  chosen = [resolve("examples/counter/hdlview.project.json")];
+  chosen = [resolve("tests/fixtures/counter/hdlview.project.json")];
   await fileCommand(page, "Open Existing Project…");
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(editor).toContainText("// dirty tab");
@@ -1168,7 +1168,7 @@ test("one unchanged testbench configuration runs RTL and generic gates", async (
   for (const file of ["counter.sv", "tb.sv"])
     writeFileSync(
       join(directory, file),
-      readFileSync(resolve("examples/counter", file)),
+      readFileSync(resolve("tests/fixtures/counter", file)),
     );
   const config = join(directory, "hdlview.project.json");
   writeFileSync(
@@ -1936,11 +1936,11 @@ test("project settings configure simulations without JSON and preserve drafts th
   mkdirSync(rtl);
   writeFileSync(
     join(rtl, "counter.sv"),
-    readFileSync("examples/counter/counter.sv"),
+    readFileSync("tests/fixtures/counter/counter.sv"),
   );
   writeFileSync(
     join(external, "tb.sv"),
-    readFileSync("examples/counter/tb.sv"),
+    readFileSync("tests/fixtures/counter/tb.sv"),
   );
   writeFileSync(join(external, "model.v"), "module unused_model; endmodule\n");
   writeFileSync(
@@ -2273,7 +2273,7 @@ test("professional symbols, source detail, themes and export preserve the bound 
       }),
   );
   await page.exposeFunction("__HDLVIEW_TEST_PICKER__", () => [
-    resolve("examples/schematic/hdlview.project.json"),
+    resolve("tests/fixtures/schematic/hdlview.project.json"),
   ]);
   const profile = JSON.parse(
     readFileSync(
@@ -2507,16 +2507,16 @@ test("aligned schematic, resizable workspace and panel tabs with testbench-named
 }) => {
   const dir = mkdtempSync(join(tmpdir(), "hdlview clarity "));
   const source =
-    readFileSync("examples/counter/counter.sv", "utf8") +
+    readFileSync("tests/fixtures/counter/counter.sv", "utf8") +
     "// Scroll fixture\n".repeat(300);
-  const tb = readFileSync("examples/counter/tb.sv", "utf8").replace(
+  const tb = readFileSync("tests/fixtures/counter/tb.sv", "utf8").replace(
     "module tb;",
     'module tb; initial begin $dumpfile("counter-results.vcd"); $dumpvars(0, tb); for (integer i=0; i<100; i=i+1) $display("log row %d", i); end',
   );
   writeFileSync(join(dir, "counter.sv"), source);
   writeFileSync(join(dir, "tb.sv"), tb);
   const config = JSON.parse(
-    readFileSync("examples/counter/hdlview.project.json", "utf8"),
+    readFileSync("tests/fixtures/counter/hdlview.project.json", "utf8"),
   );
   delete config.simulations.timing;
   writeFileSync(join(dir, "hdlview.project.json"), JSON.stringify(config));

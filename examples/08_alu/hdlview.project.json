@@ -1,0 +1,53 @@
+{
+  "schema_version": 3,
+  "name": "08_alu",
+  "technology": "sky130",
+  "top": "alu",
+  "sources": [
+    {
+      "path": "rtl/alu_pkg.sv",
+      "language": "system_verilog"
+    },
+    {
+      "path": "rtl/add_sub_N.sv",
+      "language": "system_verilog"
+    },
+    {
+      "path": "rtl/adder_N.sv",
+      "language": "system_verilog"
+    },
+    {
+      "path": "rtl/alu.sv",
+      "language": "system_verilog"
+    },
+    {
+      "path": "rtl/comparator.sv",
+      "language": "system_verilog"
+    },
+    {
+      "path": "rtl/comparator_N.sv",
+      "language": "system_verilog"
+    },
+    {
+      "path": "rtl/full_adder.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {
+    "N": "8"
+  },
+  "simulation_sources": ["dv/alu_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "alu_tb",
+      "dut_scope": ["alu_tb", "i_alu"],
+      "testbench": ["dv/alu_tb.sv"],
+      "stop_time": "2us",
+      "defines": {
+        "N": "8"
+      }
+    }
+  }
+}

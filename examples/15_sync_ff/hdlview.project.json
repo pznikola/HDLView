@@ -1,0 +1,29 @@
+{
+  "schema_version": 3,
+  "name": "15_sync_ff",
+  "technology": "sky130",
+  "top": "sync_ff",
+  "sources": [
+    {
+      "path": "rtl/sync_ff.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {
+    "N": "8"
+  },
+  "simulation_sources": ["dv/sync_ff_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "sync_ff_tb",
+      "dut_scope": ["sync_ff_tb", "i_sync_ff"],
+      "testbench": ["dv/sync_ff_tb.sv"],
+      "stop_time": "2us",
+      "defines": {
+        "N": "8"
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schema_version": 3,
+  "name": "06_comparator",
+  "technology": "sky130",
+  "top": "comparator",
+  "sources": [
+    {
+      "path": "rtl/comparator.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {},
+  "simulation_sources": ["dv/comparator_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "comparator_tb",
+      "dut_scope": ["comparator_tb", "i_comparator"],
+      "testbench": ["dv/comparator_tb.sv"],
+      "stop_time": "2us",
+      "defines": {}
+    }
+  }
+}

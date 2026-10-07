@@ -1,0 +1,29 @@
+{
+  "schema_version": 3,
+  "name": "10_linear_feedback_shift_register",
+  "technology": "sky130",
+  "top": "simple_lfsr",
+  "sources": [
+    {
+      "path": "rtl/simple_lfsr.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {
+    "N": "8"
+  },
+  "simulation_sources": ["dv/simple_lfsr_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "simple_lfsr_tb",
+      "dut_scope": ["simple_lfsr_tb", "i_simple_lfsr"],
+      "testbench": ["dv/simple_lfsr_tb.sv"],
+      "stop_time": "2us",
+      "defines": {
+        "N": "8"
+      }
+    }
+  }
+}

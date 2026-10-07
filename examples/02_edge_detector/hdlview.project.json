@@ -1,0 +1,25 @@
+{
+  "schema_version": 3,
+  "name": "02_edge_detector",
+  "technology": "sky130",
+  "top": "edge_detector",
+  "sources": [
+    {
+      "path": "rtl/edge_detector.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {},
+  "simulation_sources": ["dv/edge_detector_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "edge_detector_tb",
+      "dut_scope": ["edge_detector_tb", "i_edge_detector"],
+      "testbench": ["dv/edge_detector_tb.sv"],
+      "stop_time": "2us",
+      "defines": {}
+    }
+  }
+}

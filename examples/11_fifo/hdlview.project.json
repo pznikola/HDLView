@@ -1,0 +1,31 @@
+{
+  "schema_version": 3,
+  "name": "11_fifo",
+  "technology": "sky130",
+  "top": "fifo",
+  "sources": [
+    {
+      "path": "rtl/fifo.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {
+    "DSIZE": "8",
+    "ASIZE": "6"
+  },
+  "simulation_sources": ["dv/fifo_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "fifo_tb",
+      "dut_scope": ["fifo_tb", "u_fifo"],
+      "testbench": ["dv/fifo_tb.sv"],
+      "stop_time": "2us",
+      "defines": {
+        "DSIZE": "8",
+        "ASIZE": "6"
+      }
+    }
+  }
+}

@@ -23,7 +23,7 @@ or `post_layout` exactly as accepted by the CLI.
   interfaces from models; these blackbox interfaces are not simulation models.
   Keep unknown cells explicit rather than inventing connectivity.
 
-Use `examples/counter` for repeated SV instances and `examples/verilog` for Verilog
+Use `tests/fixtures/counter` for repeated SV instances and `tests/fixtures/verilog` for Verilog
 range-direction behavior. Add only the failing language construct to a focused fixture. Check
 connectivity, occurrence identity, width, and source references rather than compiler
 temporary names. A source-helper edit must be exercised with its matching compiler;

@@ -1,0 +1,31 @@
+{
+  "schema_version": 3,
+  "name": "16_mem",
+  "technology": "sky130",
+  "top": "mem",
+  "sources": [
+    {
+      "path": "rtl/mem.sv",
+      "language": "system_verilog"
+    }
+  ],
+  "standard": "1800-2017",
+  "parameters": {
+    "DSIZE": "8",
+    "ASIZE": "6"
+  },
+  "simulation_sources": ["dv/mem_tb.sv"],
+  "simulations": {
+    "rtl": {
+      "simulator": "icarus",
+      "top": "mem_tb",
+      "dut_scope": ["mem_tb", "i_mem"],
+      "testbench": ["dv/mem_tb.sv"],
+      "stop_time": "2us",
+      "defines": {
+        "DSIZE": "8",
+        "ASIZE": "6"
+      }
+    }
+  }
+}
