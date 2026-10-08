@@ -66,16 +66,39 @@ if args.mapped or args.physical:
         path.write_text(json.dumps(project, indent=2))
         projects.append((technology, path, ["mapped"] + (["post_layout"] if args.physical else [])))
 
+def view_top(snapshot, label):
+    """View the top scope and record counts that later schematic changes must not worsen."""
+    view = run(["view", snapshot["directory"] + "/snapshot.json"], f"{label}/view")
+    assert view, f"{label}: graph view failed"
+    ports = {p["id"] for n in view["nodes"] for p in n["ports"]}
+    assert all(p in ports for e in view["edges"] for p in e["sources"] + e["targets"]), "dangling display endpoint"
+    records[-1].update(
+        cells=view["total_cells"],
+        pseudo_nodes=sum(n["kind"] in ("constant", "undriven", "unconnected", "off_view") for n in view["nodes"]),
+        unknown_symbols=sum(n["display"]["symbol"] == "unknown" for n in view["nodes"]),
+        named_signals=sum(not s["hidden"] for m in snapshot["design"]["modules"].values()
+                          if not m["blackbox"] for s in m["signals"]),
+    )
+    (store / "results.json").write_text(json.dumps(records, indent=2))
+    if snapshot["representation"] == "elaborated":
+        # View cleanup may fold compiler cells, never declared signals.
+        raw = json.loads((pathlib.Path(snapshot["directory"]) / "elaborated.json").read_text())
+        for module, contents in raw["modules"].items():
+            drawn = {s["name"]: len(s["bits"]) for s in snapshot["design"]["modules"][module]["signals"]
+                     if not s["hidden"]}
+            for signal, net in contents["netnames"].items():
+                if not net["hide_name"]:
+                    assert drawn.get(signal) == len(net["bits"]), f"{label}: {module}.{signal} changed in the view"
+    return view
+
+
 for name, project_path, stages in projects:
     for stage in stages:
         snapshot = run(["build", str(project_path), "--representation", stage], f"{name}/{stage}")
         if not snapshot:
             continue
         if args.schematics:
-            view = run(["view", snapshot["directory"] + "/snapshot.json"], f"{name}/{stage}/view")
-            assert view, f"{name}/{stage}: graph view failed"
-            ports = {p["id"] for n in view["nodes"] for p in n["ports"]}
-            assert all(p in ports for e in view["edges"] for p in e["sources"] + e["targets"]), "dangling display endpoint"
+            view = view_top(snapshot, f"{name}/{stage}")
             if name == "schematic":
                 kinds = {n["display"]["symbol"] for n in view["nodes"]}
                 if stage == "source":
@@ -105,4 +128,10 @@ for name, project_path, stages in projects:
                              f"{name}/{stage}/{configuration}")
             if simulation:
                 run(["wave", simulation["trace"]], f"{name}/{stage}/{configuration}/parse")
+if args.schematics:
+    for project_path in sorted(pathlib.Path("examples").glob("*/hdlview.project.json")):
+        label = f"examples/{project_path.parent.name}/elaborated"
+        snapshot = run(["build", str(project_path), "--representation", "elaborated"], label)
+        if snapshot:
+            view_top(snapshot, label)
 raise SystemExit(any(r["exit_code"] for r in records))

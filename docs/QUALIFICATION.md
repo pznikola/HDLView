@@ -2,6 +2,110 @@
 
 This file records exercised workflows separately from proposed release targets. Version 0.1.0 is an engineering preview; it is not a claim of complete HDL-language coverage or signoff-quality timing simulation.
 
+## Quartus-style schematic qualification
+
+Measured 9 October 2026 with `tools/qualify.py --schematics`, which now also builds and
+views the top scope of every bundled exercise at Elaborated RTL and records cell,
+pseudo-node (constant, undriven, unconnected, off-view), unknown-symbol and declared-signal
+counts. It asserts that every declared signal of the raw elaborated netlist keeps its
+name and width in the drawn netlist.
+
+**View cleanup.** Across the counter, Verilog and showcase fixtures and the 18 exercises
+(native Yosys 0.62 with the Slang plugin):
+
+| Top-scope total  | Before | After |
+| ---------------- | ------ | ----- |
+| Cells            | 192    | 170   |
+| Pseudo-nodes     | 132    | 18    |
+| Unknown symbols  | 0      | 0     |
+| Declared signals | 474    | 474   |
+
+`11_fifo` accounts for most of the change: 107 pseudo-nodes became 3, because its
+32-bit increments are narrowed to the bits in use. The counter fixture's lane is one
+adder and one `$sdffe` titled `count`; `01_simpleRegister` is one `$adff`;
+`09_shift_register` is one `$adffe`. The same script produced the same cell types for
+the counter, `11_fifo`, `01_simpleRegister` and the showcase on the Docker image's
+Yosys 0.60.
+
+Limits: a register whose D input is itself a declared net keeps its multiplexers in
+front, which is what the source describes. Counts cover the top scope only; hierarchical
+exercises have further cells in child scopes. `08_alu` barely changes because its case
+multiplexers are not folded by this step.
+
+**Net model, layout and symbols.** Geometry version 5. After the net model, the same
+sweep reports **0 pseudo-nodes** in every view (74 cases across source, elaborated and
+generic stages, all passing on the native toolchain) with 474 declared signals intact.
+Exported Elaborated RTL schematics of the top scope, built and laid out in the real
+browser worker and measured as SVG width × height including a 20-unit margin:
+
+| Design               | Before       | After       |
+| -------------------- | ------------ | ----------- |
+| counter fixture      | 1263 × 444   | 875 × 303   |
+| `09_shift_register`  | 1294 × 683   | 739 × 282   |
+| `10_linear_feedback` | 1491 × 655   | 887 × 366   |
+| `11_fifo`            | 4185 × 14350 | 1592 × 1089 |
+| `08_alu`             | 2866 × 5470  | 1868 × 2683 |
+| `16_mem`             | 1590 × 969   | 872 × 353   |
+| showcase fixture     | 2725 × 3144  | 1233 × 1144 |
+
+In each of these the registers are drawn after the logic computing their input; before,
+the counter, shift register and FIFO placed a register in the first logic layer with its
+feedback wrapped around the drawing. `tools/benchmark-layout.mjs` laid out its two
+synthetic 1,000-node graphs in **1.84 s** (mixed, 998 bends, 0 crossings) and **1.62 s**
+(high fan-out); the previous layout measured 1.85 s and 1.59 s on the same machine, so
+the three-second target still holds. The benchmark now records bends, crossings, wire
+length and area.
+
+- **68 Rust tests** and **45 frontend tests** pass. New cases cover bus nets and feeds,
+  slice and replication labels, cut-bus connectors, a grouped multiplexer's constant
+  input, pin sides, routed terminals on all four sides, joins, inline constants,
+  bidirectional pads, and the relational readability checks.
+- All **17 browser tests** pass with the native profile. The reviewed light and dark
+  symbol-gallery baselines were refreshed for the new geometry.
+
+**Case multiplexers and instance roles.** `08_alu` folds both of its eleven-way case
+statements into `MUX 11:1` symbols selected by `opcode_i`; its exported top scope went
+from 1868 × 2683 to 1560 × 1337. The showcase's case statement is one `MUX 4:1`, its
+memory shows only the five pins in use, and its export went from 1233 × 1144 to
+1061 × 947. In the counter fixture, `clk` and `reset` reach only clock and reset pins
+inside both `lane` instances and are drawn as connectors. 71 Rust tests cover the fold,
+its rejection when a comparison is shared, per-case pins, instance roles through a
+nested instance, and unused memory controls. All 17 browser tests pass.
+
+**Library cells.** `tools/qualify.py --schematics --mapped` on the Docker image (Yosys
+0.60, LibreLane 3) passed all 82 cases. Reading the mapped Liberty library as logic
+described 404 of the 446 SKY130 library modules and 80 of the 84 IHP modules present in
+the snapshots; a local run over the libraries LibreLane hands to synthesis described 190
+of 192 SKY130 cells and 78 of 79 IHP cells in under 20 ms, leaving only the full adders,
+which have two outputs. In the mapped counter:
+
+| Counter fixture    | Visible cells | Unknown before | Unknown after |
+| ------------------ | ------------- | -------------- | ------------- |
+| SKY130 mapped      | 29            | 4              | 0             |
+| IHP SG13G2 mapped  | 40            | 2              | 0             |
+| SKY130 post-layout | 53            | 23             | 0             |
+
+The post-layout figures are from one full LibreLane run on the Docker image (status
+complete, 266 cells, 213 fill, decap and tap cells hidden). Its 19 delay and clock-delay
+buffers, previously boxes, are drawn as buffers. IHP post-layout was not rebuilt.
+
+The four SKY130 cells that were boxes (`a31o`, `a41o`, `and2b`) are now AND-OR compounds
+with their inner gates and an AND with one bubble; flip-flops are titled `fast[0]` to
+`slow[3]`, and the IHP `dfrbpq` shows `RESET_B` as an active-low asynchronous reset
+below the symbol. 75 Rust tests cover the decoder on gate networks copied from the real
+libraries, its refusal to name a function it cannot match, and the catalog fallback.
+
+Limits: boundary ports are no longer in declaration order, and a port whose only net is
+drawn as a control connector is placed by model order alone. Placing registers after
+their logic costs a few bends in loop-heavy designs. A net name is omitted where its
+driver's first run is short or crossed, so some declared nets are named only in the
+tooltip. Pin text is still sized by character count, not measured. A module instance is
+titled with the compiler's specialised name, such as `lane$counter.first`. Library
+cells with more than six inputs or more than one non-constant output, and latches whose
+reset Liberty models as logic, are not decoded: the former stay labelled boxes and the
+latter show that pin as data. A clock that passes through clock-tree buffers is wired,
+not drawn as a connector, because roles are not traced through buffers.
+
 ## Bundled SystemVerilog exercises
 
 The public examples now contain exercises `00_mux` through `17_afifo`, with 50

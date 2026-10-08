@@ -142,11 +142,25 @@ export interface PinDisplay {
   name: string;
   width: number;
   bits: (number | string)[];
-  role: "data" | "select" | "clock" | "enable" | "reset" | "set" | "power";
+  role:
+    | "data"
+    | "select"
+    | "clock"
+    | "enable"
+    | "reset"
+    | "set"
+    | "power"
+    | "unused";
   polarity?: boolean | null;
   declared_direction?: string | null;
   range?: [number, number] | null;
+  asynchronous?: boolean;
 }
+/** What drives one contiguous run of an input pin, least significant run first. */
+export type Feed =
+  | { kind: "net"; edge: string; width: number; label: string }
+  | { kind: "constant"; width: number; label: string }
+  | { kind: "undriven"; width: number };
 export interface NodeDisplay {
   symbol: string;
   title: string;
@@ -156,6 +170,12 @@ export interface NodeDisplay {
   detail?: string | null;
   physical_only: boolean;
   span?: SourceSpan | null;
+  /** Gates of a two-level cell: `first` over each pin group, then the other. */
+  compound?: {
+    first: "and" | "or";
+    groups: string[][];
+    inverted: boolean;
+  } | null;
 }
 export interface SchematicOptions {
   functional_symbols: boolean;
@@ -169,6 +189,7 @@ export interface Port {
   direction: string;
   signal_ids: string[];
   display?: PinDisplay | null;
+  feeds?: Feed[];
 }
 export interface Node {
   id: string;

@@ -35,6 +35,57 @@ try {
   );
   const result = await page.evaluate(async (workerFile) => {
     const results = [];
+    // Quality figures for comparing layout changes; they are recorded, not asserted.
+    const quality = (view) => {
+      const horizontal = [],
+        vertical = [];
+      let wire_length = 0;
+      for (const wire of view.wires)
+        for (const path of wire.paths) {
+          const points = [...path.d.matchAll(/(-?[\d.]+),(-?[\d.]+)/g)].map(
+            (m) => [Number(m[1]), Number(m[2])],
+          );
+          for (let i = 1; i < points.length; i++) {
+            const [ax, ay] = points[i - 1],
+              [bx, by] = points[i];
+            wire_length += Math.abs(bx - ax) + Math.abs(by - ay);
+            if (ay === by)
+              horizontal.push([
+                wire.edge_id,
+                ay,
+                Math.min(ax, bx),
+                Math.max(ax, bx),
+              ]);
+            else
+              vertical.push([
+                wire.edge_id,
+                ax,
+                Math.min(ay, by),
+                Math.max(ay, by),
+              ]);
+          }
+        }
+      let crossings = 0;
+      for (const [a, y, left, right] of horizontal)
+        for (const [b, x, top, bottom] of vertical)
+          if (a !== b && left < x && x < right && top < y && y < bottom)
+            crossings++;
+      return {
+        bends: view.graph.edges.reduce(
+          (sum, edge) =>
+            sum +
+            (edge.sections ?? []).reduce(
+              (n, section) => n + (section.bendPoints?.length ?? 0),
+              0,
+            ),
+          0,
+        ),
+        crossings,
+        wire_length: Math.round(wire_length),
+        width: Math.round(view.graph.width),
+        height: Math.round(view.graph.height),
+      };
+    };
     for (const pattern of ["mixed_balanced", "high_fanout"]) {
       const graph = {
         nodes: [],
@@ -119,6 +170,7 @@ try {
                 nodes: 1000,
                 edges: 999,
                 layout_ms: performance.now() - start,
+                ...quality(data.result),
               });
         };
         worker.onerror = (error) => {

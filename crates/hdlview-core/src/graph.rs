@@ -67,7 +67,15 @@ pub fn from_yosys_text(text: &str, top: &str) -> Result<Design> {
     Ok(design)
 }
 pub fn from_yosys(json: &Value, top: &str) -> Result<Design> {
-    let mut design = Design::default();
+    let mut design = Design {
+        modules: modules_from_yosys(json)?,
+        ..Default::default()
+    };
+    build_scopes(&mut design, top)?;
+    Ok(design)
+}
+pub fn modules_from_yosys(json: &Value) -> Result<BTreeMap<String, Module>> {
+    let mut modules = BTreeMap::new();
     for (name, m) in json["modules"]
         .as_object()
         .context("Yosys JSON has no modules")?
@@ -150,7 +158,7 @@ pub fn from_yosys(json: &Value, top: &str) -> Result<Design> {
             })
             .transpose()?
             .unwrap_or_default();
-        design.modules.insert(
+        modules.insert(
             name.clone(),
             Module {
                 name: name.clone(),
@@ -159,11 +167,11 @@ pub fn from_yosys(json: &Value, top: &str) -> Result<Design> {
                 cells,
                 blackbox: truth(&m["attributes"]["blackbox"])
                     || truth(&m["attributes"]["whitebox"]),
+                function: None,
             },
         );
     }
-    build_scopes(&mut design, top)?;
-    Ok(design)
+    Ok(modules)
 }
 pub fn build_scopes(d: &mut Design, top: &str) -> Result<()> {
     if !d.modules.contains_key(top) {
@@ -234,6 +242,112 @@ pub fn signal_refs(s: &DesignSnapshot, scope: &[String]) -> Result<Vec<SignalRef
     }
     Ok(refs)
 }
+/// Verilog literal for constant bits listed least significant first.
+fn literal(bits: &str) -> String {
+    let width = bits.len();
+    let text: String = bits.chars().rev().collect();
+    if width < 8 || !text.bytes().all(|b| matches!(b, b'0' | b'1')) {
+        return format!("{width}'b{text}");
+    }
+    let padded = format!("{text:0>digits$}", digits = width.div_ceil(4) * 4);
+    let hex: String = padded
+        .as_bytes()
+        .chunks(4)
+        .map(|nibble| {
+            let value = nibble.iter().fold(0, |v, b| v * 2 + usize::from(b - b'0'));
+            char::from(b"0123456789abcdef"[value])
+        })
+        .collect();
+    format!("{width}'h{hex}")
+}
+
+fn feeds(
+    bits: &[Bit],
+    carrier: &BTreeMap<Bit, (usize, usize)>,
+    trunks: &[(usize, Option<(i64, bool)>)],
+    edges: &[ViewEdge],
+) -> Vec<Feed> {
+    enum Run {
+        Net {
+            net: usize,
+            low: usize,
+            count: usize,
+            repeated: bool,
+        },
+        Constant(String),
+        Undriven(usize),
+    }
+    let mut runs: Vec<Run> = Vec::new();
+    for bit in bits {
+        match (bit, carrier.get(bit), runs.last_mut()) {
+            (Bit::Constant(value), _, Some(Run::Constant(text))) => text.push_str(value),
+            (Bit::Constant(value), _, _) => runs.push(Run::Constant(value.clone())),
+            (_, None, Some(Run::Undriven(width))) => *width += 1,
+            (_, None, _) => runs.push(Run::Undriven(1)),
+            (
+                _,
+                Some(&(net, position)),
+                Some(Run::Net {
+                    net: current,
+                    low,
+                    count,
+                    repeated,
+                }),
+            ) if *current == net
+                && ((!*repeated && position == *low + *count)
+                    || (position == *low && (*repeated || *count == 1))) =>
+            {
+                *repeated = position == *low;
+                *count += 1;
+            }
+            (_, Some(&(net, position)), _) => runs.push(Run::Net {
+                net,
+                low: position,
+                count: 1,
+                repeated: false,
+            }),
+        }
+    }
+    runs.into_iter()
+        .map(|run| match run {
+            Run::Constant(text) => Feed::Constant {
+                width: text.len(),
+                label: literal(&text),
+            },
+            Run::Undriven(width) => Feed::Undriven { width },
+            Run::Net {
+                net,
+                low,
+                count,
+                repeated,
+            } => {
+                let (width, declared) = trunks[net];
+                let index = |position: usize| match declared {
+                    Some((offset, true)) => offset + (width - 1 - position) as i64,
+                    Some((offset, false)) => offset + position as i64,
+                    None => position as i64,
+                };
+                let label = if repeated && width == 1 {
+                    format!("×{count}")
+                } else if repeated {
+                    format!("[{}] ×{count}", index(low))
+                } else if count == width {
+                    String::new()
+                } else if count == 1 {
+                    format!("[{}]", index(low))
+                } else {
+                    format!("[{}:{}]", index(low + count - 1), index(low))
+                };
+                Feed::Net {
+                    edge: edges[net].id.clone(),
+                    width: count,
+                    label,
+                }
+            }
+        })
+        .collect()
+}
+
 pub fn view(
     s: &DesignSnapshot,
     scope: &[String],
@@ -286,7 +400,7 @@ pub fn view_for_schematic(
     let mut selected: Vec<&Cell> = m
         .cells
         .iter()
-        .filter(|c| show_physical_cells || !crate::schematic::is_physical(c))
+        .filter(|c| show_physical_cells || !crate::schematic::is_physical(&s.design, c))
         .filter(|c| {
             focus.is_none()
                 || c.ports
@@ -313,7 +427,7 @@ pub fn view_for_schematic(
     } else {
         m.cells
             .iter()
-            .filter(|c| crate::schematic::is_physical(c))
+            .filter(|c| crate::schematic::is_physical(&s.design, c))
             .count()
     };
     let omitted_cells = m
@@ -353,6 +467,27 @@ pub fn view_for_schematic(
         path.push(name.into());
         let id = identity(&s.id, &path, if boundary { "boundary" } else { "cell" });
         let mut vp = Vec::new();
+        // Yosys packs the cases of a `$pmux` and the ports of a memory into one
+        // pin each. Draw one pin per case or port, when the pin divides evenly.
+        let width = |pin: &str| {
+            ports
+                .iter()
+                .find(|p| p.name == pin)
+                .map_or(0, |p| p.bits.len())
+        };
+        let parts = |p: &Port| {
+            let count = match (kind, p.name.as_str()) {
+                ("$pmux", "B" | "S") => width("S"),
+                ("$mem_v2", pin) if pin.starts_with("RD_") => width("RD_CLK"),
+                ("$mem_v2", pin) if pin.starts_with("WR_") => width("WR_CLK"),
+                _ => 1,
+            };
+            if count > 1 && p.bits.len().is_multiple_of(count) {
+                count
+            } else {
+                1
+            }
+        };
         for p in ports {
             let declarations = m.signals.iter().find(|sig| boundary && sig.name == p.name);
             let partitions: Vec<(String, &[Bit])> = if split_buses && p.bits.len() > 1 {
@@ -373,15 +508,17 @@ pub fn view_for_schematic(
                         (format!("{}[{declared}]", p.name), std::slice::from_ref(bit))
                     })
                     .collect()
+            } else if parts(p) > 1 {
+                p.bits
+                    .chunks(p.bits.len() / parts(p))
+                    .enumerate()
+                    .map(|(part, bits)| {
+                        let separator = if kind == "$pmux" { "" } else { "." };
+                        (format!("{}{separator}{part}", p.name), bits)
+                    })
+                    .collect()
             } else {
-                vec![(
-                    if p.bits.len() > 1 {
-                        format!("{} /{}", p.name, p.bits.len())
-                    } else {
-                        p.name.clone()
-                    },
-                    p.bits.as_slice(),
-                )]
+                vec![(p.name.clone(), p.bits.as_slice())]
             };
             // Wire storage is least-significant first; display declarations from
             // their left bound to their right bound without changing partition IDs.
@@ -394,7 +531,7 @@ pub fn view_for_schematic(
                     "{id}:{}:{partition}",
                     serde_json::to_string(&p.name).unwrap()
                 );
-                for b in bits {
+                for b in bits.iter().filter(|b| matches!(b, Bit::Wire(_))) {
                     let (drivers, loads) = endpoints.entry(b.clone()).or_default();
                     let output = (p.direction == "output") ^ boundary;
                     if output || p.direction == "inout" {
@@ -457,7 +594,9 @@ pub fn view_for_schematic(
                                     (high, low)
                                 }
                             }),
+                        asynchronous: false,
                     }),
+                    feeds: vec![],
                 });
             }
         }
@@ -480,73 +619,121 @@ pub fn view_for_schematic(
         let child = s.design.scopes.iter().any(|sc| sc.path == p).then_some(p);
         add(&c.name, &c.kind, &c.ports, false, c.source.clone(), child);
     }
-    // Aggregate bits only when their endpoint sets match; partial buses retain separate routes.
-    let mut groups: BTreeMap<(Vec<String>, Vec<String>), Vec<Bit>> = BTreeMap::new();
-    for (bit, (mut drivers, mut loads)) in endpoints {
+    for (drivers, loads) in endpoints.values_mut() {
         drivers.sort();
         drivers.dedup();
         loads.sort();
         loads.dedup();
-        if let Bit::Constant(ref value) = bit {
-            let id = format!("{}:constant:{value}", identity(&s.id, scope, "scope"));
-            let port = format!("{id}:out");
-            if !nodes.iter().any(|n| n.id == id) {
-                nodes.push(ViewNode {
-                    id,
-                    label: value.clone(),
-                    kind: "constant".into(),
-                    ports: vec![ViewPort {
-                        id: port.clone(),
-                        label: value.clone(),
-                        direction: "output".into(),
-                        signal_ids: vec![],
-                        display: None,
-                    }],
-                    child_scope: None,
-                    source: None,
-                    display: None,
-                });
-            }
-            drivers = vec![port];
-        }
-        if drivers.is_empty() || loads.is_empty() {
-            let undriven = drivers.is_empty();
-            let kind = if undriven { "undriven" } else { "unconnected" };
-            let outside = if undriven {
-                full_drivers.contains(&bit)
-            } else {
-                full_loads.contains(&bit)
-            };
-            let kind = if outside { "off_view" } else { kind };
-            let id = format!("{}:{kind}:{bit:?}", identity(&s.id, scope, "scope"));
-            let port = format!("{id}:pin");
-            nodes.push(ViewNode {
-                id,
-                label: kind.into(),
-                kind: kind.into(),
-                ports: vec![ViewPort {
-                    id: port.clone(),
-                    label: String::new(),
-                    direction: if undriven { "output" } else { "input" }.into(),
-                    signal_ids: bybit.get(&bit).cloned().unwrap_or_default(),
-                    display: None,
-                }],
-                child_scope: None,
-                source: None,
-                display: None,
-            });
-            if undriven {
-                drivers.push(port)
-            } else {
-                loads.push(port)
-            }
-        }
-        groups.entry((drivers, loads)).or_default().push(bit);
     }
-    let edges = groups
-        .into_iter()
+    // One net per driver set: a bus stays whole however its bits fan out, and each
+    // load pin records the part it takes. Bits nothing reads produce no net.
+    struct Net {
+        sources: Vec<String>,
+        targets: BTreeSet<String>,
+        bits: Vec<Bit>,
+    }
+    let scope_id = identity(&s.id, scope, "scope");
+    let mut nets: Vec<Net> = Vec::new();
+    // Net and position within its trunk, the first driver pin, of every carried bit.
+    let mut carrier: BTreeMap<Bit, (usize, usize)> = BTreeMap::new();
+    let mut by_drivers: BTreeMap<&[String], usize> = BTreeMap::new();
+    let mut read_outside: BTreeMap<usize, Vec<Bit>> = BTreeMap::new();
+    for port in nodes.iter().flat_map(|n| &n.ports) {
+        let Some(display) = &port.display else {
+            continue;
+        };
+        for (position, bit) in display.bits.iter().enumerate() {
+            let Some((drivers, loads)) = endpoints.get(bit) else {
+                continue;
+            };
+            let outside = loads.is_empty() && full_loads.contains(bit);
+            if drivers.first() != Some(&port.id)
+                || carrier.contains_key(bit)
+                || (loads.is_empty() && !outside)
+            {
+                continue;
+            }
+            let net = *by_drivers.entry(drivers).or_insert_with(|| {
+                nets.push(Net {
+                    sources: drivers.clone(),
+                    targets: BTreeSet::new(),
+                    bits: vec![],
+                });
+                nets.len() - 1
+            });
+            nets[net].targets.extend(loads.iter().cloned());
+            nets[net].bits.push(bit.clone());
+            carrier.insert(bit.clone(), (net, position));
+            if outside {
+                read_outside.entry(net).or_default().push(bit.clone());
+            }
+        }
+    }
+    let mut by_loads: BTreeMap<&[String], usize> = BTreeMap::new();
+    let mut driven_outside = Vec::new();
+    for (bit, (drivers, loads)) in &endpoints {
+        if !drivers.is_empty() || loads.is_empty() || !full_drivers.contains(bit) {
+            continue;
+        }
+        let net = *by_loads.entry(loads).or_insert_with(|| {
+            nets.push(Net {
+                sources: vec![],
+                targets: loads.iter().cloned().collect(),
+                bits: vec![],
+            });
+            driven_outside.push(nets.len() - 1);
+            nets.len() - 1
+        });
+        carrier.insert(bit.clone(), (net, nets[net].bits.len()));
+        nets[net].bits.push(bit.clone());
+    }
+    // A bounded view ends each cut bus in one connector, never one per bit.
+    let mut connector = |bits: &[Bit], direction: &str| {
+        let id = format!("{scope_id}:off_view:{:?}", bits[0]);
+        let port = format!("{id}:pin");
+        nodes.push(ViewNode {
+            id,
+            label: "off_view".into(),
+            kind: "off_view".into(),
+            ports: vec![ViewPort {
+                id: port.clone(),
+                label: String::new(),
+                direction: direction.into(),
+                signal_ids: bits
+                    .iter()
+                    .flat_map(|b| bybit.get(b).cloned().unwrap_or_default())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+                display: Some(PinDisplay {
+                    name: String::new(),
+                    width: bits.len(),
+                    bits: bits.to_vec(),
+                    role: PinRole::Data,
+                    polarity: None,
+                    declared_direction: None,
+                    range: None,
+                    asynchronous: false,
+                }),
+                feeds: vec![],
+            }],
+            child_scope: None,
+            source: None,
+            display: None,
+        });
+        port
+    };
+    for net in driven_outside {
+        nets[net].sources = vec![connector(&nets[net].bits, "output")];
+    }
+    for (net, bits) in read_outside {
+        nets[net].targets.insert(connector(&bits, "input"));
+    }
+    let edges: Vec<ViewEdge> = nets
+        .iter()
         .enumerate()
-        .map(|(i, ((drivers, loads), bs))| {
+        .map(|(i, net)| {
+            let bs = &net.bits;
             let ids: BTreeSet<String> = bs
                 .iter()
                 .flat_map(|b| bybit.get(b).cloned().unwrap_or_default())
@@ -576,9 +763,9 @@ pub fn view_for_schematic(
                 })
                 .collect();
             ViewEdge {
-                id: format!("{}:edge:{i}", identity(&s.id, scope, "scope")),
-                sources: drivers,
-                targets: loads,
+                id: format!("{scope_id}:edge:{i}"),
+                sources: net.sources.clone(),
+                targets: net.targets.iter().cloned().collect(),
                 signal_ids: signals
                     .iter()
                     .filter(|signal| ids.contains(&signal.id))
@@ -598,10 +785,36 @@ pub fn view_for_schematic(
                 } else {
                     EdgeSemantics::Electrical
                 },
-                bits: bs,
+                bits: bs.clone(),
             }
         })
         .collect();
+    // Slice labels count along the trunk, in declared indices when a declaration
+    // names exactly the trunk.
+    let trunks: Vec<(usize, Option<(i64, bool)>)> = nets
+        .iter()
+        .map(|net| {
+            let bits = net
+                .sources
+                .first()
+                .and_then(|id| nodes.iter().flat_map(|n| &n.ports).find(|p| &p.id == id))
+                .and_then(|p| p.display.as_ref())
+                .map_or(&net.bits, |d| &d.bits);
+            let declared = m
+                .signals
+                .iter()
+                .find(|sig| !sig.hidden && &sig.bits == bits);
+            (bits.len(), declared.map(|sig| (sig.offset, sig.upto)))
+        })
+        .collect();
+    for port in nodes.iter_mut().flat_map(|n| &mut n.ports) {
+        if port.direction != "input" {
+            continue;
+        }
+        if let Some(display) = &port.display {
+            port.feeds = feeds(&display.bits, &carrier, &trunks, &edges);
+        }
+    }
     Ok(GraphView {
         nodes,
         edges,

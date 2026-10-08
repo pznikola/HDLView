@@ -1,4 +1,4 @@
-use crate::{graph, model::*, project::*, runner::*};
+use crate::{graph, library, model::*, project::*, runner::*};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -78,6 +78,27 @@ pub fn frontend(r: &Runner, p: &ProjectConfig) -> Result<(String, Vec<String>)> 
     ));
     Ok((script, plugins))
 }
+/// Cleanup for the drawn elaborated netlist only; `elaborated.il` and `normalized.v`
+/// remain the synthesis inputs. Every restriction protects something users can see:
+/// - `keep` on declared wires, because `opt_clean` otherwise drops unloaded signals
+///   that waveform binding still needs;
+/// - `-keepdc`, so a register with a constant or self-fed D is not replaced by a constant;
+/// - `-simple-dffe`, so enable inference never invents comparison cells;
+/// - no enable/reset folding through a declared D net, which would duplicate its logic;
+/// - width reduction for arithmetic only, so comparators keep their declared operands.
+const VIEW_CLEANUP: &str = "read_rtlil elaborated.il
+setattr -set keep 1 w:* w:$* %d
+opt_expr -mux_undef -noclkinv
+opt_clean
+opt_dff -keepdc -nodffe -nosdff
+select -set declared_d w:* w:$* %d %co1:+[D] c:* %i
+opt_dff -keepdc -simple-dffe c:* @declared_d %d
+opt_expr -mux_undef -noclkinv
+opt_clean
+wreduce -keepdc t:$add t:$sub t:$mul
+opt_clean
+write_json elaborated-view.json
+";
 pub fn compile(
     project_path: &Path,
     profile: ToolchainProfile,
@@ -213,10 +234,13 @@ fn compile_directory(
             diagnostics.extend(diagnostics_from_log(&log));
         }
         match representation {
-            Representation::Elaborated => graph::from_yosys_text(
-                &fs::read_to_string(dir.join("elaborated.json"))?,
-                &project.top,
-            )?,
+            Representation::Elaborated => {
+                yosys(&runner, VIEW_CLEANUP, vec![], "view")?;
+                graph::from_yosys_text(
+                    &fs::read_to_string(dir.join("elaborated-view.json"))?,
+                    &project.top,
+                )?
+            }
             Representation::Generic => {
                 let script=format!("read_rtlil elaborated.il\nsynth -top {}\nwrite_verilog -noattr -noexpr -norename netlist.v\nwrite_json generic.json\n",project.top);
                 diagnostics.extend(diagnostics_from_log(&yosys(
@@ -292,7 +316,32 @@ fn compile_directory(
                 )?));
                 netlist = Some(finalfile);
                 physical_run = Some(physical);
-                graph::from_yosys_text(&fs::read_to_string(dir.join("graph.json"))?, &project.top)?
+                let mut design = graph::from_yosys_text(
+                    &fs::read_to_string(dir.join("graph.json"))?,
+                    &project.top,
+                )?;
+                // Symbols and pin roles come from the library's own functions. Without
+                // them the schematic is still exact; cells use the verified catalog.
+                match library_functions(&runner, &libs) {
+                    Ok(functions) => {
+                        // Only library cells: a design module may share a cell's name.
+                        for (name, function) in functions {
+                            if let Some(module) =
+                                design.modules.get_mut(&name).filter(|m| m.blackbox)
+                            {
+                                module.function = Some(function);
+                            }
+                        }
+                    }
+                    Err(error) => diagnostics.push(Diagnostic {
+                        severity: "warning".into(),
+                        message: format!(
+                            "Library cell functions unavailable; using the built-in catalog: {error:#}"
+                        ),
+                        source: None,
+                    }),
+                }
+                design
             }
             _ => unreachable!(),
         }
@@ -368,6 +417,21 @@ pub fn diagnostics_from_log(log: &str) -> Vec<Diagnostic> {
             source: None,
         })
         .collect()
+}
+/// Read each Liberty cell as the gates of its function. Cells whose function
+/// Liberty does not state are skipped and remain unknown boxes.
+fn library_functions(r: &Runner, libs: &[PathBuf]) -> Result<BTreeMap<String, CellFunction>> {
+    let mut script = String::new();
+    for lib in libs {
+        script.push_str(&format!(
+            "read_liberty -overwrite -ignore_miss_func -ignore_miss_dir -ignore_miss_data_latch -ignore_buses {}\n",
+            q(lib)?
+        ));
+    }
+    script.push_str("write_json library-functions.json\n");
+    yosys(r, &script, vec![], "library-functions")?;
+    let json: Value = read_json(&r.workspace.join("library-functions.json"))?;
+    Ok(library::functions(&graph::modules_from_yosys(&json)?))
 }
 pub fn library_files(profile: &ToolchainProfile, p: &PhysicalConfig) -> Result<Vec<PathBuf>> {
     let root = profile

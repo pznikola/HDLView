@@ -8,13 +8,14 @@ function pin(
   direction: string,
   role: PinDisplay["role"] = "data",
   polarity = true,
+  asynchronous = false,
 ): Port {
   return {
     id: name,
     label: name,
     direction,
     signal_ids: [],
-    display: { name, width: 1, bits: [name], role, polarity },
+    display: { name, width: 1, bits: [name], role, polarity, asynchronous },
   };
 }
 const data = [pin("A", "input"), pin("B", "input"), pin("Y", "output")];
@@ -46,13 +47,15 @@ const symbols: [string, string, Port[]][] = [
     [
       pin("D", "input"),
       pin("CLK", "input", "clock", true),
-      pin("RESET", "input", "reset", false),
+      pin("EN", "input", "enable", true),
+      pin("SRST", "input", "reset", true),
+      pin("ARST", "input", "reset", false, true),
       pin("Q", "output"),
     ],
   ],
   [
     "register",
-    "DFF ↓",
+    "state_q",
     [
       pin("D", "input"),
       pin("CLK", "input", "clock", false),
@@ -90,7 +93,7 @@ const symbols: [string, string, Port[]][] = [
   ],
   [
     "compound",
-    "a21oi",
+    "AOI21",
     [
       pin("A1", "input"),
       pin("A2", "input"),
@@ -147,6 +150,14 @@ export function SymbolGallery() {
               members: [],
               internal_signal_ids: [],
               physical_only: false,
+              compound:
+                symbol === "compound"
+                  ? {
+                      first: "and",
+                      groups: [["A1", "A2"], ["B1"]],
+                      inverted: true,
+                    }
+                  : undefined,
             },
           };
           const geometry = symbolGeometry(node);

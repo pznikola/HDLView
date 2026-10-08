@@ -1,4 +1,4 @@
-import type { ElkNode, ElkExtendedEdge, ElkPoint, ElkLabel } from "elkjs";
+import type { ElkNode, ElkExtendedEdge, ElkPoint } from "elkjs";
 import type { Graph, Node, Port, Edge } from "./types";
 import {
   boundaryDirection,
@@ -18,21 +18,26 @@ export interface RoutedWire {
   signal_ids: string[];
   width: number;
   semantics: Edge["semantics"];
-  paths: string[];
+  /** Segments of a bus narrow where only a slice continues. */
+  paths: { d: string; width: number }[];
   junctions: ElkPoint[];
-  labels: ElkLabel[];
+  labels: { x: number; y: number; text: string }[];
 }
 export interface LayoutView {
   graph: ElkNode;
   render_nodes: Node[];
+  /** Original net of every routed ELK edge. */
   edge_map: Record<string, string>;
-  edge_signal_ids: Record<string, string[]>;
   connectors: ControlConnector[];
-  columns: { id: string; children: ElkNode[] }[];
+  /** Wire each routed ELK edge is drawn in: a net, or the output of one join. */
   route_groups: Record<string, string>;
   edge_widths: Record<string, number>;
+  wire_signal_ids: Record<string, string[]>;
   wires: RoutedWire[];
 }
+
+/** Length of the stub a control connector draws beside its pin. */
+export const CONNECTOR = 18;
 
 function syntheticDisplay(symbol: string, title: string) {
   return {
@@ -45,14 +50,100 @@ function syntheticDisplay(symbol: string, title: string) {
   };
 }
 
+/**
+ * Order nodes so every wire runs forward except the outputs of registers,
+ * latches and memories that close a loop. ELK then reverses exactly those
+ * edges, which places a register after the logic computing its input.
+ */
+function dataflowOrder(
+  count: number,
+  links: [number, number][],
+  sequential: Set<number>,
+): number[] {
+  const next: number[][] = Array.from({ length: count }, () => []);
+  for (const [from, to] of links) if (from !== to) next[from]?.push(to);
+  // Tarjan's strongly connected components, iterative for deep chains.
+  const component = new Array<number>(count).fill(-1);
+  const index = new Array<number>(count).fill(-1);
+  const low = new Array<number>(count).fill(0);
+  const onStack = new Array<boolean>(count).fill(false);
+  const stack: number[] = [];
+  let visited = 0,
+    components = 0;
+  for (let root = 0; root < count; root++) {
+    if (index[root] !== -1) continue;
+    const work: [number, number][] = [[root, 0]];
+    while (work.length) {
+      const frame = work[work.length - 1];
+      if (!frame) break;
+      const [node, edge] = frame;
+      if (edge === 0) {
+        index[node] = low[node] = visited++;
+        stack.push(node);
+        onStack[node] = true;
+      }
+      const child = next[node]?.[edge];
+      if (child !== undefined) {
+        frame[1]++;
+        if (index[child] === -1) work.push([child, 0]);
+        else if (onStack[child])
+          low[node] = Math.min(low[node] ?? 0, index[child] ?? 0);
+        continue;
+      }
+      work.pop();
+      const parent = work[work.length - 1]?.[0];
+      if (parent !== undefined)
+        low[parent] = Math.min(low[parent] ?? 0, low[node] ?? 0);
+      if (low[node] === index[node]) {
+        for (;;) {
+          const member = stack.pop();
+          if (member === undefined) break;
+          onStack[member] = false;
+          component[member] = components;
+          if (member === node) break;
+        }
+        components++;
+      }
+    }
+  }
+  const forward: number[][] = Array.from({ length: count }, () => []);
+  const waiting = new Array<number>(count).fill(0);
+  for (let from = 0; from < count; from++)
+    for (const to of next[from] ?? []) {
+      if (sequential.has(from) && component[from] === component[to]) continue;
+      forward[from]?.push(to);
+      waiting[to] = (waiting[to] ?? 0) + 1;
+    }
+  const order: number[] = [];
+  const placed = new Array<boolean>(count).fill(false);
+  while (order.length < count) {
+    // The earliest ready node; a remaining combinational loop starts at its
+    // earliest member.
+    let pick = -1;
+    for (let node = 0; node < count; node++) {
+      if (placed[node]) continue;
+      if (waiting[node] === 0) {
+        pick = node;
+        break;
+      }
+      if (pick === -1) pick = node;
+    }
+    placed[pick] = true;
+    order.push(pick);
+    for (const to of forward[pick] ?? [])
+      waiting[to] = Math.max(0, (waiting[to] ?? 0) - 1);
+  }
+  return order;
+}
+
 /** Layout-only helpers retain original net IDs and never create waveform identities. */
 export function prepareLayout(
   graph: Graph,
   fullControlWiring = false,
 ): LayoutView {
-  const nodes: Node[] = [...graph.nodes];
+  const visible: Node[] = [...graph.nodes];
   const ports = new Map<string, { node: Node; port: Port }>();
-  for (const node of nodes)
+  for (const node of visible)
     for (const port of node.ports) ports.set(port.id, { node, port });
   const connectors: ControlConnector[] = [];
   const routes: Edge[] = [];
@@ -72,7 +163,6 @@ export function prepareLayout(
       original.semantics !== "dependency" &&
       original.semantics !== "control_flow" &&
       original.sources.length === 1 &&
-      original.targets.length > 0 &&
       original.bits?.length === 1 &&
       original.targets.every((id) =>
         ["clock", "reset"].includes(ports.get(id)?.port.display?.role ?? ""),
@@ -93,280 +183,129 @@ export function prepareLayout(
         });
       continue;
     }
-    const constantSource =
-      original.sources.length === 1
-        ? ports.get(original.sources[0] ?? "")
-        : undefined;
-    if (
-      constantSource?.node.kind === "constant" &&
-      original.targets.length > 1
-    ) {
-      const byNode = new Map<string, string[]>();
-      for (const target of original.targets) {
-        const owner = ports.get(target)?.node.id;
-        if (!owner) continue;
-        const list = byNode.get(owner) ?? [];
-        list.push(target);
-        byNode.set(owner, list);
-      }
-      for (const [owner, targets] of byNode) {
-        const id = `${constantSource.node.id}:local:${owner}`;
-        const clone: Node = {
-          ...constantSource.node,
-          id,
-          ports: constantSource.node.ports.map((p) => ({
-            ...p,
-            id: `${id}:${p.id}`,
-          })),
-        };
-        nodes.push(clone);
-        for (const port of clone.ports)
-          ports.set(port.id, { node: clone, port });
-        routes.push({
-          ...original,
-          sources: clone.ports.map((p) => p.id),
-          targets,
-        });
-      }
-    } else
-      routes.push({
-        ...original,
-        sources: [...original.sources],
-        targets: [...original.targets],
-      });
+    routes.push(original);
   }
-  // Collect repeated constant bits at a consumer into one ordered literal. This
-  // avoids turning e.g. a 32-bit zero into a global scalar fan-out and 32 taps.
-  const constantFeeds = new Map<string, Edge[]>();
-  for (const edge of routes)
-    for (const id of edge.targets) {
-      const list = constantFeeds.get(id) ?? [];
-      list.push(edge);
-      constantFeeds.set(id, list);
-    }
-  for (const node of graph.nodes)
-    for (const port of node.ports) {
-      const bits = port.display?.bits;
-      if (
-        port.direction !== "input" ||
-        !bits ||
-        bits.length < 2 ||
-        !bits.every(
-          (b) => typeof b === "string" && ["0", "1", "x", "z"].includes(b),
-        )
-      )
-        continue;
-      const feeds = constantFeeds.get(port.id) ?? [];
-      if (
-        !feeds.length ||
-        !feeds.every((edge) =>
-          edge.sources.every((id) => ports.get(id)?.node.kind === "constant"),
-        )
-      )
-        continue;
-      const original = feeds[0];
-      if (!original) continue;
-      const binary = [...bits].reverse().join("");
-      const title =
-        bits.length >= 8 && /^[01]+$/.test(binary)
-          ? `${bits.length}'h${BigInt("0b" + binary)
-              .toString(16)
-              .padStart(Math.ceil(bits.length / 4), "0")}`
-          : `${bits.length}'b${binary}`;
-      const id = `literal:${port.id}`;
-      const constant: Node = {
-        id,
-        label: title,
-        kind: "constant",
-        display: syntheticDisplay("constant", title),
-        ports: [
-          {
-            id: `${id}:out`,
-            label: "",
-            direction: "output",
-            signal_ids: [],
-            display: {
-              name: "",
-              width: bits.length,
-              bits: [...bits],
-              role: "data",
-            },
-          },
-        ],
-      };
-      nodes.push(constant);
-      for (const p of constant.ports)
-        ports.set(p.id, { node: constant, port: p });
-      for (const edge of feeds)
-        edge.targets = edge.targets.filter((id) => id !== port.id);
-      routes.push({
-        ...original,
-        sources: constant.ports.map((p) => p.id),
-        targets: [port.id],
-        bits: [...bits],
-        label: "",
-      });
-    }
-  for (let i = routes.length - 1; i >= 0; i--)
-    if (!routes[i]?.targets.length) routes.splice(i, 1);
-  // Remove global constants replaced by local uses; retain genuinely used originals.
-  const used = new Set(routes.flatMap((e) => [...e.sources, ...e.targets]));
-  const visible = nodes.filter(
-    (n) => n.kind !== "constant" || n.ports.some((p) => used.has(p.id)),
-  );
   const edgeMap: Record<string, string> = {};
-  const edgeSignals: Record<string, string[]> = {};
   const routeGroups: Record<string, string> = {};
   const edgeWidths: Record<string, number> = {};
+  const wireSignals: Record<string, string[]> = {};
   const edges: ElkExtendedEdge[] = [];
-  let serial = 0;
   const add = (
     original: Edge,
+    wire: string,
     source: string,
     target: string,
-    label = "",
-    width = original.bits?.length ?? 1,
-    signalIds = original.signal_ids,
+    width: number,
   ) => {
     if (source === target) return;
-    const id = `${original.id}:route:${serial++}`;
+    const id = `${original.id}:route:${edges.length}`;
+    // Only dependency and control-flow edges reserve room for a name; net
+    // names are drawn where a route already leaves space.
+    const named =
+      original.label &&
+      original.semantics &&
+      original.semantics !== "electrical" &&
+      !Object.values(edgeMap).includes(original.id);
     edgeMap[id] = original.id;
-    edgeSignals[id] = signalIds;
+    routeGroups[id] = wire;
     edgeWidths[id] = width;
-    const local = original.sources.filter(
-      (id) => ports.get(id)?.node.kind === "constant",
-    );
-    routeGroups[id] = JSON.stringify([original.id, width, signalIds, local]);
     edges.push({
       id,
       sources: [source],
       targets: [target],
-      labels: label
+      labels: named
         ? [
             {
-              text: shortName(label, 28),
-              width: Math.min(204, label.length * 7),
+              text: shortName(original.label, 28),
+              width: Math.min(204, original.label.length * 7),
               height: 14,
             },
           ]
         : [],
-      layoutOptions: { "elk.edge.thickness": width > 1 ? "2.5" : "1.5" },
     });
   };
-  // A partially connected vector gets a visible split/join, with slices computed
-  // from this pin's ordered bits instead of guessing from a signal basename.
-  const visibleIds = new Set(visible.map((node) => node.id));
-  const attachments = new Map<string, Edge[]>();
-  for (const edge of routes)
-    for (const id of new Set([...edge.sources, ...edge.targets])) {
-      const list = attachments.get(id) ?? [];
-      list.push(edge);
-      attachments.set(id, list);
-    }
-  for (const [portId, owner] of ports) {
-    const metadata = owner.port.display;
-    if (!metadata || metadata.width <= 1 || !visibleIds.has(owner.node.id))
-      continue;
-    const attached = attachments.get(portId) ?? [];
-    if (
-      attached.length < 2 ||
-      attached.every((e) => e.bits?.length === metadata.width)
-    )
-      continue;
-    const output = owner.port.direction === "output";
-    if (owner.port.direction === "inout") continue;
-    const id = `bus:${portId}`;
-    const whole: Port = {
-      ...owner.port,
-      id: `${id}:whole`,
-      label: `/${metadata.width}`,
-      direction: output ? "input" : "output",
-    };
-    const slices: Port[] = attached.map((edge, i) => {
-      const positions = metadata.bits
-        .map((b, index) => (edge.bits?.includes(b) ? index : -1))
-        .filter((index) => index >= 0);
-      const declared = positions
-        .map((index) =>
-          metadata.range
-            ? metadata.range[0] <= metadata.range[1]
-              ? metadata.range[1] - index
-              : metadata.range[1] + index
-            : index,
-        )
-        .reverse();
-      const consecutive =
-        declared.length > 1 &&
-        declared.every(
-          (value, index) =>
-            index === 0 ||
-            Math.abs(value - (declared[index - 1] ?? value)) === 1,
-        );
-      const label = declared.length
-        ? consecutive
-          ? `[${declared[0]}:${declared.at(-1)}]`
-          : `[${declared.join(",")}]`
-        : "slice";
+  // A pin assembled from several sources gets a visible join. Its inputs list
+  // the pin's ranges from the most significant down, like a concatenation.
+  const joins = new Map<string, string[]>();
+  const routed = new Map(routes.map((edge) => [edge.id, edge]));
+  for (const { node, port } of [...ports.values()]) {
+    const feeds = port.feeds ?? [];
+    const original = feeds
+      .flatMap((feed) => (feed.kind === "net" ? [routed.get(feed.edge)] : []))
+      .find((edge) => edge);
+    if (feeds.length < 2 || !original) continue;
+    const id = `bus:${port.id}`;
+    const width = feeds.reduce((sum, feed) => sum + feed.width, 0);
+    const range = port.display?.range;
+    const declared = (position: number) =>
+      range
+        ? range[0] >= range[1]
+          ? range[1] + position
+          : range[1] - position
+        : position;
+    let position = 0;
+    const inputs = feeds.map((feed, i): Port => {
+      const low = declared(position),
+        high = declared(position + feed.width - 1);
+      position += feed.width;
       return {
-        ...owner.port,
         id: `${id}:slice:${i}`,
-        label,
-        direction: output ? "output" : "input",
-        display: {
-          ...metadata,
-          width: positions.length,
-          bits: positions
-            .map((index) => metadata.bits[index])
-            .filter((bit): bit is string | number => bit !== undefined),
-        },
+        label: feed.width > 1 ? `[${high}:${low}]` : `[${low}]`,
+        direction: "input",
+        signal_ids: port.signal_ids,
+        display: { name: "", width: feed.width, bits: [], role: "data" },
+        feeds: [feed],
       };
     });
-    visible.push({
+    const whole: Port = {
+      id: `${id}:whole`,
+      label: "",
+      direction: "output",
+      signal_ids: port.signal_ids,
+      display: { name: "", width, bits: [], role: "data" },
+    };
+    const join: Node = {
       id,
-      label: pinLabel(owner.port),
+      label: `${node.label} ${pinLabel(port)}`,
       kind: "bus connector",
-      ports: [whole, ...slices],
+      ports: [whole, ...inputs.reverse()],
       display: syntheticDisplay("bus_split", ""),
-    });
-    attached.forEach((edge, i) => {
-      const slice = slices[i];
-      if (!slice) return;
-      if (output) {
-        edge.sources = edge.sources.map((p) => (p === portId ? slice.id : p));
-        if (i === 0)
-          add(
-            edge,
-            portId,
-            whole.id,
-            "",
-            metadata.width,
-            owner.port.signal_ids,
-          );
-      } else {
-        edge.targets = edge.targets.map((p) => (p === portId ? slice.id : p));
-        if (i === 0)
-          add(
-            edge,
-            whole.id,
-            portId,
-            "",
-            metadata.width,
-            owner.port.signal_ids,
-          );
-      }
-    });
+    };
+    visible.push(join);
+    for (const p of join.ports) ports.set(p.id, { node: join, port: p });
+    joins.set(
+      port.id,
+      feeds.map((_, i) => `${id}:slice:${i}`),
+    );
+    wireSignals[id] = port.signal_ids;
+    add(original, id, whole.id, port.id, width);
   }
   for (const route of routes) {
-    const sourcePorts = [...new Set(route.sources)];
-    const targetPorts = [...new Set(route.targets)];
+    const sources = [...new Set(route.sources)];
+    const targets = [...new Set(route.targets)].filter(
+      (id) => !sources.includes(id),
+    );
+    wireSignals[route.id] = route.signal_ids;
+    const width = route.bits?.length ?? 1;
+    // Each load is wired once per run it takes from this net.
+    const taps = (target: string): [string, number][] => {
+      const feeds = ports.get(target)?.port.feeds ?? [];
+      const joined = joins.get(target);
+      const taken = feeds.flatMap((feed, i): [string, number][] =>
+        feed.kind === "net" && feed.edge === route.id
+          ? [[joined?.[i] ?? target, feed.width]]
+          : [],
+      );
+      return taken.length ? taken : [[target, width]];
+    };
     if (
-      sourcePorts.length > 1 ||
-      sourcePorts.some((id) => ports.get(id)?.port.direction === "inout")
+      sources.length > 1 ||
+      sources.some((id) => ports.get(id)?.port.direction === "inout")
     ) {
       const id = `junction:${route.id}`;
       const input = `${id}:in`,
         output = `${id}:out`;
-      visible.push({
+      const junction: Node = {
         id,
         label: "",
         kind: "net junction",
@@ -385,78 +324,105 @@ export function prepareLayout(
           },
         ],
         display: syntheticDisplay("junction", ""),
-      });
-      for (const source of sourcePorts) add(route, source, input);
-      for (const target of targetPorts) add(route, output, target, route.label);
+      };
+      visible.push(junction);
+      for (const p of junction.ports)
+        ports.set(p.id, { node: junction, port: p });
+      // A bidirectional pin joins the net once. Boundary pads sit in the last
+      // layer, so they are reached from the junction like any load.
+      for (const source of sources) {
+        const owner = ports.get(source)?.node;
+        if (owner?.kind === "port" && boundaryDirection(owner) !== "input")
+          add(route, route.id, output, source, width);
+        else add(route, route.id, source, input, width);
+      }
+      for (const target of targets)
+        for (const [pin, taken] of taps(target))
+          add(route, route.id, output, pin, taken);
     } else {
-      const source = sourcePorts[0];
+      const source = sources[0];
       if (!source) continue;
-      targetPorts.forEach((target, index) =>
-        add(route, source, target, index === 0 ? route.label : ""),
-      );
+      for (const target of targets)
+        for (const [pin, taken] of taps(target))
+          add(route, route.id, source, pin, taken);
     }
   }
-  const children: ElkNode[] = visible.map((node) => {
+  // A boundary port already shows the name its connector would repeat.
+  const stubs = new Map(
+    connectors.map((connector) => [
+      connector.port_id,
+      CONNECTOR +
+        (ports.get(connector.port_id)?.node.kind === "port"
+          ? 0
+          : shortName(connector.label, 18).length * 6),
+    ]),
+  );
+  const children = visible.map((node): ElkNode => {
     const geometry = symbolGeometry(node);
+    const side: Record<string, string> =
+      node.kind === "port"
+        ? boundaryDirection(node) === "input"
+          ? {
+              "elk.layered.layering.layerConstraint": "FIRST_SEPARATE",
+              "elk.alignment": "RIGHT",
+            }
+          : {
+              "elk.layered.layering.layerConstraint": "LAST_SEPARATE",
+              "elk.alignment": "LEFT",
+            }
+        : {};
     return {
       id: node.id,
       width: geometry.width,
       height: geometry.height,
-      layoutOptions: {
-        "elk.portConstraints": "FIXED_POS",
-        "elk.partitioning.partition": "1",
-      },
-      ports: geometry.pins.map((pin) => ({
-        id: pin.id,
-        x: pin.x,
-        y: pin.y,
-        width: 0,
-        height: 0,
-        layoutOptions: { "elk.port.side": pin.side },
-      })),
+      layoutOptions: { "elk.portConstraints": "FIXED_POS", ...side },
+      // A port's box covers what is drawn outside the symbol, so ELK keeps
+      // neighbours clear of slice notes, constants and control connectors.
+      ports: geometry.pins.map((pin) => {
+        const horizontal = pin.side === "WEST" || pin.side === "EAST";
+        // A connector above or below a symbol writes its name beside the stub.
+        const stub = stubs.get(pin.id);
+        const reach =
+          pin.reach + (stub === undefined ? 0 : horizontal ? stub : CONNECTOR);
+        return {
+          id: pin.id,
+          x:
+            pin.side === "WEST"
+              ? -reach
+              : pin.side === "EAST"
+                ? geometry.width
+                : pin.x,
+          y:
+            pin.side === "NORTH"
+              ? -reach
+              : pin.side === "SOUTH"
+                ? geometry.height
+                : pin.y,
+          width: horizontal ? reach : 0,
+          height: horizontal ? 0 : reach,
+          layoutOptions: { "elk.port.side": pin.side },
+        };
+      }),
     };
   });
-  const columns: LayoutView["columns"] = [];
-  const boundaryIds = new Set(
-    visible.filter((n) => n.kind === "port").map((n) => n.id),
-  );
-  const byId = new Map(visible.map((n) => [n.id, n]));
-  for (const input of [true, false]) {
-    const members = children.filter((n) => {
-      const original = byId.get(n.id);
-      return (
-        original?.kind === "port" &&
-        (boundaryDirection(original) === "input") === input
-      );
-    });
-    if (!members.length) continue;
-    const width = Math.max(...members.map((n) => n.width ?? 0));
-    let height = 0;
-    for (const child of members) {
-      child.x = input ? width - (child.width ?? 0) : 0;
-      child.y = height;
-      height += (child.height ?? 0) + 16;
-    }
-    const id = input ? "layout:inputs" : "layout:outputs";
-    columns.push({ id, children: members });
-    children.push({
-      id,
-      width,
-      height: height - 16,
-      layoutOptions: {
-        "elk.portConstraints": "FIXED_POS",
-        "elk.partitioning.partition": input ? "0" : "2",
-        "elk.layered.layering.layerConstraint": input ? "FIRST" : "LAST",
-      },
-      ports: members.flatMap((n) =>
-        (n.ports ?? []).map((p) => ({
-          ...p,
-          x: (n.x ?? 0) + (p.x ?? 0),
-          y: (n.y ?? 0) + (p.y ?? 0),
-        })),
+  const position = new Map(visible.map((node, i) => [node.id, i]));
+  const owner = (port: string) => position.get(ports.get(port)?.node.id ?? "");
+  const order = dataflowOrder(
+    visible.length,
+    edges.flatMap((edge): [number, number][] => {
+      const from = owner(edge.sources[0] ?? ""),
+        to = owner(edge.targets[0] ?? "");
+      return from === undefined || to === undefined ? [] : [[from, to]];
+    }),
+    new Set(
+      visible.flatMap((node, i) =>
+        ["register", "latch", "memory"].includes(node.display?.symbol ?? "")
+          ? [i]
+          : [],
       ),
-    });
-  }
+    ),
+  );
+  const large = visible.length > 400;
   return {
     graph: {
       id: "root",
@@ -468,47 +434,31 @@ export function prepareLayout(
         "elk.layered.spacing.nodeNodeBetweenLayers": "56",
         "elk.spacing.edgeNode": "12",
         "elk.layered.spacing.edgeEdgeBetweenLayers": "10",
+        "elk.layered.cycleBreaking.strategy": "MODEL_ORDER",
         "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+        "elk.separateConnectedComponents": "false",
         "elk.randomSeed": "1",
-        ...(columns.length
-          ? {
-              "elk.partitioning.activate": "true",
-              "elk.separateConnectedComponents": "false",
-            }
-          : {}),
-        "elk.layered.thoroughness": visible.length > 400 ? "1" : "7",
-        "elk.layered.layering.strategy":
-          visible.length > 400 ? "LONGEST_PATH" : "NETWORK_SIMPLEX",
-        "elk.layered.nodePlacement.strategy":
-          visible.length > 400 ? "SIMPLE" : "BRANDES_KOEPF",
+        "elk.layered.thoroughness": large ? "1" : "7",
+        "elk.layered.layering.strategy": large
+          ? "LONGEST_PATH"
+          : "NETWORK_SIMPLEX",
+        "elk.layered.nodePlacement.strategy": "BRANDES_KOEPF",
       },
-      children: children.filter((n) => !boundaryIds.has(n.id)),
+      children: order.flatMap((i) => children[i] ?? []),
       edges,
     },
     render_nodes: visible,
     edge_map: edgeMap,
-    edge_signal_ids: edgeSignals,
     connectors,
-    columns,
     route_groups: routeGroups,
     edge_widths: edgeWidths,
+    wire_signal_ids: wireSignals,
     wires: [],
   };
 }
 
-/** Restore the real boundary objects after ELK places the two invisible columns. */
+/** Turn ELK's per-load routes into one drawn wire per net or join output. */
 export function finishLayout(view: LayoutView, graph: Graph): LayoutView {
-  const columns = new Map(view.columns.map((column) => [column.id, column]));
-  view.graph.children = view.graph.children?.flatMap((placed) => {
-    const column = columns.get(placed.id);
-    return column
-      ? column.children.map((child) => ({
-          ...child,
-          x: (placed.x ?? 0) + (child.x ?? 0),
-          y: (placed.y ?? 0) + (child.y ?? 0),
-        }))
-      : [placed];
-  });
   const originals = new Map(graph.edges.map((edge) => [edge.id, edge]));
   const groups = new Map<string, ElkExtendedEdge[]>();
   for (const edge of view.graph.edges ?? []) {
@@ -519,6 +469,24 @@ export function finishLayout(view: LayoutView, graph: Graph): LayoutView {
   }
   const terminals = new Set<string>();
   const nodes = new Map(view.render_nodes.map((n) => [n.id, n]));
+  const drivers = new Map(
+    view.render_nodes.flatMap((n) => n.ports.map((p) => [p.id, n])),
+  );
+  const verticals = (view.graph.edges ?? []).flatMap((edge) =>
+    (edge.sections ?? []).flatMap((section) => {
+      const points = [
+        section.startPoint,
+        ...(section.bendPoints ?? []),
+        section.endPoint,
+      ];
+      return points.flatMap((b, i): [number, number, number][] => {
+        const a = points[i - 1];
+        return a && a.x === b.x
+          ? [[a.x, Math.min(a.y, b.y), Math.max(a.y, b.y)]]
+          : [];
+      });
+    }),
+  );
   for (const node of view.graph.children ?? []) {
     if (nodes.get(node.id)?.kind === "net junction") continue;
     for (const port of node.ports ?? [])
@@ -535,31 +503,80 @@ export function finishLayout(view: LayoutView, graph: Graph): LayoutView {
     const edgeId = view.edge_map[first.id] ?? "";
     const original = originals.get(edgeId);
     if (!original) return [];
-    const paths = routes.flatMap((r) =>
-      (r.sections ?? []).map((section) => [
-        section.startPoint,
-        ...(section.bendPoints ?? []),
-        section.endPoint,
-      ]),
+    const drawn = routes.flatMap((r) =>
+      (r.sections ?? []).map((section) => ({
+        points: [
+          section.startPoint,
+          ...(section.bendPoints ?? []),
+          section.endPoint,
+        ],
+        width: view.edge_widths[r.id] ?? 1,
+      })),
     );
+    const width = Math.max(1, ...drawn.map((route) => route.width));
     const electrical =
       !original.semantics || original.semantics === "electrical";
     const normalized = electrical
       ? electricalPaths(
-          paths,
+          drawn,
           terminals,
           routes.flatMap((r) => r.junctionPoints ?? []),
         )
-      : { paths: paths.map(pathData), junctions: [] };
+      : {
+          paths: drawn.map((route) => ({
+            d: pathData(route.points),
+            width: route.width,
+          })),
+          junctions: [],
+        };
+    // Dependency and control-flow names were placed by ELK. A net is named on
+    // the straight run leaving its single driver, when that run has room, no
+    // wire crosses the name and the driver does not already show it.
+    const labels: RoutedWire["labels"] = routes.flatMap((r) =>
+      (r.labels ?? []).map((label) => ({
+        x: label.x ?? 0,
+        y: (label.y ?? 0) + 11,
+        text: label.text ?? "",
+      })),
+    );
+    const [start, bend] = drawn[0]?.points ?? [];
+    const driver = drivers.get(first.sources[0] ?? "");
+    const name = original.label;
+    if (
+      electrical &&
+      id === edgeId &&
+      name &&
+      start &&
+      bend &&
+      start.y === bend.y &&
+      driver?.kind !== "port" &&
+      driver?.display?.title !== name &&
+      drawn.every(
+        (route) =>
+          route.points[0]?.x === start.x && route.points[0]?.y === start.y,
+      ) &&
+      Math.min(
+        ...drawn.map((route) => (route.points[1]?.x ?? start.x) - start.x),
+      ) >=
+        name.length * 6 + 16 &&
+      !verticals.some(
+        ([x, top, bottom]) =>
+          x > start.x &&
+          x < start.x + name.length * 6 + 10 &&
+          top < start.y &&
+          bottom > start.y - 16,
+      )
+    )
+      labels.push({ x: start.x + 6, y: start.y - 6, text: name });
     return [
       {
         id,
         edge_id: edgeId,
-        signal_ids: view.edge_signal_ids[first.id] ?? original.signal_ids,
-        width: view.edge_widths[first.id] ?? 1,
+        signal_ids: view.wire_signal_ids[id] ?? original.signal_ids,
+        width,
         semantics: original.semantics,
         ...normalized,
-        labels: routes.flatMap((r) => r.labels ?? []),
+        labels,
       },
     ];
   });
@@ -570,19 +587,20 @@ const pointKey = (p: ElkPoint) => `${rounded(p.x)},${rounded(p.y)}`;
 const pathData = (points: ElkPoint[]) =>
   points.map((p, i) => `${i ? "L" : "M"}${p.x},${p.y}`).join(" ");
 type Interval = [number, number];
+type Run = [number, number, number];
 
-/** Union only routes of one authoritative net/slice, never coincident foreign nets. */
+/** Union only routes of one authoritative net, never coincident foreign nets. */
 function electricalPaths(
-  paths: ElkPoint[][],
+  routes: { points: ElkPoint[]; width: number }[],
   terminals: Set<string>,
   elkJunctions: ElkPoint[],
 ) {
-  const horizontal = new Map<number, Interval[]>(),
-    vertical = new Map<number, Interval[]>();
+  const horizontalRuns = new Map<number, Run[]>(),
+    verticalRuns = new Map<number, Run[]>();
   const candidates = new Map<string, ElkPoint>();
   const candidate = (p: ElkPoint) =>
     candidates.set(pointKey(p), { x: rounded(p.x), y: rounded(p.y) });
-  for (const points of paths) {
+  for (const { points, width } of routes) {
     for (let i = 1; i < points.length; i++) {
       const a = points[i - 1],
         b = points[i];
@@ -590,29 +608,65 @@ function electricalPaths(
       const h = rounded(a.y) === rounded(b.y);
       if (!h && rounded(a.x) !== rounded(b.x))
         throw new Error("Electrical routing must be orthogonal");
-      const map = h ? horizontal : vertical,
+      const map = h ? horizontalRuns : verticalRuns,
         key = rounded(h ? a.y : a.x);
       const list = map.get(key) ?? [];
       const start = rounded(h ? a.x : a.y),
         end = rounded(h ? b.x : b.y);
       if (start === end) continue;
-      list.push([Math.min(start, end), Math.max(start, end)]);
+      list.push([Math.min(start, end), Math.max(start, end), width]);
       map.set(key, list);
       candidate(a);
       candidate(b);
     }
   }
-  for (const map of [horizontal, vertical])
-    for (const [key, intervals] of map) {
-      intervals.sort((a, b) => a[0] - b[0]);
+  // Coverage decides junctions; a shared stretch is drawn at its widest route.
+  const horizontal = new Map<number, Interval[]>(),
+    vertical = new Map<number, Interval[]>();
+  const paths: { d: string; width: number }[] = [];
+  for (const [runs, covered, h] of [
+    [horizontalRuns, horizontal, true],
+    [verticalRuns, vertical, false],
+  ] as const)
+    for (const [key, list] of runs) {
+      list.sort((a, b) => a[0] - b[0]);
       const merged: Interval[] = [];
-      for (const interval of intervals) {
+      for (const [from, to] of list) {
         const last = merged.at(-1);
-        if (last && interval[0] <= last[1])
-          last[1] = Math.max(last[1], interval[1]);
-        else merged.push([...interval]);
+        if (last && from <= last[1]) last[1] = Math.max(last[1], to);
+        else merged.push([from, to]);
       }
-      map.set(key, merged);
+      covered.set(key, merged);
+      const cuts = [...new Set(list.flatMap(([from, to]) => [from, to]))].sort(
+        (a, b) => a - b,
+      );
+      let open: Run | undefined;
+      const emit = () => {
+        if (open)
+          paths.push({
+            d: h
+              ? `M${open[0]},${key} L${open[1]},${key}`
+              : `M${key},${open[0]} L${key},${open[1]}`,
+            width: open[2],
+          });
+        open = undefined;
+      };
+      for (let i = 1; i < cuts.length; i++) {
+        const from = cuts[i - 1] ?? 0,
+          to = cuts[i] ?? 0;
+        const width = Math.max(
+          0,
+          ...list
+            .filter((run) => run[0] <= from && run[1] >= to)
+            .map((run) => run[2]),
+        );
+        if (open && width === open[2] && open[1] === from) open[1] = to;
+        else {
+          emit();
+          if (width) open = [from, to, width];
+        }
+      }
+      emit();
     }
   const directions = (list: Interval[] | undefined, value: number) => {
     if (!list) return 0;
@@ -653,10 +707,5 @@ function electricalPaths(
         directions(vertical.get(p.x), p.y) >=
         3,
   );
-  const lines: string[] = [];
-  for (const [y, intervals] of horizontal)
-    for (const [a, b] of intervals) lines.push(`M${a},${y} L${b},${y}`);
-  for (const [x, intervals] of vertical)
-    for (const [a, b] of intervals) lines.push(`M${x},${a} L${x},${b}`);
-  return { paths: lines, junctions };
+  return { paths, junctions };
 }

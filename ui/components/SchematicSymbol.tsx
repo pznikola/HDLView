@@ -77,7 +77,14 @@ export function SchematicSymbol({
             }}
           >
             <title>{`Pin ${port.display?.name ?? port.label} · ${node.label} · ${port.display?.width ?? 1} bits`}</title>
-            <path d={pin.lead} className="symbol-line" pointerEvents="none" />
+            <path
+              d={pin.lead}
+              className={`symbol-line ${pin.bus ? "bus" : ""}`}
+              pointerEvents="none"
+            />
+            {pin.mark && (
+              <path d={pin.mark} className="symbol-line" pointerEvents="none" />
+            )}
             {pin.bubble && (
               <circle
                 cx={pin.bubble[0]}
@@ -103,13 +110,26 @@ export function SchematicSymbol({
                 className="pin-hit"
               />
             )}
-            <rect
-              x={pin.x - 2}
-              y={pin.y - 2}
-              width="4"
-              height="4"
-              className="pin-terminal"
-            />
+            {!pin.unwired && (
+              <rect
+                x={pin.x - 2}
+                y={pin.y - 2}
+                width="4"
+                height="4"
+                className="pin-terminal"
+              />
+            )}
+            {pin.note && (
+              <text
+                x={pin.note.x}
+                y={pin.note.y}
+                textAnchor={pin.note.anchor}
+                dominantBaseline="middle"
+                className="pin-note"
+              >
+                {pin.note.text}
+              </text>
+            )}
             <text
               x={pin.labelX}
               y={pin.labelY}
@@ -130,5 +150,5 @@ export function schematicStyle(theme: "light" | "dark", interactive = true) {
   const paper = theme === "light" ? "#fcfdff" : "#172630";
   const muted = theme === "light" ? "#556e80" : "#9eb9c8";
   const interaction = `.schematic-canvas .symbol-pin:hover .pin-terminal,.schematic-canvas .symbol-pin:focus-visible .pin-terminal{fill:var(--accent);stroke:var(--accent)}.schematic-canvas .wire:hover .edge,.schematic-canvas .wire:focus-visible .edge{stroke:var(--accent)}.schematic-canvas g[role=button]{cursor:pointer}.schematic-canvas g:focus-visible{outline:none}.schematic-canvas g:focus-visible>.nodebox,.schematic-canvas .symbol-pin:focus-visible .symbol-line{stroke:var(--accent);stroke-width:3}`;
-  return `.schematic-canvas{background:${paper};--paper:${paper};--ink:${ink};--muted:${muted};--accent:${theme === "light" ? "#087e83" : "#66decf"}}.schematic-canvas .canvas-background{fill:var(--paper)}.schematic-canvas text{font:12px ui-monospace,monospace;fill:var(--ink)}.schematic-canvas .symbol-fill{fill:var(--paper)}.schematic-canvas .nodebox,.schematic-canvas .symbol-detail,.schematic-canvas .symbol-line{stroke:var(--ink);stroke-width:1.5;stroke-linejoin:round}.schematic-canvas .symbol-line{fill:none}.schematic-canvas .nodebox{rx:0}.schematic-canvas .inversion{fill:var(--paper);stroke:var(--ink);stroke-width:1.5}.schematic-canvas .pin-hit{fill:transparent;stroke:none}.schematic-canvas .symbol-title{font-weight:600}.schematic-canvas .symbol-secondary,.schematic-canvas .port-name,.schematic-canvas .wire-label{font-size:10px;fill:var(--muted)}.schematic-canvas .edge{fill:none;stroke:var(--ink);stroke-width:1.5}.schematic-canvas .edge.bus{stroke-width:2.5}.schematic-canvas .edge.dependency{stroke-dasharray:5 3;stroke:var(--muted)}.schematic-canvas .edge.control_flow{stroke-dasharray:2 3;stroke:#8d65ae}.schematic-canvas .edge-hit{fill:none;stroke:transparent;stroke-width:8;vector-effect:non-scaling-stroke;pointer-events:stroke}.schematic-canvas .junction{fill:var(--ink)}.schematic-canvas .selected .junction{fill:var(--accent)}.schematic-canvas .pin-terminal{fill:var(--paper);stroke:var(--ink);stroke-width:1}.schematic-canvas .selected .pin-terminal{fill:var(--accent);stroke:var(--accent)}.schematic-canvas .edge.context{stroke:var(--accent);opacity:.5}.schematic-canvas .selected .symbol-line,.schematic-canvas .edge.selected,.schematic-canvas .control-connector.selected{stroke:var(--accent);stroke-width:3}.schematic-canvas .object-selected .nodebox{stroke:var(--accent);stroke-width:2.5}.schematic-canvas .wire-label{paint-order:stroke;stroke:var(--paper);stroke-width:4;stroke-linejoin:round}.schematic-canvas.zoomed-out .symbol-secondary,.schematic-canvas.zoomed-out .wire-label{display:none}.schematic-canvas .control-connector{fill:none;stroke:var(--muted);stroke-width:1.5}${interactive ? interaction : ""}`;
+  return `.schematic-canvas{background:${paper};--paper:${paper};--ink:${ink};--muted:${muted};--accent:${theme === "light" ? "#087e83" : "#66decf"}}.schematic-canvas .canvas-background{fill:var(--paper)}.schematic-canvas text{font:12px ui-monospace,monospace;fill:var(--ink)}.schematic-canvas .symbol-fill{fill:var(--paper)}.schematic-canvas .nodebox,.schematic-canvas .symbol-detail,.schematic-canvas .symbol-line{stroke:var(--ink);stroke-width:1.5;stroke-linejoin:round}.schematic-canvas .symbol-line{fill:none}.schematic-canvas .symbol-line.bus,.schematic-canvas .join{stroke-width:2.5}.schematic-canvas .join{fill:none;stroke:var(--ink)}.schematic-canvas .nodebox{rx:0}.schematic-canvas .inversion{fill:var(--paper);stroke:var(--ink);stroke-width:1.5}.schematic-canvas .pin-hit{fill:transparent;stroke:none}.schematic-canvas .symbol-title{font-weight:600}.schematic-canvas .symbol-secondary,.schematic-canvas .port-name,.schematic-canvas .pin-note,.schematic-canvas .wire-label{font-size:10px;fill:var(--muted)}.schematic-canvas .edge{fill:none;stroke:var(--ink);stroke-width:1.5}.schematic-canvas .edge.bus{stroke-width:2.5}.schematic-canvas .edge.dependency{stroke-dasharray:5 3;stroke:var(--muted)}.schematic-canvas .edge.control_flow{stroke-dasharray:2 3;stroke:#8d65ae}.schematic-canvas .edge-hit{fill:none;stroke:transparent;stroke-width:8;vector-effect:non-scaling-stroke;pointer-events:stroke}.schematic-canvas .junction{fill:var(--ink)}.schematic-canvas .selected .junction{fill:var(--accent)}.schematic-canvas .pin-terminal{fill:var(--paper);stroke:var(--ink);stroke-width:1}.schematic-canvas .selected .pin-terminal{fill:var(--accent);stroke:var(--accent)}.schematic-canvas .edge.context{stroke:var(--accent);opacity:.5}.schematic-canvas .selected .symbol-line,.schematic-canvas .edge.selected,.schematic-canvas .control-connector.selected{stroke:var(--accent);stroke-width:3}.schematic-canvas .object-selected .nodebox{stroke:var(--accent);stroke-width:2.5}.schematic-canvas .wire-label{paint-order:stroke;stroke:var(--paper);stroke-width:4;stroke-linejoin:round}.schematic-canvas.zoomed-out .symbol-secondary,.schematic-canvas.zoomed-out .wire-label{display:none}.schematic-canvas .control-connector{fill:none;stroke:var(--muted);stroke-width:1.5}${interactive ? interaction : ""}`;
 }

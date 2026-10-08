@@ -106,7 +106,13 @@ simulator declarations remain unavailable.
 Elaborated RTL can compact complete mux trees, decoders and priority encoders. Open those
 symbols to inspect original compiler nodes. Selecting a dumped internal signal in Waveforms
 opens its containing group. Symbols inspect objects; clicking pins/wires selects signals.
-Inputs align in declaration order on the left; outputs and inouts align on the right.
+Inputs align on the left and outputs and inouts on the right; their vertical order
+follows the logic they connect to. Data, clock, enable, select and synchronous reset
+pins enter a symbol on the left; only an asynchronous clear enters from below and an
+asynchronous preset from above. A register is named after the net it drives and sits
+after the logic computing its input, so feedback is the one wire that runs back.
+A bus stays one wire: a pin that reads part of it shows the slice on its lead, a
+constant is written on the pin it ties, and a concatenation is gathered on a join bar.
 Expanded bus bits follow their declared range. Small square terminals identify selectable
 pins; round dots mark actual electrical branches. Clicking a wire highlights its visible
 net/slice, while a pin selects its exact endpoint and gives connected wires a lighter highlight.
@@ -117,7 +123,11 @@ Use **Display** for light/dark themes, **Show compiler nodes**, **Full clock/res
 **Show physical-only cells**, and grid. Light and no grid are the defaults. Clock/reset
 connectors use exact connectivity and known pin roles, never matching names. Physical-only
 cells are hidden only when their library interfaces are recognized; the toolbar reports
-how many. Unknown cells retain explicit ports and labeled boxes. These preferences do not
+how many. Mapped and post-layout cells are drawn from the function their Liberty library
+states: gates with bubbles on inverted inputs, AND-OR and OR-AND cells with their inner
+gates, multiplexers, and flip-flops with the clock, enable and reset pins the library
+describes. Rebuild a mapped or post-layout snapshot made by an earlier version to get
+these symbols. Unknown cells retain explicit ports and labeled boxes. These preferences do not
 change compilation or simulation. Selection/theme/cursor changes reuse layout. The grid
 follows pan and zoom, uses coarser spacing at low zoom, and is excluded from export.
 

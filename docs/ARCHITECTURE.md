@@ -12,6 +12,7 @@
 | `runner.rs`                      | Native/Docker execution, image resolution, manifests, cancellation                                   |
 | `pipeline.rs`                    | Frontends, representations, LibreLane, exact-netlist import, cache                                   |
 | `graph.rs`                       | Module/occurrence identity, connectivity, bounded views                                              |
+| `library.rs`                     | Library cell functions decoded from Liberty gate networks                                            |
 | `simulation.rs`                  | Icarus/Verilator harnesses, models, SDF diagnostics                                                  |
 | `waveform.rs`                    | Wellen storage and conservative declaration/range binding                                            |
 | `waveprocess.rs`                 | Killable parser subprocess and bounded waveform queries                                              |
@@ -84,7 +85,7 @@ CodeMirror diagnostic effects preserve document history/selection; Problems is a
 explicit bottom-panel tab. Project-local lint toggles stay in presentation preferences
 outside project schema and compilation fingerprints.
 
-Large views use ELK layered layout with its documented [longest-path layering](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-layering-strategy.html) and [simple node placement](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-nodePlacement-strategy.html) to bound interactive work. Small views retain the default fuller heuristics. Layout workers are cancellable; selection never causes layout.
+Views above 400 nodes use ELK layered layout with its documented [longest-path layering](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-layering-strategy.html) and minimal crossing thoroughness to bound interactive work; smaller views use network-simplex layering. Both use [Brandes–Köpf node placement](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-nodePlacement-strategy.html). Layout workers are cancellable; selection never causes layout.
 
 Project schema 3 records technology, shared simulation membership/headers, and design/simulation import records. `decode_project` is the compatibility boundary for legacy working configurations and embedded snapshot projects: it removes stage restrictions, merges former simulation groups, preserves testbench order, and rejects unsupported VHDL/GHDL configurations. Resolved aliases are deduplicated on working-project load/update/save. Serialization writes only current contracts. Older artifact bytes and provenance hashes are not rewritten. The selected snapshot chooses captured RTL or the exact generated netlist for an ordinary simulation configuration; SDF requires a gate snapshot and Icarus. Models are compiled only for gates. Snapshot/run identity and representation checks remain mandatory.
 
@@ -94,8 +95,16 @@ Creation drafts have an independent service key and actual target configuration 
 
 ## Schematic presentation
 
+An elaborated build runs a second Yosys step, `view`, on the published `elaborated.il`
+and imports its `elaborated-view.json`. That step keeps every declared wire, folds
+enables and resets into registers, drops undefined multiplexer inputs and dead compiler
+cells, and narrows arithmetic to the bits in use. `elaborated.il` and `normalized.v`
+are not rewritten, so synthesis and LibreLane inputs are unchanged. Its log is retained
+but is not scanned for diagnostics, because it quotes user signal names.
+
 `schematic.rs` classifies compiler/library cells, controls physical-cell visibility,
 recognizes bounded elaborated groups and constructs captured behavioral detail views.
+A register or latch is titled with the declared net or slice that names every Q bit.
 `graph.rs` retains raw parameters and ordered connectivity. Declared RTL aliases precede
 hidden compiler names; gate pins retain their independent endpoint as the first identity.
 New optional cell behavior/parameter fields leave old artifact bytes and hashes intact.
@@ -108,22 +117,47 @@ references, and control-flow edges never acquire waveform values. Formals/tempor
 remain unbound. Capture and focused views are bounded; unsupported AST constructs emit
 opaque nodes and diagnostics.
 
-`schematic-symbols.ts` supplies original SVG paths, measured text bounds and fixed pin
-anchors to both `SchematicSymbol.tsx` and `schematic-layout.ts`. The layout converter clones
-only layout helpers, folds proven control nets into connectors, localizes constants, adds
-ordered bus joins/splits and multi-driver junctions, and maps every route back to original
-connectivity/selection identities. Power pins remain available in inspection outside
-logical routing. It never changes snapshot connectivity or delayed endpoint bindings.
-Boundary ports use two fixed-order invisible ELK columns with partitions; component
-packing is disabled for these views. Helpers flatten back into original objects after
-layout. New Yosys exports use a local ordered-port decoder without changing generic JSON
-fingerprints; expanded display bits reverse storage partitions into declared range order.
+`graph.rs` forms one net per driver set and gives every input pin its `feeds`: runs of
+nets with the slice they take, constant literals and undriven runs. It emits no constant
+or unconnected nodes and ends each cut bus of a bounded view in one connector.
+`schematic.rs` marks asynchronous controls and orders compiler-cell pins (data, clock,
+enable, resets; memory write side before read side); instances keep declaration order.
+`graph.rs` splits a `$pmux` into one data and select pin per case and a memory into one
+pin per port. `schematic.rs` folds a `$pmux` with its exclusive constant comparisons of
+one signal into a case multiplexer group, gives instance pins a clock or reset role when
+every pin they reach in the child has it, and marks disabled memory controls unused.
 
-The worker normalizes simple electrical routes by exact original net/slice identity,
-unions shared orthogonal trunks, and derives round junctions from connected branches.
-ELK junction hints are validated against these routes. Terminals, bends, procedural
-edges and unrelated crossings have no connection dot. Renderer/ELK share border anchors
-including bottom controls. The presentation selection distinguishes pins from wires;
+A mapped or post-layout build runs one more Yosys step, `library-functions`, which reads
+the mapped Liberty file as logic. `library.rs` evaluates each cell's gate network into a
+truth table of at most six inputs and names it: a gate with bubbles, a multiplexer, an
+AND-OR or OR-AND compound with its pin groups, or a register or latch whose control
+pins are traced to the storage element. The function is stored on the library `Module`
+and `schematic.rs` prefers it over the name-based catalog, which remains for older
+snapshots. A cell is never classified from its name when a function is present.
+
+`schematic-symbols.ts` supplies original SVG paths, estimated text bounds and fixed pin
+anchors to both `SchematicSymbol.tsx` and `schematic-layout.ts`. A pin's anchor is the
+outer end of its lead; the lead may carry a slice note, a constant or a bus-width mark,
+and its `reach` becomes the size of the ELK port so neighbours stay clear of it. The
+layout converter adds only layout helpers: proven control nets become connectors, a pin
+with several feeds gets a join, and multi-driver or bidirectional nets get a junction
+that each pin meets once. Every route maps back to its original net. Power pins remain
+available in inspection outside logical routing. It never changes snapshot connectivity
+or delayed endpoint bindings. Each boundary port is one ELK node constrained to a
+separate first or last layer and aligned per side; component packing is disabled.
+Children are listed in dataflow order with sequential outputs cut inside their strongly
+connected component, and ELK breaks cycles by that model order, so registers follow
+their input logic. New Yosys exports use a local ordered-port decoder without changing
+generic JSON fingerprints; expanded display bits reverse storage partitions into
+declared range order.
+
+The worker normalizes electrical routes by exact original net, unions shared orthogonal
+trunks, draws each stretch at the widest route covering it, and derives round junctions
+from connected branches. ELK junction hints are validated against these routes.
+Terminals, bends, procedural edges and unrelated crossings have no connection dot.
+Renderer and ELK share anchors on all four sides. Only dependency and control-flow edges
+reserve label space; a net name is added after routing where its driver's first run has
+room. The presentation selection distinguishes pins from wires;
 a pin retains its endpoint identity while a wire selects its entire visible exact slice.
 
 `Schematic.tsx` caches layouts and parent cameras by graph metadata/options and geometry

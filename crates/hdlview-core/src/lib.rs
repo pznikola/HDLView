@@ -1,4 +1,5 @@
 pub mod graph;
+pub mod library;
 pub mod model;
 pub mod pipeline;
 pub mod project;

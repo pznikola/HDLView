@@ -344,6 +344,37 @@ pub struct Module {
     pub cells: Vec<Cell>,
     #[serde(default)]
     pub blackbox: bool,
+    /// What a library cell computes; absent in snapshots built before it was derived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<CellFunction>,
+}
+/// A library cell's symbol and the meaning of its signal pins, derived from
+/// its Liberty description.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CellFunction {
+    pub symbol: String,
+    pub title: String,
+    pub pins: BTreeMap<String, CellPin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compound: Option<Compound>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CellPin {
+    pub role: PinRole,
+    /// `Some(false)` is an inverted input or output, or an active-low control.
+    pub polarity: Option<bool>,
+    #[serde(default)]
+    pub asynchronous: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+/// A two-level cell: `first` gates over each group of pins, combined by the
+/// other gate, with an optionally inverted output.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Compound {
+    pub first: String,
+    pub groups: Vec<Vec<String>>,
+    pub inverted: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scope {
@@ -461,6 +492,8 @@ pub struct NodeDisplay {
     #[serde(default)]
     pub physical_only: bool,
     pub span: Option<SourceSpan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compound: Option<Compound>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -473,6 +506,8 @@ pub enum PinRole {
     Reset,
     Set,
     Power,
+    /// A control tied to the constant that disables it; inspected, not drawn.
+    Unused,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PinDisplay {
@@ -483,6 +518,28 @@ pub struct PinDisplay {
     pub polarity: Option<bool>,
     pub declared_direction: Option<String>,
     pub range: Option<(i64, i64)>,
+    /// A reset, set or load that acts without the clock.
+    #[serde(default)]
+    pub asynchronous: bool,
+}
+/// What drives one contiguous run of an input pin.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Feed {
+    /// `label` names the part of the driver taken, such as `[5:0]` or `[2] ×8`;
+    /// it is empty when the run is the whole driver.
+    Net {
+        edge: String,
+        width: usize,
+        label: String,
+    },
+    Constant {
+        width: usize,
+        label: String,
+    },
+    Undriven {
+        width: usize,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViewPort {
@@ -492,6 +549,10 @@ pub struct ViewPort {
     pub signal_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<PinDisplay>,
+    /// Runs covering an input pin exactly, least significant first. Empty for
+    /// outputs, inouts and pins of views that carry no bit connectivity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feeds: Vec<Feed>,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

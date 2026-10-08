@@ -145,13 +145,28 @@ write_json
 
 Do not run ABC, technology mapping, FSM recoding, or aggressive optimization here. Yosys JSON cannot represent unlowered processes. Probe frontend hierarchy options rather than assuming every installed plugin has identical behavior. Preserve compiler-provided source/name/hierarchy metadata; explicitly report lost identities.
 
+The baseline RTLIL and normalized Verilog remain the inputs for synthesis and physical implementation. The drawn netlist is a separately cleaned copy of that RTLIL:
+
+```text
+keep every declared wire
+opt_expr -mux_undef, opt_clean
+opt_dff -keepdc            (asynchronous-load conversion on every register)
+opt_dff -keepdc -simple-dffe   (enable/synchronous-reset folding, except through a declared D net)
+opt_expr -mux_undef, opt_clean
+wreduce -keepdc            (add, subtract and multiply only)
+opt_clean
+write_json
+```
+
+This cleanup may remove compiler-generated cells and wires only. Every declared signal keeps its name and width, registers are never replaced by constants, enable inference adds no logic, comparators keep their declared operand widths, and no cells are merged or shared. A snapshot built before this cleanup shows the uncleaned netlist until it is rebuilt.
+
 ### Generic, mapped, and post-layout gates
 
 Provide PDK-independent generic synthesis. Use pinned LibreLane synthesis configuration for production PDK mapping, including combinational and sequential mapping, exclusions, and technology mappings. A bare `abc -liberty` feasibility test is not the production PDK flow.
 
 Defaults are `sky130A/sky130_fd_sc_hd` and `ihp-sg13g2/sg13g2_stdcell`. Record the selected corner.
 
-**Import the exact exported Verilog netlist that simulation consumes**, with library interfaces and no optimization/resynthesis. Derive pin directions/labels from library metadata. Physical-only filler cells may require interfaces extracted from simulation models because timing libraries omit them. Blackbox interfaces are never simulation models.
+**Import the exact exported Verilog netlist that simulation consumes**, with library interfaces and no optimization/resynthesis. Derive pin directions/labels from library metadata, and symbols and pin roles from the library's own functions (§12). Physical-only filler cells may require interfaces extracted from simulation models because timing libraries omit them. Blackbox interfaces are never simulation models.
 
 Keep actual flattening, buffers, CTS cells, and other physical modifications. Render unknown cells with labeled ports. Logical and power pins need distinct treatment.
 
@@ -232,7 +247,8 @@ variants and power details in inspection. Hide only positively identified filler
 and decoupling cells, with explicit counts and reveal controls.
 
 Use left-to-right orthogonal layout, directional boundary constraints, fixed data/control
-anchors, label-aware dimensions, deterministic ordering and space for feedback. Convert
+anchors, deterministic ordering and space for feedback; §12 defines the current net,
+ordering and label rules. Convert
 fan-out to supported simple routes with original-net mappings; represent multiple-driver
 and inout connectivity through explicit junctions, without Cartesian expansion. Draw
 junction dots only at real connections. Bundle buses, preserve ordered slice correspondence,
@@ -401,12 +417,13 @@ limits in qualification before considering persistent workers.
 ## 11. Schematic clarity and workspace amendment
 
 Keep the shared SVG/ELK renderer and schema 3. Align compact 24-unit boundary
-port glyphs in fixed input/output columns, with inputs left and outputs/inouts
-right. Preserve compiler declaration order in new Yosys builds and declared bus
+port glyphs in input/output columns, with inputs left and outputs/inouts
+right; §12 defines their vertical order and the pin sides. Preserve compiler
+declaration order of instance pins in new Yosys builds and declared bus
 range order in expanded views without changing bit identities or old artifacts.
-All routing anchors must equal rendered node-border terminals, including bottom
-controls; center side labels on their connection lines and reserve control labels
-inside symbols. Increment the geometry/cache version for these changes.
+All routing anchors must equal the drawn terminals on every side; center side
+labels on their connection lines. Increment the geometry/cache version for these
+changes.
 
 Use persistent four-unit square terminals for pins and round dots for true
 electrical branch junctions. Normalize/deduplicate routes only within an exact
@@ -452,6 +469,75 @@ windows and state preservation, native/Docker browser workflows,
 packaged Linux smoke and existing layout/selection performance targets. Update
 qualification with measured results and limitations; no new dependencies, migration
 or full physical-flow rerun is required.
+
+## 12. Quartus-style schematic amendment
+
+Recorded 9 October 2026. Where this section differs from §6 and §11, it replaces them.
+Project schema 3 and the snapshot schema are unchanged; every new view field is optional.
+
+**Nets.** Form one net per set of drivers, so a bus stays whole however its bits fan
+out. Every input pin carries ordered `feeds` covering it exactly: a run of a net with
+the slice or replication it takes (`[5:0]`, `[2] ×8`, empty for the whole driver), a
+constant literal, or an undriven run. Constants and undriven inputs are drawn on the
+pin, never as shared nodes. Output bits nothing reads draw nothing. A bounded view ends
+each cut bus in one connector. A pin assembled from several sources gets one join that
+lists its ranges from the most significant down. A net is named by a declaration only
+when that declaration names every one of its bits; its width is not part of the name.
+Rust computes all of this; the frontend never infers a slice or constant.
+
+**Layout.** Each boundary port is its own layout node in a separate first or last
+layer, with terminals aligned per side. Vertical order within a column follows the
+logic to reduce crossings; it is not the declaration order, and ports without a drawn
+wire only follow declaration order as a hint. Order nodes so that every wire runs
+forward except the outputs of registers, latches and memories that close a loop, and
+have the layout engine reverse exactly those: a register sits after the logic that
+computes its input. Electrical nets reserve no label space. A net name is drawn on the
+straight run leaving its single driver only when that run has room, no wire crosses the
+name, and the driver does not already show it; names remain in tooltips and inspection.
+Views above 400 nodes use longest-path layering with Brandes–Köpf placement.
+
+**Symbols.** Synchronous inputs enter on the left with the data: clock, enable, select
+and synchronous reset. Outputs leave on the right. Only asynchronous clear and load
+enter from below and asynchronous preset from above; a tri-state enable meets the lower
+edge of its buffer. Rust marks asynchronous pins; the frontend never chooses a side
+from a pin name. A register or latch is named after the declared net or slice its Q
+drives, and D and Q share a row. All symbols share a 20-unit pin pitch. Logic gates
+show no data pin names; boxes label bus pins with their range; a bus leaving any other
+symbol carries a slash and its width. A two-way multiplexer labels its inputs `0` and
+`1`. A long name may widen its symbol by at most 48 units and is shortened beyond that.
+Annotations appear in tooltips and inspection, not on the canvas.
+
+**Case multiplexers and controls.** Draw a `$pmux` with one data and one select pin
+per case, and a memory with one pin per port. When every select of a `$pmux` is driven
+only by a comparison of one common signal with a distinct constant, and each comparison
+feeds nothing else, fold the multiplexer and its comparisons into one `MUX n:1` selected
+by that signal, with data inputs named by case value and an undefined default omitted.
+The fold is a presentation group like the others: its members stay inspectable and it
+is rejected rather than approximated when a comparison is shared. A module instance pin
+is a clock, or a reset, exactly when every pin it reaches inside the child is one,
+followed through nested instances; such nets may be drawn as control connectors. Memory
+controls tied to the constant that disables them (an unclocked read port's clock, an
+always-on read enable, a reset tied low) are inspected but not drawn.
+
+**Library cells.** A mapped or post-layout build also reads the mapped Liberty library
+as logic (`read_liberty` without `-lib`) and decodes each cell from that gate network,
+never from its name: AND, OR, NAND, NOR, XOR and XNOR with inverted inputs drawn as
+bubbles and the fewest bubbles preferred; buffers, inverters and tri-state drivers;
+two- and four-way multiplexers; AND-OR and OR-AND cells of any grouping with their
+internal gates drawn; registers and latches whose clock, enable, reset and set are the
+library pins that reach the storage element directly or through one inverter. The
+result is stored per library module as an optional function. A cell the decoder cannot
+describe exactly, or an instance with a pin the function does not know, stays an
+explicit labelled box. Snapshots without functions keep using the verified catalog,
+which now accepts a connected subset of a cell's pins and treats a library cell
+without signal pins as physical. If the library cannot be read the build still
+succeeds with a warning and the catalog.
+
+Qualification adds relational layout checks over hand-written graphs (no overlap, no
+wire through a foreign symbol, aligned columns, registers right of their input logic),
+bend, crossing, wire-length and area figures in the layout benchmark, and per-exercise
+cell, pseudo-node, unknown-symbol and declared-signal counts. Coordinates are still not
+asserted.
 
 ## Primary documentation
 

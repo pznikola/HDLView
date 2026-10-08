@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Graph, Node } from "../types";
 import type { LayoutResponse } from "../layout.worker";
 import type { ConnectionTarget } from "../selection";
-import type { LayoutView } from "../schematic-layout";
+import { CONNECTOR, type LayoutView } from "../schematic-layout";
 import type { SchematicPreferences } from "../schematic-display";
 import {
   GEOMETRY_VERSION,
@@ -162,21 +162,19 @@ export function Schematic({
   const renderNodes = new Map(
     layout?.render_nodes.map((node) => [node.id, node]),
   );
-  const placedPorts = new Map(
-    layout?.graph.children?.flatMap(
-      (node) =>
-        node.ports?.map(
-          (port) =>
-            [
-              port.id,
-              {
-                x: (node.x ?? 0) + (port.x ?? 0),
-                y: (node.y ?? 0) + (port.y ?? 0),
-                node: renderNodes.get(node.id),
-              },
-            ] as const,
-        ) ?? [],
-    ),
+  const placedPins = new Map(
+    layout?.graph.children?.flatMap((placed) => {
+      const node = renderNodes.get(placed.id);
+      return node
+        ? symbolGeometry(node).pins.map(
+            (anchor) =>
+              [
+                anchor.id,
+                { x: placed.x ?? 0, y: placed.y ?? 0, node, anchor },
+              ] as const,
+          )
+        : [];
+    }),
   );
   const gridSpacing =
     24 *
@@ -516,12 +514,12 @@ export function Schematic({
                 }}
               >
                 <title>{`Wire ${original.label || "unnamed net"} · ${wire.width} bits · ${[...new Set([...original.sources, ...original.targets].map((id) => portOwners.get(id)).filter(Boolean))].join(" → ")}`}</title>
-                {wire.paths.map((d, i) => (
+                {wire.paths.map((path, i) => (
                   <g key={i}>
-                    <path d={d} className="edge-hit" />
+                    <path d={path.d} className="edge-hit" />
                     <path
-                      d={d}
-                      className={`edge ${wire.width > 1 ? "bus" : ""} ${wire.semantics ?? "electrical"} ${active ? "selected" : ""} ${context ? "context" : ""}`}
+                      d={path.d}
+                      className={`edge ${path.width > 1 ? "bus" : ""} ${wire.semantics ?? "electrical"} ${active ? "selected" : ""} ${context ? "context" : ""}`}
                       markerEnd={
                         wire.semantics && wire.semantics !== "electrical"
                           ? `url(#arrow-${wire.semantics})`
@@ -540,12 +538,7 @@ export function Schematic({
                   />
                 ))}
                 {wire.labels.map((label, i) => (
-                  <text
-                    key={i}
-                    x={label.x}
-                    y={(label.y ?? 0) + 11}
-                    className="wire-label"
-                  >
+                  <text key={i} x={label.x} y={label.y} className="wire-label">
                     {label.text}
                   </text>
                 ))}
@@ -635,20 +628,24 @@ export function Schematic({
             );
           })}
           {layout?.connectors.map((connector) => {
-            const pin = placedPorts.get(connector.port_id),
+            const placed = placedPins.get(connector.port_id),
               edge = edges.get(connector.edge_id);
-            if (!pin || !edge) return null;
-            const node = pin.node,
-              port = node?.ports.find((p) => p.id === connector.port_id);
-            const anchor = node
-              ? symbolGeometry(node).pins.find(
-                  (p) => p.id === connector.port_id,
-                )
-              : undefined;
-            if (!port || !anchor || !node) return null;
+            if (!placed || !edge) return null;
+            const { node, anchor } = placed;
+            const port = node.ports.find((p) => p.id === connector.port_id);
+            if (!port) return null;
+            const pin = {
+              x: placed.x + anchor.x,
+              y: placed.y + anchor.y,
+            };
             const dx =
-              anchor.side === "EAST" ? 18 : anchor.side === "WEST" ? -18 : 0;
-            const dy = anchor.side === "SOUTH" ? 16 : 0;
+              anchor.side === "EAST"
+                ? CONNECTOR
+                : anchor.side === "WEST"
+                  ? -CONNECTOR
+                  : 0;
+            const dy =
+              anchor.side === "SOUTH" ? 14 : anchor.side === "NORTH" ? -14 : 0;
             const active = target
               ? target.kind === "pin" && target.portId === port.id
               : port.signal_ids.includes(selected ?? "");
@@ -683,14 +680,16 @@ export function Schematic({
                   className={`control-connector ${active ? "selected" : ""}`}
                   d={`M${pin.x},${pin.y} l${dx},${dy} m-3,-3 l3,3 l-3,3`}
                 />
-                <text
-                  x={pin.x + dx}
-                  y={pin.y + dy - 6}
-                  textAnchor={dx < 0 ? "end" : "start"}
-                  className="wire-label"
-                >
-                  {shortName(connector.label, 18)}
-                </text>
+                {node.kind !== "port" && (
+                  <text
+                    x={pin.x + dx}
+                    y={pin.y + dy - 6}
+                    textAnchor={dx < 0 ? "end" : "start"}
+                    className="wire-label"
+                  >
+                    {shortName(connector.label, 18)}
+                  </text>
+                )}
               </g>
             );
           })}

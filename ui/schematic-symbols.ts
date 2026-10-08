@@ -1,6 +1,6 @@
 import type { Node, Port } from "./types";
 
-export const GEOMETRY_VERSION = 3;
+export const GEOMETRY_VERSION = 5;
 export interface SymbolPath {
   d: string;
   fill?: boolean;
@@ -15,6 +15,7 @@ export interface SymbolText {
 }
 export interface PinAnchor {
   id: string;
+  /** Where a wire meets the pin: the outer end of its lead. */
   x: number;
   y: number;
   side: "WEST" | "EAST" | "SOUTH" | "NORTH";
@@ -23,8 +24,18 @@ export interface PinAnchor {
   labelY: number;
   anchor: "start" | "middle" | "end";
   lead: string;
+  /** The lead carries more than one bit. */
+  bus: boolean;
   bubble?: [number, number];
   clock?: string;
+  /** Length outside the symbol reserved for the lead and its note. */
+  reach: number;
+  /** A slice taken from a bus, a constant tied to the pin, or a bus width. */
+  note?: { text: string; x: number; y: number; anchor: "start" | "end" };
+  /** Slash across the lead of a bus whose width the symbol does not label. */
+  mark?: string;
+  /** A constant or undriven input: nothing is routed to this pin. */
+  unwired?: boolean;
 }
 export interface SymbolGeometry {
   width: number;
@@ -34,6 +45,11 @@ export interface SymbolGeometry {
   pins: PinAnchor[];
   symbol: string;
 }
+
+/** Distance between neighbouring pins on one side, shared by every symbol. */
+const PITCH = 20;
+/** Wire stub between the edge of a symbol's box and its body. */
+const LEAD = 10;
 
 export function shortName(text: string, max = 30): string {
   return text.length > max ? text.slice(0, max - 1) + "…" : text;
@@ -45,6 +61,7 @@ export function pinLabel(port: Port): string {
     return `${d.name}[${d.range[0]}:${d.range[1]}]`;
   return port.label;
 }
+const isBus = (port: Port) => (port.display?.width ?? 1) > 1;
 const logic = new Set([
   "and",
   "nand",
@@ -55,20 +72,71 @@ const logic = new Set([
   "not",
   "buffer",
 ]);
-const boxed = new Set([
-  "module",
-  "unknown",
-  "register",
-  "latch",
-  "memory",
-  "compound",
-  "process",
-  "function",
-  "task",
-  "behavior",
-  "assignment",
-  "physical",
-]);
+const selectors = new Set(["mux", "demux", "encoder", "decoder"]);
+const arrows = new Set(["constant", "connector", "unavailable"]);
+
+type Lead = Pick<
+  PinAnchor,
+  "x" | "lead" | "reach" | "note" | "mark" | "unwired"
+>;
+
+/**
+ * A left-side input pin's lead outside the symbol. A pin taking part of a bus
+ * names that part above the lead; a constant or undriven pin shows its value
+ * in place of a wire. Pins joined from several sources are drawn by their join.
+ */
+function westLead(port: Port, y: number, body: number): Lead {
+  const feeds = port.feeds ?? [];
+  const only = feeds.length === 1 ? feeds[0] : undefined;
+  if (only?.kind === "net" && only.label) {
+    const reach = only.label.length * 6 + 10;
+    return {
+      x: -reach,
+      reach,
+      lead: `M${-reach},${y} H${body}`,
+      note: { text: only.label, x: -4, y: y - 7, anchor: "end" },
+    };
+  }
+  if (!feeds.length || feeds.some((feed) => feed.kind === "net"))
+    return { x: 0, reach: 0, lead: `M0,${y} H${body}` };
+  const values = [...feeds]
+    .reverse()
+    .map((feed) => (feed.kind === "constant" ? feed.label : "undriven"));
+  const text =
+    values.length === 1 ? (values[0] ?? "") : `{${values.join(", ")}}`;
+  return {
+    x: -8,
+    reach: text.length * 6 + 14,
+    lead: `M-8,${y} H${body}`,
+    note: { text, x: -11, y, anchor: "end" },
+    unwired: true,
+  };
+}
+
+/**
+ * A right-side pin's lead from `body` to the box edge. A bus leaving a symbol
+ * that does not label pin widths is marked with a slash and its width.
+ */
+function eastLead(
+  port: Port,
+  y: number,
+  body: number,
+  edge: number,
+  marked: boolean,
+): Lead {
+  const width = port.display?.width ?? 1;
+  if (!marked || width < 2)
+    return { x: edge, reach: 0, lead: `M${edge},${y} H${body}` };
+  const text = String(width);
+  const reach = 14 + text.length * 6;
+  return {
+    x: edge + reach,
+    reach,
+    lead: `M${edge + reach},${y} H${body}`,
+    mark: `M${edge + 3},${y + 4} L${edge + 9},${y - 4}`,
+    note: { text, x: edge + 12, y: y - 7, anchor: "start" },
+  };
+}
 
 export function boundaryDirection(node: Node): string {
   return (
@@ -98,16 +166,16 @@ function boundaryGeometry(node: Node): SymbolGeometry {
     const input = direction === "input";
     return {
       id: p.id,
-      x: input ? width : 0,
       y,
       side: input ? "EAST" : "WEST",
       label: labels[i] ?? p.label,
       labelX: width / 2,
       labelY: y,
       anchor: "middle",
-      lead: input
-        ? `M${right},${y} H${width}`
-        : `M0,${y} H${direction === "output" ? x + 8 : x}`,
+      bus: isBus(p),
+      ...(input
+        ? eastLead(p, y, right, width, false)
+        : westLead(p, y, direction === "output" ? x + 8 : x)),
     };
   });
   return {
@@ -130,12 +198,59 @@ function boundaryGeometry(node: Node): SymbolGeometry {
   };
 }
 
+/** A concatenation: ordered inputs gathered on a bar into one bus. */
+function joinGeometry(node: Node): SymbolGeometry {
+  const inputs = node.ports.filter((p) => p.direction !== "output"),
+    outputs = node.ports.filter((p) => p.direction === "output");
+  const bar = LEAD + Math.max(0, ...inputs.map((p) => p.label.length * 6)) + 8;
+  const height = Math.max(inputs.length, outputs.length) * PITCH + 8;
+  const pins: PinAnchor[] = [
+    ...inputs.map((p, i): PinAnchor => {
+      const y = 4 + PITCH / 2 + i * PITCH;
+      return {
+        id: p.id,
+        y,
+        side: "WEST",
+        label: p.label,
+        labelX: bar - 5,
+        labelY: y - 7,
+        anchor: "end",
+        bus: isBus(p),
+        ...westLead(p, y, bar),
+      };
+    }),
+    ...outputs.map((p, i): PinAnchor => {
+      const y = (height * (i + 1)) / (outputs.length + 1);
+      return {
+        id: p.id,
+        y,
+        side: "EAST",
+        label: "",
+        labelX: bar,
+        labelY: y,
+        anchor: "start",
+        bus: isBus(p),
+        ...eastLead(p, y, bar, bar + LEAD, true),
+      };
+    }),
+  ];
+  return {
+    width: bar + LEAD,
+    height,
+    symbol: "bus_split",
+    paths: [{ d: `M${bar},2 V${height - 2}`, fill: false, className: "join" }],
+    texts: [],
+    pins,
+  };
+}
+
 /** Shared drawing bounds and wire anchors; ELK may position nodes, never their pins. */
 export function symbolGeometry(node: Node): SymbolGeometry {
   const symbol =
     node.display?.symbol ?? (node.kind === "port" ? "port" : "unknown");
   const title = node.display?.title ?? node.kind;
   if (symbol === "port") return boundaryGeometry(node);
+  if (symbol === "bus_split") return joinGeometry(node);
   if (symbol === "junction")
     return {
       width: 0,
@@ -153,105 +268,118 @@ export function symbolGeometry(node: Node): SymbolGeometry {
         labelY: 0,
         anchor: "middle",
         lead: "",
+        bus: false,
+        reach: 0,
       })),
     };
-  if (symbol === "bus_split") {
-    const ins = node.ports.filter((p) => p.direction !== "output"),
-      outs = node.ports.filter((p) => p.direction === "output");
-    const height = Math.max(ins.length, outs.length) * 22 + 20;
-    const pins: PinAnchor[] = [];
-    for (const [list, side] of [
-      [ins, "WEST"],
-      [outs, "EAST"],
-    ] as const)
-      list.forEach((p, i) => {
-        const y = 10 + ((height - 20) * (i + 1)) / (list.length + 1),
-          x = side === "WEST" ? 0 : 56;
-        pins.push({
-          id: p.id,
-          x,
-          y,
-          side,
-          label: p.label,
-          labelX: side === "WEST" ? 22 : 34,
-          labelY: y,
-          anchor: side === "WEST" ? "end" : "start",
-          lead: `M${x},${y} H28`,
-        });
-      });
-    return {
-      width: 56,
-      height,
-      symbol,
-      paths: [{ d: `M28,8 V${height - 8}`, fill: false }],
-      texts: [],
-      pins,
-    };
-  }
-  const ports = node.ports.filter((p) => p.display?.role !== "power");
-  const incoming = ports.filter(
-    (p) =>
-      p.direction !== "output" &&
-      !["select", "enable", "reset", "set"].includes(p.display?.role ?? "data"),
+  const gate = logic.has(symbol),
+    selector = selectors.has(symbol),
+    operator = symbol === "operator",
+    arrow = arrows.has(symbol),
+    sequential = symbol === "register" || symbol === "latch";
+  const box = !gate && !selector && !operator && !arrow;
+  // Synchronous inputs enter on the left with the data. Only asynchronous
+  // clear and load enter from below, and asynchronous preset from above.
+  const ports = node.ports.filter(
+    (p) => !["power", "unused"].includes(p.display?.role ?? "data"),
   );
-  const outgoing = ports.filter((p) => p.direction === "output");
-  const controls = ports.filter(
-    (p) =>
-      p.direction !== "output" &&
-      ["select", "enable", "reset", "set"].includes(p.display?.role ?? "data"),
-  );
-  incoming.sort(
-    (a, b) =>
-      Number(a.display?.role === "clock") - Number(b.display?.role === "clock"),
-  );
-  const functionalHeader = ["mux", "demux", "encoder", "decoder"].includes(
-    symbol,
-  );
-  const pinTextWidth = (ps: Port[]) =>
-    Math.max(0, ...ps.map((p) => shortName(pinLabel(p), 18).length * 6));
-  const controlWidth = Math.max(
-    24,
-    ...controls.map((p) => shortName(pinLabel(p), 14).length * 6 + 18),
-  );
+  const triangle = symbol === "buffer" || symbol === "not";
+  const side = (p: Port): PinAnchor["side"] =>
+    p.direction === "output"
+      ? "EAST"
+      : triangle && (p.display?.role ?? "data") !== "data"
+        ? "SOUTH"
+        : !p.display?.asynchronous
+          ? "WEST"
+          : p.display.role === "set"
+            ? "NORTH"
+            : "SOUTH";
+  const on = (s: PinAnchor["side"]) => ports.filter((p) => side(p) === s);
+  const west = on("WEST"),
+    east = on("EAST"),
+    south = on("SOUTH"),
+    north = on("NORTH");
+  // Boxes label pins with their width; gates rely on shape and the bus mark.
+  const text = (p: Port): string => {
+    const role = p.display?.role ?? "data";
+    // An instance pin reaching mixed polarities is not an unknown polarity.
+    const unknown =
+      ["clock", "enable", "reset", "set"].includes(role) &&
+      p.display?.polarity == null &&
+      !node.child_scope;
+    const name =
+      box && isBus(p) && !p.label.endsWith("]")
+        ? `${p.label}[${(p.display?.width ?? 1) - 1}:0]`
+        : (gate && role === "data") ||
+            arrow ||
+            (!box && p.direction === "output" && east.length === 1)
+          ? ""
+          : p.label;
+    return shortName(name, 18) + (unknown && name ? " ?" : "");
+  };
+  const span = (ps: Port[]) =>
+    Math.max(0, ...ps.map((p) => text(p).length * 6));
+  const heading =
+    symbol === "compound"
+      ? title.toUpperCase()
+      : box && !sequential
+        ? title
+        : "";
+  const header = heading ? 18 : 0;
+  // Room inside a box for the bars or brackets that mark its kind.
+  const pad = ["memory", "process", "function", "task"].includes(symbol)
+    ? 12
+    : 5;
+  const rows = Math.max(west.length, east.length, 1);
   const w = Math.max(
-    boxed.has(symbol) || functionalHeader ? 136 : 72,
-    pinTextWidth(incoming) +
-      pinTextWidth(outgoing) +
-      (symbol === "compound" ? 140 : 52),
-    !logic.has(symbol) && !boxed.has(symbol) && !functionalHeader
-      ? shortName(title).length * 7 +
-          pinTextWidth(incoming) +
-          pinTextWidth(outgoing) +
-          48
-      : 0,
-    controls.length ? (controls.length + 1) * controlWidth : 0,
-    !logic.has(symbol) ? Math.min(250, shortName(title).length * 7 + 32) : 0,
+    gate
+      ? (triangle ? 34 : 44) + span(west)
+      : operator
+        ? Math.max(56, title.length * 8 + span(west) + 30)
+        : arrow
+          ? title.length * 7 + 22
+          : selector
+            ? Math.max(44, span(west) + span(east) + 26)
+            : Math.max(
+                sequential ? 60 : 72,
+                span(west) + span(east) + 20 + 2 * pad,
+              ),
+    symbol === "compound" ? span(west) + span(east) + 140 : 0,
+    heading ? shortName(heading).length * 7 + 16 : 0,
+    Math.max(south.length, north.length) * 44,
   );
-  const top = boxed.has(symbol) ? 30 : functionalHeader ? 24 : 0;
-  const footer = controls.length ? 24 : 0;
-  const h =
-    Math.max(54, Math.max(incoming.length, outgoing.length) * 24 + top + 12) +
-    footer;
-  const annotations = shortName(
-    node.display?.annotations.join(" · ") ?? "",
-    36,
-  );
-  const labelWidth = Math.max(
-    !node.label.startsWith("$") && node.label !== title
-      ? shortName(node.label).length * 7 + 12
-      : 0,
-    annotations.length * 6 + 12,
-  );
-  const width = Math.max(w + 36, labelWidth);
-  const x = (width - w) / 2,
-    y = annotations ? 46 : 30;
-  const height = y + h + (controls.length ? 22 : 0);
+  const inset = (south.length ? 12 : 0) + (north.length ? 12 : 0);
+  const h = gate
+    ? Math.max(30, rows * PITCH + 4)
+    : operator
+      ? Math.max(36, rows * PITCH + 12)
+      : arrow
+        ? 26
+        : selector
+          ? header + rows * PITCH + 16
+          : Math.max(40, header + rows * PITCH + 10 + inset);
+  // A register is named after the net it drives and a decoder, encoder or
+  // wide multiplexer by its function; other symbols by instance.
+  const name =
+    sequential || selector
+      ? ["DFF", "LATCH", "MUX"].includes(title)
+        ? ""
+        : title
+      : !node.label.startsWith("$") && node.label !== title
+        ? node.label
+        : "";
+  const inner = (west.length ? LEAD : 0) + w + (east.length ? LEAD : 0);
+  // A long name may widen its symbol a little; beyond that it is shortened.
+  const width = Math.max(inner, Math.min(name.length * 7 + 4, inner + 48));
+  const x = (width - inner) / 2 + (west.length ? LEAD : 0),
+    y = (name ? 16 : 0) + (north.length ? LEAD : 0);
+  const height = y + h + (south.length ? LEAD : 0);
   const paths: SymbolPath[] = [];
   const texts: SymbolText[] = [];
   const pins: PinAnchor[] = [];
   const body = (d: string, fill = true) =>
     paths.push({ d, fill, className: "nodebox" });
-  if (["and", "nand"].includes(symbol))
+  if (symbol === "and" || symbol === "nand")
     body(
       `M${x},${y} H${x + w / 2} C${x + w * 1.16},${y} ${x + w * 1.16},${y + h} ${x + w / 2},${y + h} H${x} Z`,
     );
@@ -267,201 +395,185 @@ export function symbolGeometry(node: Node): SymbolGeometry {
   } else if (symbol === "not" || symbol === "buffer")
     body(`M${x},${y} L${x + w - 8},${y + h / 2} L${x},${y + h} Z`);
   else if (symbol === "mux" || symbol === "encoder")
-    body(`M${x},${y} L${x + w},${y + 12} V${y + h - 12} L${x},${y + h} Z`);
+    body(`M${x},${y} L${x + w},${y + 10} V${y + h - 10} L${x},${y + h} Z`);
   else if (symbol === "demux" || symbol === "decoder")
-    body(`M${x},${y + 12} L${x + w},${y} V${y + h} L${x},${y + h - 12} Z`);
-  else if (symbol === "operator")
+    body(`M${x},${y + 10} L${x + w},${y} V${y + h} L${x},${y + h - 10} Z`);
+  else if (operator)
     body(
-      `M${x + 12},${y} H${x + w - 12} L${x + w},${y + 12} V${y + h - 12} L${x + w - 12},${y + h} H${x + 12} L${x},${y + h - 12} V${y + 12} Z`,
+      `M${x + 10},${y} H${x + w - 10} L${x + w},${y + 10} V${y + h - 10} L${x + w - 10},${y + h} H${x + 10} L${x},${y + h - 10} V${y + 10} Z`,
     );
-  else if (
-    symbol === "constant" ||
-    symbol === "connector" ||
-    symbol === "unavailable"
-  )
+  else if (arrow)
     body(
-      `M${x},${y + 6} H${x + w - 10} L${x + w},${y + h / 2} L${x + w - 10},${y + h - 6} H${x} Z`,
+      `M${x},${y} H${x + w - 10} L${x + w},${y + h / 2} L${x + w - 10},${y + h} H${x} Z`,
     );
   else {
     body(
-      `M${x + 5},${y} H${x + w - 5} Q${x + w},${y} ${x + w},${y + 5} V${y + h - 5} Q${x + w},${y + h} ${x + w - 5},${y + h} H${x + 5} Q${x},${y + h} ${x},${y + h - 5} V${y + 5} Q${x},${y} ${x + 5},${y} Z`,
+      `M${x + 3},${y} H${x + w - 3} Q${x + w},${y} ${x + w},${y + 3} V${y + h - 3} Q${x + w},${y + h} ${x + w - 3},${y + h} H${x + 3} Q${x},${y + h} ${x},${y + h - 3} V${y + 3} Q${x},${y} ${x + 3},${y} Z`,
     );
     if (symbol === "memory")
       paths.push({
-        d: `M${x + 7},${y + 7} V${y + h - 7} M${x + 11},${y + 7} V${y + h - 7}`,
+        d: `M${x + 4},${y + header} V${y + h - 4} M${x + 7},${y + header} V${y + h - 4}`,
         fill: false,
       });
     if (["process", "function", "task"].includes(symbol))
       paths.push({
-        d: `M${x + 9},${y + 7} H${x + 4} V${y + h - 7} H${x + 9} M${x + w - 9},${y + 7} H${x + w - 4} V${y + h - 7} H${x + w - 9}`,
+        d: `M${x + 8},${y + header} H${x + 4} V${y + h - 4} H${x + 8} M${x + w - 8},${y + header} H${x + w - 4} V${y + h - 4} H${x + w - 8}`,
         fill: false,
       });
-    if (symbol === "compound") {
-      texts.push({
-        x: x + w / 2,
-        y: y + 16,
-        text: shortName(title.toUpperCase()),
-        anchor: "middle",
-      });
-    }
   }
-  if (!logic.has(symbol) && symbol !== "compound")
+  if (heading)
     texts.push({
       x: x + w / 2,
-      y: y + (boxed.has(symbol) || functionalHeader ? 18 : h / 2 + 4),
+      y: y + 14,
+      text: shortName(heading),
+      anchor: "middle",
+    });
+  if (operator || arrow || (gate && ["&&", "||", "!"].includes(title)))
+    texts.push({
+      x: x + (gate ? w * 0.42 : w / 2),
+      y: y + h / 2 + 4,
       text: shortName(title),
       anchor: "middle",
     });
-  if (!node.label.startsWith("$") && node.label !== title)
+  if (name)
     texts.push({
-      x: x + w / 2,
-      y: 18,
-      text: shortName(node.label),
+      x: width / 2,
+      y: 11,
+      text: shortName(name, Math.max(4, Math.floor(width / 7))),
       anchor: "middle",
-      secondary: !node.child_scope,
+      secondary: !sequential && !node.child_scope,
     });
-  if (logic.has(symbol) && ["&&", "||", "!"].includes(title))
-    texts.push({
-      x: x + w / 2,
-      y: y + h / 2 + 4,
-      text: title,
-      anchor: "middle",
-    });
-  const make = (
-    p: Port,
-    index: number,
-    count: number,
-    side: PinAnchor["side"],
-  ) => {
-    const py = y + top + ((h - top - footer) * (index + 1)) / (count + 1);
-    let px = side === "WEST" ? x : x + w;
-    if (side === "WEST" && ["or", "nor", "xor", "xnor"].includes(symbol))
+  // Boxes keep both sides on one grid from the top, so a datapath runs
+  // straight through D and Q. Shaped symbols centre each side.
+  const first = (count: number) =>
+    box
+      ? y + header + (north.length ? 12 : 0) + 5 + PITCH / 2
+      : y + header + (h - header - count * PITCH) / 2 + PITCH / 2;
+  const make = (p: Port, index: number, count: number) => {
+    const left = side(p) === "WEST";
+    const py = first(count) + index * PITCH;
+    let px = left ? x : x + w;
+    if (left && ["or", "nor", "xor", "xnor"].includes(symbol))
       px += w * 0.6 * ((py - y) / h) * (1 - (py - y) / h);
-    if (side === "EAST" && (symbol === "buffer" || symbol === "not")) px -= 8;
+    if (!left && triangle) px -= 8;
     const inverted =
-      (side === "EAST" && ["not", "nand", "nor", "xnor"].includes(symbol)) ||
+      (!left && ["not", "nand", "nor", "xnor"].includes(symbol)) ||
       p.display?.polarity === false;
-    const ax = side === "WEST" ? 0 : width;
     const bubble: [number, number] | undefined = inverted
-      ? [side === "WEST" ? px - 4 : px + 4, py]
+      ? [left ? px - 4 : px + 4, py]
       : undefined;
-    const lead = `M${ax},${py} H${px + (inverted ? (side === "WEST" ? -8 : 8) : 0)}`;
-    const label =
-      shortName(pinLabel(p), 18) +
-      (p.display &&
-      ["clock", "enable", "reset", "set"].includes(p.display.role) &&
-      p.display.polarity == null
-        ? " ?"
-        : "");
-    const clock =
-      p.display?.role === "clock"
-        ? `M${px},${py - 5} L${px + 8},${py} L${px},${py + 5}`
-        : undefined;
+    const contact = px + (inverted ? (left ? -8 : 8) : 0);
+    const clock = p.display?.role === "clock";
     pins.push({
       id: p.id,
-      x: ax,
       y: py,
-      side,
-      label,
-      labelX: side === "WEST" ? px + 12 : px - 8,
+      side: left ? "WEST" : "EAST",
+      label: text(p),
+      labelX: left ? px + (clock ? pad + 7 : pad) : px - pad,
       labelY: py,
-      anchor: side === "WEST" ? "start" : "end",
-      lead,
+      anchor: left ? "start" : "end",
+      bus: isBus(p),
       bubble,
-      clock,
+      // Inside a box that marks its kind along the left edge, the wedge
+      // starts after that mark.
+      clock: clock
+        ? `M${px + pad - 5},${py - 5} L${px + pad + 3},${py} L${px + pad - 5},${py + 5}`
+        : undefined,
+      ...(left
+        ? westLead(p, py, contact)
+        : eastLead(p, py, contact, width, !box)),
     });
   };
-  incoming.forEach((p, i) => make(p, i, incoming.length, "WEST"));
-  outgoing.forEach((p, i) => make(p, i, outgoing.length, "EAST"));
-  controls.forEach((p, i) => {
-    const px = x + (w * (i + 1)) / (controls.length + 1);
-    const py = y + h;
-    const contact =
-      symbol === "mux" || symbol === "encoder"
-        ? py - (12 * (px - x)) / w
-        : symbol === "decoder" || symbol === "demux"
-          ? py - 12 * (1 - (px - x) / w)
-          : symbol === "buffer" || symbol === "not"
-            ? py - ((h / 2) * (px - x)) / (w - 8)
-            : py;
-    const inverted = p.display?.polarity === false;
-    pins.push({
-      id: p.id,
-      x: px,
-      y: height,
-      side: "SOUTH",
-      label:
-        shortName(pinLabel(p), 14) +
-        (p.display?.role !== "select" && p.display?.polarity == null
-          ? " ?"
-          : ""),
-      labelX: px,
-      labelY: contact - 12,
-      anchor: "middle",
-      lead: `M${px},${height} V${contact + (inverted ? 8 : 0)}`,
-      bubble: inverted ? [px, contact + 4] : undefined,
+  west.forEach((p, i) => make(p, i, west.length));
+  east.forEach((p, i) => make(p, i, east.length));
+  for (const [list, bottom] of [
+    [south, true],
+    [north, false],
+  ] as const)
+    list.forEach((p, i) => {
+      const px = x + ((triangle ? w - 8 : w) * (i + 1)) / (list.length + 1);
+      // A buffer's enable meets the sloped lower edge of its triangle.
+      const edge = triangle
+          ? y + h - ((h / 2) * (px - x)) / (w - 8)
+          : bottom
+            ? y + h
+            : y,
+        outer = bottom ? height : 0,
+        out = bottom ? 1 : -1;
+      const inverted = p.display?.polarity === false;
+      const value = (p.feeds ?? []).find((feed) => feed.kind !== "net");
+      pins.push({
+        id: p.id,
+        x: px,
+        y: outer,
+        side: bottom ? "SOUTH" : "NORTH",
+        label: text(p),
+        labelX: triangle ? px + 4 : px,
+        labelY: triangle ? outer - 4 : edge - out * 8,
+        anchor: triangle ? "start" : "middle",
+        lead: `M${px},${outer} V${edge + (inverted ? out * 8 : 0)}`,
+        bus: isBus(p),
+        bubble: inverted ? [px, edge + out * 4] : undefined,
+        reach: 0,
+        note: value
+          ? {
+              text: value.kind === "constant" ? value.label : "undriven",
+              x: px + 5,
+              y: outer - out * 3,
+              anchor: "start",
+            }
+          : undefined,
+        unwired: Boolean(value),
+      });
     });
-  });
-  if (symbol === "compound") {
-    const output = pins.find((p) => p.side === "EAST");
-    const inputs = new Map(
+  // A two-level cell shows its gates: one per group of two or more pins, all
+  // feeding the second gate on the output's row.
+  const compound = node.display?.compound;
+  const output = pins.find((p) => p.side === "EAST");
+  if (compound && output) {
+    const named = new Map(
       pins
         .filter((p) => p.side === "WEST")
         .map((p) => [ports.find((port) => port.id === p.id)?.display?.name, p]),
     );
-    const andFirst = title.startsWith("a");
-    const inverted = title.endsWith("i");
-    const glyph = (gx: number, gy: number, and: boolean) => {
+    const glyph = (gx: number, gy: number, and: boolean) =>
       paths.push({
         d: and
           ? `M${gx},${gy - 10} H${gx + 10} Q${gx + 34},${gy} ${gx + 10},${gy + 10} H${gx} Z`
           : `M${gx},${gy - 10} Q${gx + 16},${gy - 10} ${gx + 28},${gy} Q${gx + 16},${gy + 10} ${gx},${gy + 10} Q${gx + 9},${gy} ${gx},${gy - 10} Z`,
         fill: true,
       });
-    };
-    if (output) {
-      const secondX = x + w - pinTextWidth(outgoing) - 57;
-      glyph(secondX, output.y, !andFirst);
-      const line = (d: string) => paths.push({ d, fill: false });
-      const group = (first: string, second: string, inputY: number) => {
-        const a = inputs.get(first) ?? inputs.get(first === "A1" ? "A" : "C"),
-          b = inputs.get(second) ?? inputs.get(second === "A2" ? "B" : "D");
-        if (!a) return;
-        if (b) {
-          const center = (a.y + b.y) / 2;
-          const firstX = x + pinTextWidth(incoming) + 36;
-          const startX = x + pinTextWidth(incoming) + 20;
-          glyph(firstX, center, andFirst);
-          line(
-            `M${startX},${a.y} H${firstX - 6} V${center - 5} H${firstX} M${startX},${b.y} H${firstX - 6} V${center + 5} H${firstX}`,
-          );
-          line(
-            `M${firstX + 28},${center} H${secondX - 8} V${inputY} H${secondX}`,
-          );
-        } else
-          line(
-            `M${x + pinTextWidth(incoming) + 20},${a.y} H${secondX - 12} V${inputY} H${secondX}`,
-          );
-      };
-      group("A1", "A2", output.y - 5);
-      group("B1", "B2", output.y + 5);
-      if (inverted)
-        paths.push({
-          d: `M${secondX + 28},${output.y} a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0`,
-          fill: true,
+    const line = (d: string) => paths.push({ d, fill: false });
+    const and = compound.first === "and";
+    const from = x + span(west) + 20,
+      firstX = from + 16,
+      secondX = x + w - span(east) - 57;
+    glyph(secondX, output.y, !and);
+    compound.groups.forEach((group, g) => {
+      const members = group.flatMap((name) => named.get(name) ?? []);
+      const center =
+        members.reduce((sum, pin) => sum + pin.y, 0) / (members.length || 1);
+      // Inputs of the second gate spread around the output's row.
+      const entry = output.y + (g - (compound.groups.length - 1) / 2) * 5;
+      const turn = secondX - 8 - g * 4;
+      if (members.length > 1) {
+        glyph(firstX, center, and);
+        members.forEach((pin, i) => {
+          const at = center + (i - (members.length - 1) / 2) * 5;
+          line(`M${from},${pin.y} H${firstX - 6} V${at} H${firstX}`);
         });
-      line(
-        `M${secondX + (inverted ? 36 : 28)},${output.y} H${x + w - pinTextWidth(outgoing) - 16}`,
-      );
-    }
-  }
-  if (node.display?.annotations.length)
-    texts.push({
-      x: width / 2,
-      y: 33,
-      text: shortName(node.display.annotations.join(" · "), 36),
-      anchor: "middle",
-      secondary: true,
+        line(`M${firstX + 28},${center} H${turn} V${entry} H${secondX}`);
+      } else if (members[0])
+        line(`M${from},${members[0].y} H${turn} V${entry} H${secondX}`);
     });
+    if (compound.inverted)
+      paths.push({
+        d: `M${secondX + 28},${output.y} a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0`,
+        fill: true,
+      });
+    line(
+      `M${secondX + (compound.inverted ? 36 : 28)},${output.y} H${x + w - span(east) - 16}`,
+    );
+  }
   return { width, height, paths, texts, pins, symbol };
 }
