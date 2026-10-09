@@ -1,8 +1,11 @@
 {
+  "technology": "sky130",
   "schema_version": 3,
   "name": "01_simpleRegister",
-  "technology": "sky130",
   "top": "simpleRegister",
+  "simulation_sources": [
+    "dv/simpleRegister_tb.sv"
+  ],
   "sources": [
     {
       "path": "rtl/simpleRegister.sv",
@@ -10,20 +13,41 @@
     }
   ],
   "standard": "1800-2017",
+  "include_dirs": [],
+  "defines": {},
   "parameters": {
     "N": "8"
   },
-  "simulation_sources": ["dv/simpleRegister_tb.sv"],
+  "assets": [],
   "simulations": {
     "rtl": {
       "simulator": "icarus",
       "top": "simpleRegister_tb",
-      "dut_scope": ["simpleRegister_tb", "i_simpleRegister"],
-      "testbench": ["dv/simpleRegister_tb.sv"],
+      "dut_scope": [
+        "simpleRegister_tb",
+        "i_simpleRegister"
+      ],
+      "testbench": [
+        "dv/simpleRegister_tb.sv"
+      ],
+      "args": [],
       "stop_time": "2us",
+      "sdf": null,
+      "models": [],
       "defines": {
         "N": "8"
-      }
+      },
+      "timing_corner": null,
+      "delay_selection": null,
+      "use_snapshot_sdf": false
     }
+  },
+  "physical": {
+    "pdk": "sky130A",
+    "library": "sky130_fd_sc_hd",
+    "clock_port": "clk_i",
+    "clock_period_ns": 10.0,
+    "sdc": null,
+    "overrides": {}
   }
 }

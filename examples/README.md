@@ -36,14 +36,18 @@ earlier; the limit accommodates the ALU and asynchronous FIFO. Parameters and
 simulation defines match the original Makefile defaults. The ALU package is
 listed before its consumers.
 
-Tool paths come from your Toolchain settings. Physical constraints are deliberately
-unset: configure clocks and physical settings before mapped or post-layout builds.
-Gate simulation may require adjusting testbench DUT parameter overrides; do not
-assume every exercise testbench is suitable for an exported gate netlist.
+Tool paths come from your Toolchain settings. Every project has a physical
+configuration (SKY130, 10 ns period), so Mapped gates and Post-layout build without
+editing anything; they need the Docker toolchain with its PDKs. The nine combinational
+exercises have no clock port: their paths are timed against a virtual clock of the
+period. `17_afifo` lists both of its clocks, which are asynchronous to each other.
 
-Mapped gates and Post-layout need those physical settings and the Docker toolchain
-with its PDKs. Compiler-only signals and unsupported generated hierarchy mappings
+The testbenches set DUT parameters; gate simulation accepts that as long as the values
+match the build. Compiler-only signals and unsupported generated hierarchy mappings
 remain unavailable in the waveform; public DUT ports bind normally.
+
+The project files are stored exactly as HDLView saves them, so saving an unchanged
+example changes nothing; they are excluded from Prettier and checked by a Rust test.
 
 The only HDL change is in `15_sync_ff/dv/sync_ff_tb.sv`: its expected-value queue
 starts with zero so the first read checks the reset output instead of popping an

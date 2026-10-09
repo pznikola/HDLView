@@ -41,19 +41,23 @@ function PairEditor({
   label,
   rows,
   onChange,
+  placeholders = ["NAME", "Value"],
+  setting,
 }: {
   label: string;
   rows: SettingPair[];
   onChange: (rows: SettingPair[]) => void;
+  placeholders?: [string, string];
+  setting?: string;
 }) {
   return (
-    <fieldset className="settings-list">
+    <fieldset className="settings-list" data-setting={setting}>
       <legend>{label}</legend>
       {rows.map(([name, value], index) => (
         <div className="settings-pair" key={index}>
           <input
             aria-label={`${label} name ${index + 1}`}
-            placeholder="NAME"
+            placeholder={placeholders[0]}
             value={name}
             onChange={(e) =>
               onChange(
@@ -65,7 +69,7 @@ function PairEditor({
           />
           <input
             aria-label={`${label} value ${index + 1}`}
-            placeholder="Value"
+            placeholder={placeholders[1]}
             value={value}
             onChange={(e) =>
               onChange(
@@ -369,7 +373,7 @@ function SimulationSettings({
             >
               <option value="icarus">Icarus</option>
               <option value="verilator" disabled={sdfMode !== "none"}>
-                Verilator
+                Verilator (RTL only)
               </option>
             </select>
           </label>
@@ -1087,7 +1091,7 @@ export function ProjectSettings({
                     </dd>
                   </dl>
                   <label>
-                    Clock port
+                    Clock port (optional)
                     <input
                       data-setting="physical.clock_port"
                       aria-label="Clock port"
@@ -1101,6 +1105,10 @@ export function ProjectSettings({
                       }
                     />
                   </label>
+                  <p className="hint">
+                    Leave the clock port empty for a design without a clock; the
+                    period then limits the delay from inputs to outputs.
+                  </p>
                   <label>
                     Clock period (ns)
                     <input
@@ -1119,6 +1127,45 @@ export function ProjectSettings({
                       }
                     />
                   </label>
+                  <PairEditor
+                    label="Additional clock"
+                    setting="physical.additional_clocks"
+                    placeholders={["Clock port", "Period (ns)"]}
+                    rows={flow.additional_clocks}
+                    onChange={(additional_clocks) =>
+                      change({
+                        ...draft,
+                        physical: { ...flow, additional_clocks },
+                      })
+                    }
+                  />
+                  {flow.additional_clocks.length > 0 && (
+                    <>
+                      <label className="settings-check">
+                        <input
+                          type="checkbox"
+                          aria-label="Clocks are related"
+                          checked={flow.related_clocks}
+                          onChange={(e) =>
+                            change({
+                              ...draft,
+                              physical: {
+                                ...flow,
+                                related_clocks: e.target.checked,
+                              },
+                            })
+                          }
+                        />
+                        <span>
+                          Clocks are related (time paths between them)
+                        </span>
+                      </label>
+                      <p className="hint">
+                        Unless related, the clocks are asynchronous: paths from
+                        one clock to another are not timed.
+                      </p>
+                    </>
+                  )}
                   <label>
                     SDC file (optional)
                     <div className="settings-actions">

@@ -1,8 +1,11 @@
 {
+  "technology": "sky130",
   "schema_version": 3,
   "name": "15_sync_ff",
-  "technology": "sky130",
   "top": "sync_ff",
+  "simulation_sources": [
+    "dv/sync_ff_tb.sv"
+  ],
   "sources": [
     {
       "path": "rtl/sync_ff.sv",
@@ -10,20 +13,41 @@
     }
   ],
   "standard": "1800-2017",
+  "include_dirs": [],
+  "defines": {},
   "parameters": {
     "N": "8"
   },
-  "simulation_sources": ["dv/sync_ff_tb.sv"],
+  "assets": [],
   "simulations": {
     "rtl": {
       "simulator": "icarus",
       "top": "sync_ff_tb",
-      "dut_scope": ["sync_ff_tb", "i_sync_ff"],
-      "testbench": ["dv/sync_ff_tb.sv"],
+      "dut_scope": [
+        "sync_ff_tb",
+        "i_sync_ff"
+      ],
+      "testbench": [
+        "dv/sync_ff_tb.sv"
+      ],
+      "args": [],
       "stop_time": "2us",
+      "sdf": null,
+      "models": [],
       "defines": {
         "N": "8"
-      }
+      },
+      "timing_corner": null,
+      "delay_selection": null,
+      "use_snapshot_sdf": false
     }
+  },
+  "physical": {
+    "pdk": "sky130A",
+    "library": "sky130_fd_sc_hd",
+    "clock_port": "rd_clk_i",
+    "clock_period_ns": 10.0,
+    "sdc": null,
+    "overrides": {}
   }
 }

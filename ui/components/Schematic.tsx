@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { Graph, Node } from "../types";
 import type { LayoutResponse } from "../layout.worker";
 import { pinSelected, pinTarget, type ConnectionTarget } from "../selection";
@@ -17,6 +24,8 @@ type Camera = { x: number; y: number; scale: number };
 const MIN_SCALE = 0.05,
   MAX_SCALE = 5;
 const EXPORT_MARGIN = 20;
+/** Zoom steps at which pin hit areas and label detail are redrawn. */
+const zoomLevel = (scale: number) => Math.floor(Math.log2(scale));
 
 /** The drawn schematic as a standalone SVG: whole drawing, no interaction state. */
 function standaloneSvg(
@@ -84,9 +93,9 @@ export function Schematic({
 }) {
   const [layout, setLayout] = useState<LayoutView>();
   const [pending, setPending] = useState(false);
-  const [camera, setCamera] = useState<Camera>({ x: 20, y: 70, scale: 1 });
-  const cameraRef = useRef(camera);
-  cameraRef.current = camera;
+  // Panning and zooming move one transform; they never re-render the drawing.
+  const camera = useRef<Camera>({ x: 20, y: 70, scale: 1 });
+  const [level, setLevel] = useState(0);
   const [displayOpen, setDisplayOpen] = useState(false);
   const menu = useRef<HTMLDivElement>(null);
   const displayButton = useRef<HTMLButtonElement>(null);
@@ -95,28 +104,71 @@ export function Schematic({
     { x: number; y: number; cx: number; cy: number } | undefined
   >(undefined);
   const worker = useRef<Worker | undefined>(undefined);
+  const laying = useRef(false);
   const sequence = useRef(0);
   const cache = useRef(
     new Map<string, { layout: LayoutView; camera?: Camera }>(),
   );
   const currentKey = useRef("");
   const fullControlWiring = preferences.full_control_wiring;
-  const fit = useCallback((view: LayoutView | undefined) => {
-    if (!view || !ref.current) return;
-    const bounds = ref.current.getBoundingClientRect();
-    setCamera({
-      x: 32,
-      y: 74,
-      scale: Math.max(
-        MIN_SCALE,
-        Math.min(
-          1.3,
-          (bounds.width - 64) / (view.graph.width || 1),
-          (bounds.height - 106) / (view.graph.height || 1),
-        ),
-      ),
-    });
+  const showCamera = useCallback(() => {
+    const { x, y, scale } = camera.current;
+    const transform = `translate(${x},${y}) scale(${scale})`;
+    ref.current
+      ?.querySelector("[data-world]")
+      ?.setAttribute("transform", transform);
+    const grid = ref.current?.querySelector("#schematic-grid");
+    if (grid) {
+      const spacing = String(
+        24 *
+          4 ** Math.max(0, Math.ceil(Math.log(8 / (24 * scale)) / Math.log(4))),
+      );
+      grid.setAttribute("patternTransform", transform);
+      grid.setAttribute("width", spacing);
+      grid.setAttribute("height", spacing);
+      grid
+        .querySelector("circle")
+        ?.setAttribute("r", String(Math.max(0.8, 0.65 / scale)));
+    }
+    setLevel(zoomLevel(scale));
   }, []);
+  const moveCamera = useCallback(
+    (next: Camera) => {
+      camera.current = next;
+      showCamera();
+    },
+    [showCamera],
+  );
+  // React leaves the camera attributes alone; restore them on whatever it just drew.
+  useLayoutEffect(showCamera);
+  const zoom = (factor: number, x: number, y: number) => {
+    const c = camera.current;
+    const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, c.scale * factor));
+    moveCamera({
+      x: x - ((x - c.x) * scale) / c.scale,
+      y: y - ((y - c.y) * scale) / c.scale,
+      scale,
+    });
+  };
+  const fit = useCallback(
+    (view: LayoutView | undefined) => {
+      if (!view || !ref.current) return;
+      const bounds = ref.current.getBoundingClientRect();
+      moveCamera({
+        x: 32,
+        y: 74,
+        scale: Math.max(
+          MIN_SCALE,
+          Math.min(
+            1.3,
+            (bounds.width - 64) / (view.graph.width || 1),
+            (bounds.height - 106) / (view.graph.height || 1),
+          ),
+        ),
+      });
+    },
+    [moveCamera],
+  );
   useEffect(() => {
     const key = JSON.stringify([
       GEOMETRY_VERSION,
@@ -126,29 +178,34 @@ export function Schematic({
       graph.detail,
     ]);
     const previous = cache.current.get(currentKey.current);
-    if (previous) previous.camera = cameraRef.current;
+    if (previous) previous.camera = camera.current;
     currentKey.current = key;
     const id = ++sequence.current;
     const cached = cache.current.get(key);
     if (cached) {
       setPending(false);
       setLayout(cached.layout);
-      if (cached.camera) setCamera(cached.camera);
+      if (cached.camera) moveCamera(cached.camera);
       else fit(cached.layout);
       return;
     }
     setLayout(undefined);
     setPending(true);
-    const w = new Worker(new URL("../layout.worker.ts", import.meta.url), {
-      type: "module",
-    });
-    worker.current = w;
+    // An idle worker keeps its layout engine loaded; a busy one is working on a view nobody waits for.
+    if (laying.current) worker.current?.terminate();
+    if (laying.current || !worker.current)
+      worker.current = new Worker(
+        new URL("../layout.worker.ts", import.meta.url),
+        { type: "module" },
+      );
+    const w = worker.current;
+    laying.current = true;
     w.onmessage = ({ data }: MessageEvent<LayoutResponse>) => {
+      laying.current = false;
       if (data.sequence !== sequence.current) return;
       setPending(false);
       if ("error" in data) {
         onError(data.error);
-        w.terminate();
         return;
       }
       cache.current.set(key, { layout: data.result });
@@ -158,18 +215,19 @@ export function Schematic({
       }
       setLayout(data.result);
       fit(data.result);
-      w.terminate();
     };
     w.onerror = (event) => {
+      laying.current = false;
       if (id === sequence.current) {
         setPending(false);
         onError(event.message);
       }
       w.terminate();
+      if (worker.current === w) worker.current = undefined;
     };
     w.postMessage({ sequence: id, graph, fullControlWiring });
-    return () => w.terminate();
-  }, [graph, fullControlWiring, fit, onError]);
+  }, [graph, fullControlWiring, fit, moveCamera, onError]);
+  useEffect(() => () => worker.current?.terminate(), []);
   useEffect(() => {
     if (!displayOpen) return;
     const outside = (event: PointerEvent) => {
@@ -198,50 +256,42 @@ export function Schematic({
       node.ports.map((port) => [port.id, node.label]),
     ),
   );
-  const renderNodes = new Map(
-    layout?.render_nodes.map((node) => [node.id, node]),
-  );
-  const placedPins = new Map(
-    layout?.graph.children?.flatMap((placed) => {
-      const node = renderNodes.get(placed.id);
-      return node
-        ? symbolGeometry(node).pins.map(
-            (anchor) =>
-              [
-                anchor.id,
-                { x: placed.x ?? 0, y: placed.y ?? 0, node, anchor },
-              ] as const,
-          )
-        : [];
-    }),
-  );
-  const gridSpacing =
-    24 *
-    4 **
-      Math.max(0, Math.ceil(Math.log(8 / (24 * camera.scale)) / Math.log(4)));
+  const { renderNodes, geometries, placedPins } = useMemo(() => {
+    const renderNodes = new Map(
+      layout?.render_nodes.map((node) => [node.id, node]),
+    );
+    const geometries = new Map(
+      layout?.render_nodes.map((node) => [node.id, symbolGeometry(node)]),
+    );
+    const placedPins = new Map(
+      layout?.graph.children?.flatMap((placed) => {
+        const node = renderNodes.get(placed.id);
+        return node
+          ? (geometries.get(node.id)?.pins ?? []).map(
+              (anchor) =>
+                [
+                  anchor.id,
+                  { x: placed.x ?? 0, y: placed.y ?? 0, node, anchor },
+                ] as const,
+            )
+          : [];
+      }),
+    );
+    return { renderNodes, geometries, placedPins };
+  }, [layout]);
   return (
     <div className="schematic" data-theme={preferences.theme}>
       <div className="canvas-tools">
         <button onClick={() => fit(layout)}>Fit</button>
         <button
           aria-label="Zoom schematic in"
-          onClick={() =>
-            setCamera((c) => ({
-              ...c,
-              scale: Math.min(c.scale * 1.3, MAX_SCALE),
-            }))
-          }
+          onClick={() => zoom(1.3, camera.current.x, camera.current.y)}
         >
           ＋
         </button>
         <button
           aria-label="Zoom schematic out"
-          onClick={() =>
-            setCamera((c) => ({
-              ...c,
-              scale: Math.max(c.scale / 1.3, MIN_SCALE),
-            }))
-          }
+          onClick={() => zoom(1 / 1.3, camera.current.x, camera.current.y)}
         >
           −
         </button>
@@ -358,6 +408,8 @@ export function Schematic({
             onClick={() => {
               ++sequence.current;
               worker.current?.terminate();
+              worker.current = undefined;
+              laying.current = false;
               setPending(false);
               currentKey.current = "";
               onError(
@@ -372,31 +424,23 @@ export function Schematic({
       <svg
         ref={ref}
         aria-label="Schematic"
-        className={`schematic-canvas ${camera.scale < 0.5 ? "zoomed-out" : ""}`}
+        className={`schematic-canvas ${level < -1 ? "zoomed-out" : ""}`}
         onWheel={(e) => {
           e.preventDefault();
           const rect = e.currentTarget.getBoundingClientRect();
-          const x = e.clientX - rect.left,
-            y = e.clientY - rect.top;
-          setCamera((c) => {
-            const scale = Math.max(
-              MIN_SCALE,
-              Math.min(MAX_SCALE, c.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)),
-            );
-            return {
-              x: x - ((x - c.x) * scale) / c.scale,
-              y: y - ((y - c.y) * scale) / c.scale,
-              scale,
-            };
-          });
+          zoom(
+            e.deltaY < 0 ? 1.12 : 1 / 1.12,
+            e.clientX - rect.left,
+            e.clientY - rect.top,
+          );
         }}
         onPointerDown={(e) => {
           if (e.target === e.currentTarget) {
             drag.current = {
               x: e.clientX,
               y: e.clientY,
-              cx: camera.x,
-              cy: camera.y,
+              cx: camera.current.x,
+              cy: camera.current.y,
             };
             e.currentTarget.setPointerCapture(e.pointerId);
           }
@@ -404,11 +448,11 @@ export function Schematic({
         onPointerMove={(e) => {
           const d = drag.current;
           if (d)
-            setCamera((c) => ({
-              ...c,
+            moveCamera({
+              ...camera.current,
               x: d.cx + e.clientX - d.x,
               y: d.cy + e.clientY - d.y,
-            }));
+            });
         }}
         onPointerUp={() => {
           drag.current = undefined;
@@ -424,17 +468,10 @@ export function Schematic({
         {preferences.grid && (
           <>
             <defs>
-              <pattern
-                id="schematic-grid"
-                width={gridSpacing}
-                height={gridSpacing}
-                patternTransform={`translate(${camera.x},${camera.y}) scale(${camera.scale})`}
-                patternUnits="userSpaceOnUse"
-              >
+              <pattern id="schematic-grid" patternUnits="userSpaceOnUse">
                 <circle
                   cx="0"
                   cy="0"
-                  r={Math.max(0.8, 0.65 / camera.scale)}
                   fill={preferences.theme === "light" ? "#91a7bb" : "#496f83"}
                 />
               </pattern>
@@ -448,10 +485,7 @@ export function Schematic({
             />
           </>
         )}
-        <g
-          data-world
-          transform={`translate(${camera.x},${camera.y}) scale(${camera.scale})`}
-        >
+        <g data-world>
           {layout?.wires.map((wire) => {
             const original = edges.get(wire.edge_id);
             if (!original) return null;
@@ -515,7 +549,8 @@ export function Schematic({
           {layout?.graph.children?.map((placed) => {
             const node = renderNodes.get(placed.id);
             if (!node || node.kind === "net junction") return null;
-            const geometry = symbolGeometry(node);
+            const geometry = geometries.get(node.id);
+            if (!geometry) return null;
             const open = () => {
               if (node.display.detail) onDetail(node.display.detail);
               else if (node.child_scope) onScope(node.child_scope);
@@ -556,9 +591,10 @@ export function Schematic({
                 </title>
                 <SchematicSymbol
                   node={node}
+                  geometry={geometry}
                   selected={selected}
                   target={target}
-                  scale={camera.scale}
+                  scale={2 ** level}
                   onSignal={onSignal}
                 />
                 {(node.display.detail || node.child_scope) && (

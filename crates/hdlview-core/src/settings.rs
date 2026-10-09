@@ -157,9 +157,12 @@ pub(crate) fn field_errors(p: &ProjectConfig) -> Vec<SettingsIssue> {
         }
     }
     if let Some(physical) = &p.physical {
+        if let Some(port) = &physical.clock_port {
+            check("physical.clock_port".into(), identifier(port).map(|_| ()));
+        }
         check(
-            "physical.clock_port".into(),
-            identifier(&physical.clock_port).map(|_| ()),
+            "physical.additional_clocks".into(),
+            crate::pipeline::additional_clocks(physical).map(|_| ()),
         );
         if !physical.clock_period_ns.is_finite() || physical.clock_period_ns <= 0.0 {
             check(
@@ -395,6 +398,43 @@ mod tests {
             assert!(result.errors.iter().any(|e| e.field == field), "{field}");
         }
         assert!(validate_project(&p).is_err());
+    }
+    #[test]
+    fn a_design_without_a_clock_needs_a_period_but_no_clock_port() {
+        let physical = |port: serde_json::Value| {
+            let mut p = project();
+            p.physical = Some(serde_json::from_value(json!({"pdk":"sky130A","library":"sky130_fd_sc_hd","clock_port":port,"clock_period_ns":10,"overrides":{}})).unwrap());
+            validate(Path::new("/missing/hdlview.project.json"), &p)
+                .errors
+                .iter()
+                .any(|e| e.field == "physical.clock_port")
+        };
+        assert!(!physical(json!(null)));
+        assert!(!physical(json!("clk")));
+        assert!(physical(json!("")));
+        assert!(physical(json!("clk; exec")));
+    }
+    #[test]
+    fn additional_clocks_need_a_primary_clock_distinct_ports_and_positive_periods() {
+        let rejected = |primary: serde_json::Value, clocks: serde_json::Value| {
+            let mut p = project();
+            p.physical = Some(serde_json::from_value(json!({"pdk":"sky130A","library":"sky130_fd_sc_hd","clock_port":primary,"clock_period_ns":10,"additional_clocks":clocks})).unwrap());
+            validate(Path::new("/missing/hdlview.project.json"), &p)
+                .errors
+                .iter()
+                .any(|e| e.field == "physical.additional_clocks")
+        };
+        assert!(!rejected(
+            json!("wr"),
+            json!([{"port":"rd","period_ns":12.5}])
+        ));
+        assert!(rejected(json!(null), json!([{"port":"rd","period_ns":10}])));
+        assert!(rejected(json!("wr"), json!([{"port":"wr","period_ns":10}])));
+        assert!(rejected(json!("wr"), json!([{"port":"rd","period_ns":0}])));
+        assert!(rejected(
+            json!("wr"),
+            json!([{"port":"rd x","period_ns":10}])
+        ));
     }
     #[test]
     fn external_settings_paths_are_draft_only_and_preserve_namespaces() {

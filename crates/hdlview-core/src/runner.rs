@@ -8,13 +8,23 @@ use std::{
     process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
 };
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// Probe results per toolchain identity; starting six tools costs more than a small build.
+static VERSIONS: Mutex<BTreeMap<String, BTreeMap<String, String>>> = Mutex::new(BTreeMap::new());
+const PROBED: [&str; 6] = [
+    "yosys",
+    "iverilog",
+    "verilator",
+    "verible-verilog-lint",
+    "python3",
+    "librelane",
+];
 #[derive(Clone, Default)]
 pub struct CancelToken(pub Arc<AtomicBool>);
 impl CancelToken {
@@ -238,8 +248,40 @@ impl Runner {
         }
         Ok(text)
     }
+    /// Identifies the tools behind a resolved profile: a Docker image digest is
+    /// already part of the profile; native executables add their size and
+    /// modification time, so an updated tool is probed again.
+    pub fn toolchain_key(&self) -> String {
+        let mut files = Vec::new();
+        if matches!(self.profile.provider, Provider::Native) {
+            let search = self.profile.env.get("PATH").cloned().unwrap_or_default();
+            let names = PROBED.iter().map(|tool| self.profile.exe(tool));
+            for name in names.chain(self.profile.plugins.values().cloned()) {
+                let file = if name.contains('/') {
+                    Some(PathBuf::from(&name))
+                } else {
+                    std::env::split_paths(&search)
+                        .map(|dir| dir.join(&name))
+                        .find(|path| path.is_file())
+                };
+                let state = file
+                    .and_then(|path| fs::metadata(path).ok())
+                    .map(|data| (data.len(), data.modified().ok()));
+                files.push((name, state));
+            }
+        }
+        crate::project::hash(format!(
+            "{}{files:?}",
+            serde_json::to_string(&self.profile).unwrap_or_default()
+        ))
+    }
+    /// Tool versions for a build, probed once per toolchain identity.
+    pub fn versions(&self) -> BTreeMap<String, String> {
+        let known = VERSIONS.lock().unwrap().get(&self.toolchain_key()).cloned();
+        known.unwrap_or_else(|| self.probe())
+    }
     pub fn probe(&self) -> BTreeMap<String, String> {
-        [
+        let versions: BTreeMap<String, String> = [
             ("yosys", vec!["-V"]),
             ("iverilog", vec!["-V"]),
             ("verilator", vec!["--version"]),
@@ -263,7 +305,12 @@ impl Runner {
                 },
             )
         })
-        .collect()
+        .collect();
+        VERSIONS
+            .lock()
+            .unwrap()
+            .insert(self.toolchain_key(), versions.clone());
+        versions
     }
 }
 
@@ -296,6 +343,29 @@ mod tests {
         assert_eq!(yosys_quote("a b; c\".sv").unwrap(), "\"a b; c\\\".sv\"");
         assert!(yosys_quote("a\nexec bad").is_err());
         assert!(identifier("x; exec bad").is_err());
+    }
+    #[test]
+    fn versions_are_probed_once_per_toolchain_identity() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let tool = d.path().join("tool");
+        fs::write(&tool, "#!/bin/sh\necho one\n").unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut profile = ToolchainProfile::default();
+        for name in PROBED {
+            profile
+                .executables
+                .insert(name.into(), tool.to_string_lossy().into());
+        }
+        let runner =
+            |name: &str| Runner::new(profile.clone(), d.path().join(name), CancelToken::default());
+        fs::create_dir(d.path().join("first")).unwrap();
+        assert_eq!(runner("first").versions()["yosys"], "one");
+        assert_eq!(runner("second").versions()["yosys"], "one");
+        assert!(!d.path().join("second").exists());
+        fs::write(&tool, "#!/bin/sh\necho changed\n").unwrap();
+        fs::create_dir(d.path().join("third")).unwrap();
+        assert_eq!(runner("third").versions()["yosys"], "changed");
     }
     #[test]
     fn cancelled_before_spawn() {

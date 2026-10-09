@@ -2,6 +2,125 @@
 
 This file records exercised workflows separately from proposed release targets. Version 0.1.0 is an engineering preview; it is not a claim of complete HDL-language coverage or signoff-quality timing simulation.
 
+## Rebuild and interaction speed
+
+Measured 9 October 2026 on the 30-cell counter fixture and the 1,000-node layout
+benchmark, after caching tool probes, taking the camera out of the React render, keeping
+the layout worker, and giving each waveform its own lock.
+
+| Case                                          | Before       | After                       |
+| --------------------------------------------- | ------------ | --------------------------- |
+| Docker Elaborated build, first in a session   | 4.1 s        | 4.3 to 4.9 s                |
+| Docker Elaborated rebuild after a source edit | 4.1 s        | 0.55 s                      |
+| Docker Elaborated rebuild, nothing changed    | not measured | 0.04 s, no new directory    |
+| Native Elaborated rebuild after the first     | 0.47 s       | 0.10 s                      |
+| 1,000-node layout, first / repeated           | 1.6 to 1.9 s | 1.6 to 1.8 s / 1.4 to 1.5 s |
+
+- Tool versions and the `read_slang` capability are probed once per toolchain identity
+  per application session: the resolved Docker image digest, or the size and
+  modification time of each native executable and plugin. **Check toolchain** always
+  probes again. A native Python package changed in place is not detected until then.
+- A snapshot-cache hit removes the build directory it had just captured. Failed builds
+  keep theirs, because the error message points at its logs.
+- Panning and zooming write one transform attribute and render nothing in React; pin hit
+  areas and label detail are redrawn only when the zoom crosses a power of two. Not
+  profiled in the Tauri window.
+- Layout bends, crossings and size are unchanged (998 and 1,996 bends, 0 crossings).
+- Waveform queries no longer hold the service lock. Decoded signals are kept for the 512
+  most recently used instead of only the last request, and only the shown value of a
+  busy pixel is formatted. The concurrency change has no automated test; the cache and
+  decimation do.
+- **86 Rust tests** and **45 frontend tests** pass; all **17 browser tests** pass on the
+  native toolchain; `tools/qualify.py --schematics` passes 86 of 86 native cases.
+  Docker mapped and post-layout qualification was not rerun for this change.
+
+## Small designs, several clocks and package imports at the gate stages
+
+Measured 9 October 2026 on the Docker image with
+`tools/qualify.py --schematics --mapped --physical`, which now builds, views and
+simulates every bundled example at Elaborated RTL, Mapped gates and Post-layout, beside
+the fixtures on both PDKs: **251 of 251 cases pass.**
+
+- **Post-layout: 19 of 20 builds complete**, including all 18 examples with no LibreLane
+  overrides. Eight of them were small enough that core utilization was lowered so the
+  power grid fits; `00_mux` goes from 30 % to 12.4 % on SKY130 and to 19.2 % on IHP
+  SG13G2. The twentieth, the `counter` fixture on IHP SG13G2, ended with 16 Magic DRC
+  errors. All 16 are Magic's pSD.i and pSD.j tap-spacing rules inside the eight
+  `sg13g2_tiehi` library cells, and IHP's KLayout deck reports 0 on the same layout.
+  IHP builds therefore no longer run Magic DRC (KLayout DRC still runs; `RUN_MAGIC_DRC`
+  in the overrides turns it back on); rebuilt that way, the fixture completes with 0
+  KLayout violations and its Icarus simulation passes.
+- **Verilator is refused for gate-level simulation.** Running all 18 examples under
+  Verilator showed that it does not model standard-cell flip-flops correctly on either
+  PDK. In isolation, three flip-flops in series (`sky130_fd_sc_hd__dfxtp_2`, and
+  `sg13g2_dfrbpq_1`) show `111` after one clock edge where Icarus shows `100`:
+  Verilator 5.042 updates the cells' sequential primitives at once and ignores their
+  delays, for any `UNIT_DELAY`. At Mapped gates `11_fifo`, `15_sync_ff` and `17_afifo`
+  failed for this reason, and the counter fixture passed only by its structure. IHP's
+  resettable flops are additionally held in reset, because Verilator leaves the delayed
+  signals of `\$recrem` timing checks undriven. A gate snapshot with a Verilator
+  configuration now stops with a message to use Icarus, and the application greys
+  such configurations out on Mapped gates and Post-layout schematics.
+- **Verilator at Elaborated RTL: 16 of 18 examples pass** (18 of 18 under Icarus).
+  Fifteen failed before this change because the generated `defparam` into the
+  testbench hierarchy is not accepted by Verilator; for Verilator the harness now
+  checks at time zero that the testbench gives the DUT the project's parameter values.
+  `07_comparator_N` and `08_alu` still fail: their checkers use
+  `always @(*) begin #0.1 ...`, which runs every 0.1 ns under Verilator and so samples
+  outputs in the instant the inputs change. That reading comes from the log pattern and
+  was not isolated further; the testbenches are left unchanged.
+- **Several clocks:** `17_afifo` with `wr_clk_i` and `rd_clk_i` completes Post-layout.
+  The generated constraints create both clocks and one asynchronous group, clock-tree
+  synthesis builds both trees, and none of the post-route timing reports lists a path
+  from one clock to the other. With `related_clocks` set the group statement is absent
+  and the flow also completes; the reports list only worst paths, so the presence of
+  cross-clock paths was not confirmed from them.
+- **Packages:** `08_alu`, whose testbench imports `alu_pkg`, now simulates as mapped
+  gates and at Post-layout.
+- **92 Rust tests** and **47 frontend tests** pass; all **17 browser tests** pass on the
+  native toolchain. The additional-clock controls have unit tests but no browser test.
+
+## Designs without a clock, and example project files
+
+Measured 9 October 2026 on the Docker image. The clock port of a physical configuration
+is now optional; the period stays required. Without a port LibreLane times the design
+against a virtual clock of that period and skips clock-tree synthesis.
+
+- `tools/qualify.py --schematics --mapped` now also builds, views and simulates every
+  bundled example as SKY130 mapped gates: **165 of 166 cases pass**, including the nine
+  combinational examples and both PDKs for the fixtures.
+- The one failure is `08_alu` mapped-gate simulation: its testbench imports `alu_pkg`,
+  a design source that a gate simulation does not compile. The build and schematic
+  pass. Not fixed.
+- `00_mux` Post-layout with no clock port completes (clock-tree synthesis skipped, nine
+  SDF corners), and both the plain and the SDF-annotated simulation run. It needs a
+  fixed 60 µm die: at the default relative sizing the power grid does not fit
+  (`PDN-0185`). That is a small-design limit, not a clockless one; the other examples
+  were not run at Post-layout.
+- All 18 examples carry a physical configuration, and examples and fixtures are stored
+  byte-for-byte as HDLView saves them. A Rust test checks this and Prettier no longer
+  covers those files.
+- **89 Rust tests** and **46 frontend tests** pass; all **17 browser tests** pass on the
+  native toolchain. The empty clock-port field has unit tests but no browser test.
+
+## Parameterised testbenches on gate netlists
+
+Measured 9 October 2026 on the Docker image. `examples/10_linear_feedback_shift_register`
+failed mapped-gate simulation with "parameter `N` not found", because its testbench sets
+`N` on the DUT and a netlist has no parameters. Gate simulations now compile a copy of
+the netlist whose top declares the built parameter values (read with pyslang from the
+captured sources) and checks each one.
+
+- The example builds and simulates as SKY130 mapped gates with Icarus.
+- With the testbench value changed to 4 against a build with 8, Icarus stops at
+  elaboration with "simple_lfsr was built with N = 8; the testbench sets another value".
+- SKY130 gate runs without SDF now define `UNIT_DELAY=#0.01` unless the configuration
+  sets it. The 58 Icarus "macro UNIT_DELAY undefined" warnings are gone, and the example
+  and the `counter` fixture pass mapped-gate simulation with Icarus. A configuration
+  with `UNIT_DELAY=#1` also passes. Post-layout without SDF was not rerun. (Verilator
+  gate runs recorded here at the time were later found unreliable; see the newest
+  section.)
+
 ## Representation and format reduction
 
 Measured 9 October 2026 after removing the Source RTL and Generic gates representations,

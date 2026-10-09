@@ -1,8 +1,11 @@
 {
+  "technology": "sky130",
   "schema_version": 3,
   "name": "10_linear_feedback_shift_register",
-  "technology": "sky130",
   "top": "simple_lfsr",
+  "simulation_sources": [
+    "dv/simple_lfsr_tb.sv"
+  ],
   "sources": [
     {
       "path": "rtl/simple_lfsr.sv",
@@ -10,20 +13,41 @@
     }
   ],
   "standard": "1800-2017",
+  "include_dirs": [],
+  "defines": {},
   "parameters": {
     "N": "8"
   },
-  "simulation_sources": ["dv/simple_lfsr_tb.sv"],
+  "assets": [],
   "simulations": {
     "rtl": {
       "simulator": "icarus",
       "top": "simple_lfsr_tb",
-      "dut_scope": ["simple_lfsr_tb", "i_simple_lfsr"],
-      "testbench": ["dv/simple_lfsr_tb.sv"],
+      "dut_scope": [
+        "simple_lfsr_tb",
+        "i_simple_lfsr"
+      ],
+      "testbench": [
+        "dv/simple_lfsr_tb.sv"
+      ],
+      "args": [],
       "stop_time": "2us",
+      "sdf": null,
+      "models": [],
       "defines": {
         "N": "8"
-      }
+      },
+      "timing_corner": null,
+      "delay_selection": null,
+      "use_snapshot_sdf": false
     }
+  },
+  "physical": {
+    "pdk": "sky130A",
+    "library": "sky130_fd_sc_hd",
+    "clock_port": "clk_i",
+    "clock_period_ns": 10.0,
+    "sdc": null,
+    "overrides": {}
   }
 }

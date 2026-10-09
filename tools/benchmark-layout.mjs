@@ -158,13 +158,21 @@ try {
           });
       }
       const worker = new Worker(`/assets/${workerFile}`, { type: "module" });
-      const start = performance.now();
+      let start = performance.now();
       const result = await new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           worker.terminate();
           reject(new Error("layout timeout"));
         }, 60000);
+        // The application keeps its worker; the second run is what navigation costs.
+        let layout_ms;
         worker.onmessage = ({ data }) => {
+          if (!data.error && layout_ms === undefined) {
+            layout_ms = performance.now() - start;
+            start = performance.now();
+            worker.postMessage({ sequence: 2, graph });
+            return;
+          }
           clearTimeout(timer);
           worker.terminate();
           data.error
@@ -173,7 +181,8 @@ try {
                 pattern,
                 nodes: 1000,
                 edges: 999,
-                layout_ms: performance.now() - start,
+                layout_ms,
+                repeat_layout_ms: performance.now() - start,
                 ...quality(data.result),
               });
         };

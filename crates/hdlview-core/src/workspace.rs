@@ -1087,6 +1087,28 @@ mod tests {
             .collect()
     }
     #[test]
+    fn bundled_projects_are_stored_exactly_as_saved() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut checked = 0;
+        for group in ["examples", "tests/fixtures"] {
+            for entry in fs::read_dir(root.join(group)).unwrap() {
+                let path = entry.unwrap().path().join("hdlview.project.json");
+                if !path.exists() {
+                    continue;
+                }
+                let project = open(&path).unwrap().project;
+                assert_eq!(
+                    String::from_utf8(serde_json::to_vec_pretty(&project).unwrap()).unwrap(),
+                    fs::read_to_string(&path).unwrap(),
+                    "{} would change when saved unchanged; save it in HDLView",
+                    path.display()
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 18);
+    }
+    #[test]
     fn an_empty_project_is_valid_but_cannot_be_built() {
         let d = tempfile::tempdir().unwrap();
         let empty = empty(d.path());

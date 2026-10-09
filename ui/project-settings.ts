@@ -15,8 +15,19 @@ export interface SimulationDraft
   unit: string;
 }
 interface PhysicalDraft
-  extends Omit<PhysicalConfig, "clock_period_ns" | "overrides"> {
+  extends Omit<
+    PhysicalConfig,
+    | "clock_port"
+    | "clock_period_ns"
+    | "additional_clocks"
+    | "related_clocks"
+    | "overrides"
+  > {
+  clock_port: string;
   clock_period_ns: string;
+  /** Port and period of each further clock. */
+  additional_clocks: SettingPair[];
+  related_clocks: boolean;
   overrides: string;
   utilization: string;
   density: string;
@@ -47,6 +58,8 @@ export function physicalDraft(
     ...technologyPreset(technology),
     clock_port: "",
     clock_period_ns: "",
+    additional_clocks: [],
+    related_clocks: false,
     overrides: "{}",
     utilization: "",
     density: "",
@@ -73,7 +86,12 @@ export function settingsDraft(project: Project): SettingsDraft {
     physical: physical
       ? {
           ...physical,
+          clock_port: physical.clock_port ?? "",
           clock_period_ns: String(physical.clock_period_ns),
+          additional_clocks: (physical.additional_clocks ?? []).map(
+            (clock): SettingPair => [clock.port, String(clock.period_ns)],
+          ),
+          related_clocks: physical.related_clocks ?? false,
           overrides: JSON.stringify(overrides, null, 2),
           utilization,
           density,
@@ -168,13 +186,31 @@ export function settingsProject(draft: SettingsDraft): Project {
         "physical.clock_period_ns",
         "Clock period must be a number",
       );
+    const clocks = physical.additional_clocks.map(([name, text]) => {
+      const port = name.trim(),
+        period_ns = Number(text);
+      if (!port || !text.trim() || !Number.isFinite(period_ns))
+        throw new SettingsDraftError(
+          "physical.additional_clocks",
+          "Enter a port and a period in ns for each clock, or remove the row",
+        );
+      return { port, period_ns };
+    });
     flow = {
       pdk: physical.pdk,
       library: physical.library,
-      clock_port: physical.clock_port,
+      // An empty field is a design without a clock.
+      clock_port: physical.clock_port.trim() || null,
       sdc: physical.sdc,
       overrides: values,
       clock_period_ns: period,
+      // Written only when used, so other project files stay as they are.
+      ...(clocks.length
+        ? {
+            additional_clocks: clocks,
+            ...(physical.related_clocks ? { related_clocks: true } : {}),
+          }
+        : {}),
     };
   }
   return {

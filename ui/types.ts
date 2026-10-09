@@ -13,8 +13,10 @@ export type Technology = "sky130" | "ihp_sg13g2";
 export interface PhysicalConfig {
   pdk: string;
   library: string;
-  clock_port: string;
+  clock_port: string | null;
   clock_period_ns: number;
+  additional_clocks?: { port: string; period_ns: number }[];
+  related_clocks?: boolean;
   sdc?: FileRef | null;
   overrides: Record<string, unknown>;
 }

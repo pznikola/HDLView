@@ -26,10 +26,16 @@ struct State {
     projects: BTreeMap<String, workspace::WorkspaceProject>,
     previews: BTreeMap<String, (String, String, workspace::ImportPreview)>,
     file_previews: BTreeMap<String, (String, String, file_management::ChangePreview)>,
-    snapshots: BTreeMap<String, DesignSnapshot>,
+    snapshots: BTreeMap<String, Arc<DesignSnapshot>>,
     runs: BTreeMap<String, SimulationRun>,
-    waves: BTreeMap<String, WaveProcess>,
+    waves: BTreeMap<String, Wave>,
     jobs: BTreeMap<String, (Job, CancelToken)>,
+}
+/// A waveform has its own lock: a slow query must not stall every other request.
+#[derive(Clone)]
+struct Wave {
+    info: Arc<WaveInfo>,
+    process: Arc<Mutex<WaveProcess>>,
 }
 #[derive(Clone)]
 pub struct Service {
@@ -62,7 +68,7 @@ impl Service {
             .cloned()
             .context("Open the project first")
     }
-    fn snapshot(&self, id: &str) -> Result<DesignSnapshot> {
+    fn snapshot(&self, id: &str) -> Result<Arc<DesignSnapshot>> {
         self.state
             .lock()
             .unwrap()
@@ -89,16 +95,14 @@ impl Service {
         let token = CancelToken::default();
         {
             let mut state = self.state.lock().unwrap();
-            if kind == "files" {
-                state
-                    .jobs
-                    .retain(|_, (job, _)| job.kind != "files" || job.status == "running");
-            }
+            // A finished job's result is read before the next one of its kind starts.
+            state
+                .jobs
+                .retain(|_, (job, _)| job.kind != kind || job.status == "running");
             if kind == "lint" {
                 if state.jobs.values().any(|(job, _)| job.status == "running") {
                     bail!("Linting paused while another job finishes")
                 }
-                state.jobs.retain(|_, (job, _)| job.kind != "lint");
             } else {
                 for (job, cancel) in state.jobs.values() {
                     if job.kind == "lint" {
@@ -151,7 +155,13 @@ impl Service {
         cancel.check()?;
         let mut s = self.state.lock().unwrap();
         s.waves.clear();
-        s.waves.insert(run.id.clone(), wave);
+        s.waves.insert(
+            run.id.clone(),
+            Wave {
+                info: Arc::new(wave.info.clone()),
+                process: Arc::new(Mutex::new(wave)),
+            },
+        );
         s.runs.insert(run.id.clone(), run.clone());
         Ok(serde_json::to_value(run)?)
     }
@@ -526,24 +536,24 @@ impl Service {
                 let rep: Representation = serde_json::from_value(v["representation"].clone())?;
                 let service = self.clone();
                 self.launch("build", move |c| {
-                    let snapshot = pipeline::compile(&path, p, rep, &service.store, c)?;
+                    let snapshot = Arc::new(pipeline::compile(&path, p, rep, &service.store, c)?);
                     service
                         .state
                         .lock()
                         .unwrap()
                         .snapshots
                         .insert(snapshot.id.clone(), snapshot.clone());
-                    Ok(serde_json::to_value(snapshot)?)
+                    Ok(serde_json::to_value(&*snapshot)?)
                 })
             }
             "open_snapshot" => {
-                let snapshot = read_snapshot(Path::new(string("path")?))?;
+                let snapshot = Arc::new(read_snapshot(Path::new(string("path")?))?);
                 self.state
                     .lock()
                     .unwrap()
                     .snapshots
                     .insert(snapshot.id.clone(), snapshot.clone());
-                Ok(serde_json::to_value(snapshot)?)
+                Ok(serde_json::to_value(&*snapshot)?)
             }
             "simulate" => {
                 let snapshot = self.snapshot(string("snapshot_id")?)?;
@@ -600,47 +610,36 @@ impl Service {
                     &options,
                 )?)?)
             }
-            "bindings" => {
-                let s = self.state.lock().unwrap();
-                let run = s
-                    .runs
-                    .get(string("run_id")?)
-                    .context("Open a simulation run")?;
-                let snapshot = s
-                    .snapshots
-                    .get(string("snapshot_id")?)
-                    .context("Open a snapshot")?;
-                let wave = s.waves.get(&run.id).context("Reopen this waveform")?;
-                let manualpath = run.directory.join("bindings.json");
-                let manual: BTreeMap<String, u32> = if manualpath.exists() {
-                    read_json(&manualpath)?
-                } else {
-                    BTreeMap::new()
+            "bindings" | "map_signal" => {
+                let (run, snapshot, info) = {
+                    let s = self.state.lock().unwrap();
+                    let run = s
+                        .runs
+                        .get(string("run_id")?)
+                        .context("Open a simulation run")?;
+                    let snapshot = s
+                        .snapshots
+                        .get(&run.snapshot_id)
+                        .context("Open a snapshot")?;
+                    let wave = s.waves.get(&run.id).context("Reopen this waveform")?;
+                    (run.clone(), snapshot.clone(), wave.info.clone())
                 };
-                Ok(serde_json::to_value(waveform::bindings(
-                    snapshot, run, &wave.info, &manual,
-                )?)?)
-            }
-            "map_signal" => {
-                let s = self.state.lock().unwrap();
-                let run = s
-                    .runs
-                    .get(string("run_id")?)
-                    .context("Open a simulation run")?;
-                let snapshot = s.snapshots.get(&run.snapshot_id).unwrap();
-                let wave = s.waves.get(&run.id).context("Reopen waveform")?;
                 let path = run.directory.join("bindings.json");
                 let mut manual: BTreeMap<String, u32> = if path.exists() {
                     read_json(&path)?
                 } else {
                     BTreeMap::new()
                 };
-                manual.insert(
-                    string("signal_id")?.into(),
-                    v["variable_id"].as_u64().context("variable_id required")? as u32,
-                );
-                let bindings = waveform::bindings(snapshot, run, &wave.info, &manual)?;
-                atomic_json(&path, &manual)?;
+                if action == "map_signal" {
+                    manual.insert(
+                        string("signal_id")?.into(),
+                        v["variable_id"].as_u64().context("variable_id required")? as u32,
+                    );
+                }
+                let bindings = waveform::bindings(&snapshot, &run, &info, &manual)?;
+                if action == "map_signal" {
+                    atomic_json(&path, &manual)?;
+                }
                 Ok(json!(bindings))
             }
             "close_run" => {
@@ -650,18 +649,22 @@ impl Service {
             "wave_info" => {
                 let s = self.state.lock().unwrap();
                 Ok(json!(
-                    s.waves
+                    *s.waves
                         .get(string("run_id")?)
                         .context("Open a waveform")?
                         .info
                 ))
             }
             "wave_window" | "wave_values" => {
-                let mut s = self.state.lock().unwrap();
-                let wave = s
+                let wave = self
+                    .state
+                    .lock()
+                    .unwrap()
                     .waves
-                    .get_mut(string("run_id")?)
-                    .context("Open a waveform")?;
+                    .get(string("run_id")?)
+                    .context("Open a waveform")?
+                    .process
+                    .clone();
                 let ids: Vec<u32> = serde_json::from_value(v["ids"].clone())?;
                 let start = string("start")?.parse::<u64>()?;
                 let end = if action == "wave_values" {
@@ -669,6 +672,7 @@ impl Service {
                 } else {
                     string("end")?.parse()?
                 };
+                let mut wave = wave.lock().unwrap_or_else(|e| e.into_inner());
                 Ok(json!(wave.window(
                     &ids,
                     start,
@@ -721,7 +725,7 @@ impl Service {
             "report" => {
                 let snapshot = self.snapshot(string("snapshot_id")?)?;
                 let path = PathBuf::from(string("path")?);
-                let physical = snapshot.physical_run.context("No physical run")?;
+                let physical = snapshot.physical_run.as_ref().context("No physical run")?;
                 if !physical.reports.contains(&path) {
                     bail!("Not a report from this physical run")
                 }
@@ -764,7 +768,7 @@ impl Service {
                         .lock()
                         .unwrap()
                         .snapshots
-                        .insert(snapshot.id.clone(), snapshot.clone());
+                        .insert(snapshot.id.clone(), Arc::new(snapshot.clone()));
                 }
                 Ok(json!(restored))
             }
@@ -833,7 +837,7 @@ mod lint_tests {
             .lock()
             .unwrap()
             .snapshots
-            .insert(snapshot.id.clone(), snapshot);
+            .insert(snapshot.id.clone(), Arc::new(snapshot));
         let mut candidate = workspace.project.clone();
         candidate.name = "changed".into();
         let result = service

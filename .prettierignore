@@ -10,3 +10,5 @@ node_modules/
 /rtl-visualizer-repos/
 /docs/THIRD_PARTY_NOTICES.md
 /docs/*-results.json
+/examples/*/hdlview.project.json
+/tests/fixtures/*/hdlview.project.json

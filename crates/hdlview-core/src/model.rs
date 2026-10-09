@@ -227,11 +227,25 @@ pub struct SimulationConfig {
     pub use_snapshot_sdf: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Clock {
+    pub port: String,
+    pub period_ns: f64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhysicalConfig {
     pub pdk: String,
     pub library: String,
-    pub clock_port: String,
+    /// `None` for a design without a clock: its paths are timed against a
+    /// virtual clock of `clock_period_ns`.
+    pub clock_port: Option<String>,
     pub clock_period_ns: f64,
+    /// Further clock ports, each with its own period.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_clocks: Vec<Clock>,
+    /// Time the paths between different clocks; they are asynchronous otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub related_clocks: bool,
     #[serde(default)]
     pub sdc: Option<FileRef>,
     #[serde(default)]

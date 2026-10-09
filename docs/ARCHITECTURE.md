@@ -4,31 +4,32 @@
 
 ## Boundaries
 
-| Module                           | Responsibility                                                                                       |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `model.rs`                       | Versioned project/profile/snapshot/run/graph contracts                                               |
-| `project.rs`                     | Validation, input capture, fingerprints, atomic publication                                          |
-| `workspace.rs`                   | Original file references, transactional import previews, scans/filelists, revision-checked documents |
-| `runner.rs`                      | Native/Docker execution, image resolution, manifests, cancellation                                   |
-| `pipeline.rs`                    | Frontends, representations, LibreLane, exact-netlist import, cache                                   |
-| `graph.rs`                       | Module/occurrence identity, connectivity, bounded views                                              |
-| `library.rs`                     | Library cell functions decoded from Liberty gate networks                                            |
-| `simulation.rs`                  | Icarus/Verilator harnesses, models, SDF diagnostics                                                  |
-| `waveform.rs`                    | Wellen storage and conservative declaration/range binding                                            |
-| `waveprocess.rs`                 | Killable parser subprocess and bounded waveform queries                                              |
-| `service.rs`                     | Application jobs, draft/project state, frontend requests                                             |
-| `editor_lint.rs`                 | Working-source context validation, temporary overlays, engine results, normalized UTF-16 ranges      |
-| `tools/editor_lint.py`           | Pinned pyslang diagnostic extraction, original macro/include locations and related notes             |
-| `ui/editor-lint.ts`              | Debounce, latest-request coordination, contexts and project-local lint preferences                   |
-| `tools/library_interfaces.py`    | Slang-derived blackbox interfaces from simulation models                                             |
-| `tools/collect_physical.py`      | Strict JSON conversion of non-finite physical metrics                                                |
-| `ui/components/Schematic.tsx`    | SVG renderer and view-scoped layout cache                                                            |
-| `ui/layout.worker.ts`            | Cancellable ELK layout                                                                               |
-| `ui/components/Waveform.tsx`     | Canvas rendering, row virtualization, bus expansion                                                  |
-| `ui/components/Workspace.tsx`    | Shared sidebar, full-width panel and constrained presentation sizing                                 |
-| `ui/project-workspace.tsx`       | Project wizard/imports, editor tabs, file operations, save and transition prompts                    |
-| `ui/components/SourceEditor.tsx` | Minimal CodeMirror extensions and per-tab editing history                                            |
-| `ui/projects.ts`                 | Typed core service requests and native picker boundary                                               |
+| Module                             | Responsibility                                                                                       |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `model.rs`                         | Versioned project/profile/snapshot/run/graph contracts                                               |
+| `project.rs`                       | Validation, input capture, fingerprints, atomic publication                                          |
+| `workspace.rs`                     | Original file references, transactional import previews, scans/filelists, revision-checked documents |
+| `runner.rs`                        | Native/Docker execution, image resolution, manifests, cancellation                                   |
+| `pipeline.rs`                      | Frontends, representations, LibreLane, exact-netlist import, cache                                   |
+| `graph.rs`                         | Module/occurrence identity, connectivity, bounded views                                              |
+| `library.rs`                       | Library cell functions decoded from Liberty gate networks                                            |
+| `simulation.rs`                    | Icarus/Verilator harnesses, models, SDF diagnostics                                                  |
+| `waveform.rs`                      | Wellen storage and conservative declaration/range binding                                            |
+| `waveprocess.rs`                   | Killable parser subprocess and bounded waveform queries                                              |
+| `service.rs`                       | Application jobs, draft/project state, frontend requests                                             |
+| `editor_lint.rs`                   | Working-source context validation, temporary overlays, engine results, normalized UTF-16 ranges      |
+| `tools/editor_lint.py`             | Pinned pyslang diagnostic extraction, original macro/include locations and related notes             |
+| `ui/editor-lint.ts`                | Debounce, latest-request coordination, contexts and project-local lint preferences                   |
+| `tools/library_interfaces.py`      | Slang-derived blackbox interfaces from simulation models                                             |
+| `tools/collect_physical.py`        | Strict JSON conversion of non-finite physical metrics                                                |
+| `tools/gate_simulation_context.py` | Built parameter values of the design top and package-only design sources, for gate simulations       |
+| `ui/components/Schematic.tsx`      | SVG renderer and view-scoped layout cache                                                            |
+| `ui/layout.worker.ts`              | Cancellable ELK layout                                                                               |
+| `ui/components/Waveform.tsx`       | Canvas rendering, row virtualization, bus expansion                                                  |
+| `ui/components/Workspace.tsx`      | Shared sidebar, full-width panel and constrained presentation sizing                                 |
+| `ui/project-workspace.tsx`         | Project wizard/imports, editor tabs, file operations, save and transition prompts                    |
+| `ui/components/SourceEditor.tsx`   | Minimal CodeMirror extensions and per-tab editing history                                            |
+| `ui/projects.ts`                   | Typed core service requests and native picker boundary                                               |
 
 `settings.rs` owns shared field validation, readiness warnings and non-publishing picker-reference resolution. `validate_project_settings` optionally compares a candidate with a snapshot's original project fingerprint. `resolve_settings_inputs` returns a normalized settings draft and references without writing or publishing them. The existing project update/save operations enforce shared validation; project-bound simulation rejects settings that differ from its captured snapshot before launching tools.
 
@@ -56,7 +57,7 @@ Bindings use explicit testbench/DUT root mapping and exact declaration/range mat
 
 The local JSON-lines CLI request has shape `{"action":"view","args":{"snapshot_id":"...","scope":["counter"]}}`; responses are `{"ok":true,"result":...}` or `{"ok":false,"error":"..."}`. The desktop's thin IPC adapter uses the same request service. It does not listen on a network socket.
 
-Build/import/simulation actions return job records. Poll `job`, cancel with `cancel`, and inspect retained `logs`. `wave_info`, `bindings`, `wave_window`, and `wave_values` query an open run. Timestamps cross the frontend boundary as decimal strings. The waveform subprocess is the same executable invoked with a private worker flag; it exits before desktop initialization and never requires a display.
+Build/import/simulation actions return job records. Poll `job`, cancel with `cancel`, and inspect retained `logs`. `wave_info`, `bindings`, `wave_window`, and `wave_values` query an open run; each waveform has its own lock, so a slow query delays only other queries of that waveform. Snapshots are shared, not copied, between requests. Timestamps cross the frontend boundary as decimal strings. The waveform subprocess is the same executable invoked with a private worker flag; it exits before desktop initialization and never requires a display.
 
 Project schema 3 is separate from artifact schema 2. Rooted references resolve against registered directories, cannot escape them, and are normalized into `inputs/__roots/ROOT/…` during capture. The snapshot retains original-source mappings but compilers see only captured local paths. Only these schema versions are read; empty projects validate independently from build readiness.
 
@@ -84,7 +85,7 @@ CodeMirror diagnostic effects preserve document history/selection; Problems is a
 explicit bottom-panel tab. Project-local lint toggles stay in presentation preferences
 outside project schema and compilation fingerprints.
 
-Views above 400 nodes use ELK layered layout with its documented [longest-path layering](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-layering-strategy.html) and minimal crossing thoroughness to bound interactive work; smaller views use network-simplex layering. Both use [Brandes–Köpf node placement](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-nodePlacement-strategy.html). Layout workers are cancellable; selection never causes layout.
+Views above 400 nodes use ELK layered layout with its documented [longest-path layering](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-layering-strategy.html) and minimal crossing thoroughness to bound interactive work; smaller views use network-simplex layering. Both use [Brandes–Köpf node placement](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-nodePlacement-strategy.html). One layout worker stays loaded between views; a superseded or cancelled layout terminates it and the next view starts a new one. Selection never causes layout.
 
 Project schema 3 records technology, shared simulation membership/headers, and design/simulation import records. `decode_project` reads only that schema: it registers configuration testbenches as simulation sources and merges duplicate import records, and unknown fields are errors. Resolved aliases are deduplicated on working-project load/update/save. A captured project is validated separately (`validate_captured`), because only it may name the reserved `__roots` input namespace. The selected snapshot chooses captured RTL or the exact generated netlist for an ordinary simulation configuration; SDF requires a gate snapshot and Icarus. Models are compiled only for gates. Snapshot/run identity and representation checks remain mandatory.
 
@@ -152,7 +153,8 @@ name is added after routing where its driver's first run has room. The presentat
 a pin retains its endpoint identity while a wire selects its entire visible exact slice.
 
 `Schematic.tsx` caches layouts and parent cameras by graph metadata/options and geometry
-version. Display themes, grid, inspection and selection are presentation state; only
+version. The camera is not React state: pan and zoom write the world transform and the
+grid pattern directly, and only a change of zoom level (a power of two) re-renders. Display themes, grid, inspection and selection are presentation state; only
 semantic view changes or full-wiring changes cause new layout. Local preferences live in
 `schematic-display.ts`, outside project configuration/fingerprints. SVG exports contain
 styles and labels at logical coordinates, without transient hit/selection/expand overlays.

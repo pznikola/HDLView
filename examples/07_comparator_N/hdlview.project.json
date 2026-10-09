@@ -1,8 +1,11 @@
 {
+  "technology": "sky130",
   "schema_version": 3,
   "name": "07_comparator_N",
-  "technology": "sky130",
   "top": "comparator_N",
+  "simulation_sources": [
+    "dv/comparator_N_tb.sv"
+  ],
   "sources": [
     {
       "path": "rtl/comparator.sv",
@@ -14,20 +17,41 @@
     }
   ],
   "standard": "1800-2017",
+  "include_dirs": [],
+  "defines": {},
   "parameters": {
     "N": "8"
   },
-  "simulation_sources": ["dv/comparator_N_tb.sv"],
+  "assets": [],
   "simulations": {
     "rtl": {
       "simulator": "icarus",
       "top": "comparator_N_tb",
-      "dut_scope": ["comparator_N_tb", "i_comparator_N"],
-      "testbench": ["dv/comparator_N_tb.sv"],
+      "dut_scope": [
+        "comparator_N_tb",
+        "i_comparator_N"
+      ],
+      "testbench": [
+        "dv/comparator_N_tb.sv"
+      ],
+      "args": [],
       "stop_time": "2us",
+      "sdf": null,
+      "models": [],
       "defines": {
         "N": "8"
-      }
+      },
+      "timing_corner": null,
+      "delay_selection": null,
+      "use_snapshot_sdf": false
     }
+  },
+  "physical": {
+    "pdk": "sky130A",
+    "library": "sky130_fd_sc_hd",
+    "clock_port": null,
+    "clock_period_ns": 10.0,
+    "sdc": null,
+    "overrides": {}
   }
 }

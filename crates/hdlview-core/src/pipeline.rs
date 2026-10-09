@@ -5,24 +5,37 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
 };
 
 fn q(path: &Path) -> Result<String> {
     yosys_quote(&path.to_string_lossy())
 }
+/// Whether Yosys has a command built in, asked once per toolchain identity.
+static BUILT_IN: Mutex<BTreeMap<(String, String), bool>> = Mutex::new(BTreeMap::new());
 fn plugin(r: &Runner, name: &str, command: &str) -> Result<Vec<String>> {
-    let help = r.run(
-        "yosys",
-        &[
-            "-Q".into(),
-            "-T".into(),
-            "-p".into(),
-            format!("help {command}"),
-        ],
-        &r.workspace,
-        "capability",
-    )?;
-    if !help.contains("No such command") {
+    let key = (r.toolchain_key(), command.to_owned());
+    let known = BUILT_IN.lock().unwrap().get(&key).copied();
+    let built_in = match known {
+        Some(answer) => answer,
+        None => {
+            let help = r.run(
+                "yosys",
+                &[
+                    "-Q".into(),
+                    "-T".into(),
+                    "-p".into(),
+                    format!("help {command}"),
+                ],
+                &r.workspace,
+                "capability",
+            )?;
+            let answer = !help.contains("No such command");
+            BUILT_IN.lock().unwrap().insert(key, answer);
+            answer
+        }
+    };
+    if built_in {
         return Ok(vec![]);
     }
     Ok(vec![
@@ -176,7 +189,7 @@ fn compile_directory(
     };
     atomic_json(&dir.join("toolchain.json"), &profile)?;
     let runner = Runner::new(profile.clone(), dir.clone(), cancel);
-    let tool_versions = runner.probe();
+    let tool_versions = runner.versions();
     runner.cancel.check()?;
     // Docker's immutable image covers compiler/plugin/model contents. External
     // native installations and mounted PDKs are conservatively rebuilt.
@@ -184,8 +197,18 @@ fn compile_directory(
         && matches!(profile.provider, Provider::Docker)
         && !profile.pdk_root.as_ref().is_some_and(|p| p.exists())
     {
+        static APPLICATION: OnceLock<String> = OnceLock::new();
+        let application = match APPLICATION.get() {
+            Some(known) => known.clone(),
+            None => {
+                let found = file_hash(&std::env::current_exe()?).context(
+                    "Fingerprint application; restart HDLView if its executable was rebuilt",
+                )?;
+                APPLICATION.get_or_init(|| found).clone()
+            }
+        };
         Some(hash(serde_json::to_vec(
-            &json!({"project":project,"profile":profile,"representation":representation,"inputs":inputs,"tools":tool_versions,"application":file_hash(&std::env::current_exe()?).context("Fingerprint application; restart HDLView if its executable was rebuilt")?,"origins":source_origins,"project_path":original_path}),
+            &json!({"project":project,"profile":profile,"representation":representation,"inputs":inputs,"tools":tool_versions,"application":application,"origins":source_origins,"project_path":original_path}),
         )?))
     } else {
         None
@@ -196,6 +219,8 @@ fn compile_directory(
             if let Ok(path) = read_json::<PathBuf>(&index) {
                 if let Ok(cached) = read_snapshot(&path) {
                     if cached.representation == representation && cached.input_hashes == inputs {
+                        // This build's capture is not needed; failed builds keep theirs for the logs.
+                        let _ = fs::remove_dir_all(&dir);
                         return Ok(cached);
                     }
                 }
@@ -221,8 +246,12 @@ fn compile_directory(
             )?
         }
         Representation::Mapped | Representation::PostLayout => {
-            let physical =
-                run_physical(&runner, &project, representation == Representation::Mapped)?;
+            let physical = run_physical(
+                &runner,
+                &project,
+                representation == Representation::Mapped,
+                &mut diagnostics,
+            )?;
             let state = &physical.state;
             let nl = state
                 .get("nl")
@@ -406,44 +435,109 @@ pub fn model_files(profile: &ToolchainProfile, p: &PhysicalConfig) -> Result<Vec
         _ => bail!("Unsupported PDK model preset"),
     }
 }
-fn run_physical(r: &Runner, p: &ProjectConfig, synthesis_only: bool) -> Result<PhysicalRun> {
-    let cfg = p
-        .physical
-        .as_ref()
-        .context("A physical configuration is required for mapped/post-layout builds")?;
-    identifier(&cfg.clock_port)?;
-    if !cfg.clock_period_ns.is_finite() || cfg.clock_period_ns <= 0.0 {
-        bail!("Clock period must be positive")
-    }
-    library_files(&r.profile, cfg)?;
-    let mut config = serde_json::Map::new();
-    config.insert("DESIGN_NAME".into(), json!(p.top));
-    config.insert(
-        "VERILOG_FILES".into(),
-        json!([r.workspace.join("normalized.v")]),
-    );
-    config.insert("CLOCK_PORT".into(), json!(cfg.clock_port));
-    config.insert("CLOCK_PERIOD".into(), json!(cfg.clock_period_ns));
-    config.insert("FP_CORE_UTIL".into(), json!(30));
-    config.insert("PL_TARGET_DENSITY_PCT".into(), json!(40));
-    if let Some(sdc) = &cfg.sdc {
-        config.insert(
-            "PNR_SDC_FILE".into(),
-            json!(r.workspace.join("inputs").join(sdc)),
-        );
-        config.insert(
-            "SIGNOFF_SDC_FILE".into(),
-            json!(r.workspace.join("inputs").join(sdc)),
-        );
-    }
-    for (k, v) in &cfg.overrides {
-        if ["DESIGN_NAME", "VERILOG_FILES", "PDK", "STD_CELL_LIBRARY"].contains(&k.as_str()) {
-            bail!("Reserved physical configuration key {k}")
+/// The clocks beside the primary one, checked: they need a primary clock, distinct
+/// simple port names and positive periods.
+pub(crate) fn additional_clocks(cfg: &PhysicalConfig) -> Result<&[Clock]> {
+    let mut ports = vec![cfg.clock_port.as_deref()];
+    for clock in &cfg.additional_clocks {
+        identifier(&clock.port)?;
+        if cfg.clock_port.is_none() {
+            bail!("Set the clock port before adding further clocks")
         }
-        config.insert(k.clone(), v.clone());
+        if ports.contains(&Some(clock.port.as_str())) {
+            bail!("Clock port {} is listed twice", clock.port)
+        }
+        if !clock.period_ns.is_finite() || clock.period_ns <= 0.0 {
+            bail!("Clock period of {} must be positive", clock.port)
+        }
+        ports.push(Some(&clock.port));
     }
-    let configpath = r.workspace.join("librelane.json");
-    atomic_json(&configpath, &config)?;
+    Ok(&cfg.additional_clocks)
+}
+/// The statements of LibreLane's `base.sdc` that do not name a clock.
+const SDC_COMMON: &str = r#"set_max_fanout $::env(MAX_FANOUT_CONSTRAINT) [current_design]
+if { [info exists ::env(MAX_TRANSITION_CONSTRAINT)] } {
+    set_max_transition $::env(MAX_TRANSITION_CONSTRAINT) [current_design]
+}
+if { [info exists ::env(MAX_CAPACITANCE_CONSTRAINT)] } {
+    set_max_capacitance $::env(MAX_CAPACITANCE_CONSTRAINT) [current_design]
+}
+if { ![info exists ::env(SYNTH_CLK_DRIVING_CELL)] } {
+    set ::env(SYNTH_CLK_DRIVING_CELL) $::env(SYNTH_DRIVING_CELL)
+}
+set_driving_cell \
+    -lib_cell [lindex [split $::env(SYNTH_DRIVING_CELL) "/"] 0] \
+    -pin [lindex [split $::env(SYNTH_DRIVING_CELL) "/"] 1] \
+    $data_inputs
+set_driving_cell \
+    -lib_cell [lindex [split $::env(SYNTH_CLK_DRIVING_CELL) "/"] 0] \
+    -pin [lindex [split $::env(SYNTH_CLK_DRIVING_CELL) "/"] 1] \
+    $clock_ports
+set_load [expr $::env(OUTPUT_CAP_LOAD) / 1000.0] [all_outputs]
+set_clock_uncertainty $::env(CLOCK_UNCERTAINTY_CONSTRAINT) [all_clocks]
+set_clock_transition $::env(CLOCK_TRANSITION_CONSTRAINT) [all_clocks]
+set_timing_derate -early [expr 1-[expr $::env(TIME_DERATING_CONSTRAINT) / 100]]
+set_timing_derate -late [expr 1+[expr $::env(TIME_DERATING_CONSTRAINT) / 100]]
+if { [info exists ::env(OPENLANE_SDC_IDEAL_CLOCKS)] && $::env(OPENLANE_SDC_IDEAL_CLOCKS) } {
+    unset_propagated_clock [all_clocks]
+} else {
+    set_propagated_clock [all_clocks]
+}
+"#;
+/// Constraints for several clocks. LibreLane's own `base.sdc` constrains only the
+/// first clock; this follows it, for every clock.
+fn clocks_sdc(clocks: &[(&str, f64)], related: bool) -> String {
+    let mut sdc = String::from("# Written by HDLView for a design with several clocks.\n");
+    for (port, period) in clocks {
+        sdc.push_str(&format!(
+            "create_clock [get_ports {{{port}}}] -name {{{port}}} -period {period}\n"
+        ));
+    }
+    if !related {
+        sdc.push_str("set_clock_groups -asynchronous");
+        for (port, _) in clocks {
+            sdc.push_str(&format!(" -group {{{port}}}"));
+        }
+        sdc.push('\n');
+    }
+    let names = clocks
+        .iter()
+        .map(|(port, _)| *port)
+        .collect::<Vec<_>>()
+        .join(" ");
+    sdc.push_str(&format!(
+        "set clock_ports [get_ports {{{names}}}]\nset data_inputs [all_inputs]\nforeach port $clock_ports {{\n    set index [lsearch $data_inputs $port]\n    if {{ $index >= 0 }} {{ set data_inputs [lreplace $data_inputs $index $index] }}\n}}\n"
+    ));
+    for (port, period) in clocks {
+        sdc.push_str(&format!(
+            "set io_delay [expr {period} * $::env(IO_DELAY_CONSTRAINT) / 100]\nset_input_delay $io_delay -clock [get_clocks {{{port}}}] -add_delay $data_inputs\nset_output_delay $io_delay -clock [get_clocks {{{port}}}] -add_delay [all_outputs]\n"
+        ));
+    }
+    sdc + SDC_COMMON
+}
+/// Room beside one strap set for row and site snapping.
+const STRAP_MARGIN: f64 = 1.25;
+/// The power grid needs a core at least one strap set wide and high. Returns a
+/// lower core utilization when the synthesized cells would get a smaller core.
+fn fitting_utilization(cell_area: f64, utilization: f64, resolved: &Value) -> Option<f64> {
+    let number = |key: String| {
+        let value = &resolved[key.as_str()];
+        value
+            .as_f64()
+            .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+    };
+    let straps = |axis: &str| {
+        Some(
+            number(format!("PDN_{axis}OFFSET"))?
+                + 2.0 * number(format!("PDN_{axis}WIDTH"))?
+                + number(format!("PDN_{axis}SPACING"))?,
+        )
+    };
+    let side = straps("V")?.max(straps("H")?) * STRAP_MARGIN;
+    let fitting = cell_area / (side * side) * 100.0;
+    (cell_area > 0.0 && fitting < utilization).then_some(fitting)
+}
+fn librelane_args(r: &Runner, cfg: &PhysicalConfig, tag: &str, to: Option<&str>) -> Vec<String> {
     let mut args = vec![
         "--manual-pdk".into(),
         "--pdk-root".into(),
@@ -455,13 +549,135 @@ fn run_physical(r: &Runner, p: &ProjectConfig, synthesis_only: bool) -> Result<P
         "--flow".into(),
         "Classic".into(),
         "--run-tag".into(),
-        "hdlview".into(),
+        tag.into(),
     ];
-    if synthesis_only {
-        args.extend(["--to".into(), "Yosys.Synthesis".into()]);
+    if let Some(step) = to {
+        args.extend(["--to".into(), step.into()]);
     }
-    args.push(configpath.to_string_lossy().into());
-    let outcome = if r.workspace.join("runs/hdlview/final/nl").is_dir() {
+    args.push(r.workspace.join("librelane.json").to_string_lossy().into());
+    args
+}
+fn run_physical(
+    r: &Runner,
+    p: &ProjectConfig,
+    synthesis_only: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<PhysicalRun> {
+    let cfg = p
+        .physical
+        .as_ref()
+        .context("A physical configuration is required for mapped/post-layout builds")?;
+    if let Some(port) = &cfg.clock_port {
+        identifier(port)?;
+    }
+    if !cfg.clock_period_ns.is_finite() || cfg.clock_period_ns <= 0.0 {
+        bail!("Clock period must be positive")
+    }
+    let mut clocks: Vec<(&str, f64)> = cfg
+        .clock_port
+        .iter()
+        .map(|port| (port.as_str(), cfg.clock_period_ns))
+        .collect();
+    clocks.extend(
+        additional_clocks(cfg)?
+            .iter()
+            .map(|clock| (clock.port.as_str(), clock.period_ns)),
+    );
+    library_files(&r.profile, cfg)?;
+    let mut config = serde_json::Map::new();
+    config.insert("DESIGN_NAME".into(), json!(p.top));
+    config.insert(
+        "VERILOG_FILES".into(),
+        json!([r.workspace.join("normalized.v")]),
+    );
+    // No port: LibreLane times the design against a virtual clock of the period.
+    config.insert(
+        "CLOCK_PORT".into(),
+        match clocks.as_slice() {
+            [] => Value::Null,
+            [(port, _)] => json!(port),
+            _ => json!(clocks.iter().map(|(port, _)| port).collect::<Vec<_>>()),
+        },
+    );
+    // Synthesis targets the fastest clock.
+    config.insert(
+        "CLOCK_PERIOD".into(),
+        json!(clocks
+            .iter()
+            .map(|(_, period)| *period)
+            .fold(cfg.clock_period_ns, f64::min)),
+    );
+    config.insert("FP_CORE_UTIL".into(), json!(30));
+    config.insert("PL_TARGET_DENSITY_PCT".into(), json!(40));
+    if cfg.pdk == "ihp-sg13g2" {
+        // Magic's rules for this PDK reject its own `sg13g2_tiehi` cell (pSD.i,
+        // pSD.j); IHP's KLayout deck is the reference and still runs.
+        config.insert("RUN_MAGIC_DRC".into(), json!(false));
+    }
+    let sdc = match &cfg.sdc {
+        Some(sdc) => Some(r.workspace.join("inputs").join(sdc)),
+        None if clocks.len() > 1 => {
+            let path = r.workspace.join("constraints.sdc");
+            fs::write(&path, clocks_sdc(&clocks, cfg.related_clocks))?;
+            Some(path)
+        }
+        None => None,
+    };
+    if let Some(sdc) = sdc {
+        config.insert("PNR_SDC_FILE".into(), json!(sdc));
+        config.insert("SIGNOFF_SDC_FILE".into(), json!(sdc));
+    }
+    for (k, v) in &cfg.overrides {
+        if ["DESIGN_NAME", "VERILOG_FILES", "PDK", "STD_CELL_LIBRARY"].contains(&k.as_str()) {
+            bail!("Reserved physical configuration key {k}")
+        }
+        config.insert(k.clone(), v.clone());
+    }
+    let configpath = r.workspace.join("librelane.json");
+    let published = r.workspace.join("runs/hdlview/final/nl").is_dir();
+    let floorplan_is_set = ["FP_SIZING", "DIE_AREA", "CORE_AREA"]
+        .iter()
+        .any(|key| cfg.overrides.contains_key(*key));
+    if !synthesis_only && !published && !floorplan_is_set {
+        // Synthesize first: only the cell area tells whether the default floorplan
+        // is large enough for the power grid.
+        atomic_json(&configpath, &config)?;
+        let args = librelane_args(r, cfg, "hdlview-size", Some("Yosys.Synthesis"));
+        r.run("librelane", &args, &r.workspace, "librelane-size")?;
+        let run = r.workspace.join("runs/hdlview-size");
+        let mut states = Vec::new();
+        collect_artifacts(&run, &mut states, &mut Vec::new())?;
+        let state = states
+            .iter()
+            .find(|path| {
+                path.parent()
+                    .is_some_and(|step| step.to_string_lossy().ends_with("-yosys-synthesis"))
+            })
+            .context("LibreLane synthesis left no state")?;
+        let area = read_json::<Value>(state)?["metrics"]["design__instance__area"].as_f64();
+        let utilization = config["FP_CORE_UTIL"].as_f64();
+        if let (Some(area), Some(utilization)) = (area, utilization) {
+            let resolved = read_json(&run.join("resolved.json"))?;
+            if let Some(fitting) = fitting_utilization(area, utilization, &resolved) {
+                config.insert("FP_CORE_UTIL".into(), json!(fitting));
+                diagnostics.push(Diagnostic {
+                    severity: "info".into(),
+                    message: format!("Design is small: core utilization lowered from {utilization} % to {fitting:.1} % so the power grid fits"),
+                    source: None,
+                });
+            }
+        }
+        // Only the area and the grid values were needed; the log stays under `logs`.
+        let _ = fs::remove_dir_all(&run);
+    }
+    atomic_json(&configpath, &config)?;
+    let args = librelane_args(
+        r,
+        cfg,
+        "hdlview",
+        synthesis_only.then_some("Yosys.Synthesis"),
+    );
+    let outcome = if published {
         let mut records = fs::read_dir(r.workspace.join("logs"))?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| {
@@ -560,4 +776,34 @@ fn collect_artifacts(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_small_design_gets_a_core_that_holds_the_power_straps() {
+        let pdn = json!({"PDN_VOFFSET":16.32,"PDN_VWIDTH":1.6,"PDN_VSPACING":1.7,"PDN_HOFFSET":"16.65","PDN_HWIDTH":1.6,"PDN_HSPACING":1.7});
+        let fitting = fitting_utilization(90.0, 30.0, &pdn).unwrap();
+        let side = (90.0 / (fitting / 100.0)).sqrt();
+        assert!(side > 21.55 && side < 40.0, "{side}");
+        assert_eq!(fitting_utilization(20_000.0, 30.0, &pdn), None);
+        assert_eq!(fitting_utilization(90.0, 30.0, &json!({})), None);
+    }
+    #[test]
+    fn several_clocks_are_each_constrained_and_asynchronous_unless_related() {
+        let clocks = [("wr_clk", 10.0), ("rd_clk", 12.5)];
+        let sdc = clocks_sdc(&clocks, false);
+        for statement in [
+            "create_clock [get_ports {wr_clk}] -name {wr_clk} -period 10\n",
+            "create_clock [get_ports {rd_clk}] -name {rd_clk} -period 12.5\n",
+            "set_clock_groups -asynchronous -group {wr_clk} -group {rd_clk}\n",
+            "set clock_ports [get_ports {wr_clk rd_clk}]\n",
+            "set_input_delay $io_delay -clock [get_clocks {rd_clk}] -add_delay $data_inputs\n",
+            "set_output_delay $io_delay -clock [get_clocks {wr_clk}] -add_delay [all_outputs]\n",
+        ] {
+            assert!(sdc.contains(statement), "{statement}");
+        }
+        assert!(!clocks_sdc(&clocks, true).contains("set_clock_groups"));
+    }
 }

@@ -6,7 +6,11 @@ use crate::{
     waveform,
 };
 use anyhow::{bail, Context, Result};
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 fn duration(s: &str) -> Result<&str> {
     crate::settings::duration(s)?;
@@ -69,18 +73,25 @@ pub fn simulate(
             .as_ref()
             .map(|p| snapshot.directory.join("inputs").join(p))
     };
-    if sdf.is_some() && (!gate || cfg.simulator != Simulator::Icarus) {
-        bail!("SDF runs require a gate snapshot and Icarus")
+    if gate && cfg.simulator == Simulator::Verilator {
+        // Measured on SKY130 and IHP SG13G2: Verilator updates the cells' sequential
+        // primitives at once and ignores their delays, so a value crosses every
+        // flip-flop of a shift register in one clock edge.
+        bail!("Gate-level simulation needs Icarus: Verilator does not model standard-cell flip-flops correctly. Choose a configuration that uses Icarus")
+    }
+    if sdf.is_some() && !gate {
+        bail!("SDF runs require a gate snapshot")
     }
     let dir = unique_dir(&snapshot.directory.join("simulations"), name)?;
     let r = Runner::new(snapshot.profile.clone(), snapshot.directory.clone(), cancel);
     let inputs = snapshot.directory.join("inputs");
     let trace = dir.join("trace.vcd");
     let mut files = if gate {
-        vec![snapshot
+        let netlist = snapshot
             .netlist
-            .clone()
-            .context("Gate snapshot lacks simulation netlist")?]
+            .as_ref()
+            .context("Gate snapshot lacks simulation netlist")?;
+        gate_design_files(&r, snapshot, netlist, &dir)?
     } else {
         snapshot
             .project
@@ -115,6 +126,9 @@ pub fn simulate(
             .is_some_and(|p| p.pdk == "sky130A")
     {
         defines.insert("FUNCTIONAL".into(), "1".into());
+        // Clock-to-Q delay of the functional flop models. Without one, flops behind
+        // different clock-tree depths update in the wrong order.
+        defines.entry("UNIT_DELAY".into()).or_insert("#0.01".into());
     }
     let mut diagnostics = Vec::new();
     let mut dut_scope = cfg.dut_scope.clone();
@@ -127,6 +141,8 @@ pub fn simulate(
         dut_scope.insert(0, "hdlview_sim".into());
         let specialization = if gate {
             String::new()
+        } else if cfg.simulator == Simulator::Verilator {
+            verilator_parameter_checks(&snapshot.project, cfg)?
         } else {
             rtl_parameter_overrides(&snapshot.project, cfg)?
         };
@@ -357,23 +373,140 @@ fn json_manifest(
     )
 }
 
-/// Match the RTL simulator's specialization at the DUT instance, not the testbench top.
-pub(crate) fn rtl_parameter_overrides(
-    project: &ProjectConfig,
+/// What a gate simulation compiles in place of the design sources: the design's
+/// package-only sources, which a testbench may import, then the netlist. When the
+/// top has parameters the netlist is a copy that declares the values the design
+/// was built with, so a testbench that sets them on the DUT still compiles.
+fn gate_design_files(
+    r: &Runner,
+    snapshot: &DesignSnapshot,
+    netlist: &Path,
+    dir: &Path,
+) -> Result<Vec<PathBuf>> {
+    let project = &snapshot.project;
+    let inputs = snapshot.directory.join("inputs");
+    let script = dir.join("gate_simulation_context.py");
+    fs::write(
+        &script,
+        include_str!("../../../tools/gate_simulation_context.py"),
+    )?;
+    let declarations = dir.join("top-parameters.vh");
+    let packages = dir.join("packages.json");
+    let mut args = vec![
+        script.to_string_lossy().into_owned(),
+        declarations.to_string_lossy().into_owned(),
+        packages.to_string_lossy().into_owned(),
+        format!("--std={}", project.standard),
+        "--top".into(),
+        identifier(&project.top)?.into(),
+    ];
+    for directory in &project.include_dirs {
+        args.extend(["-I".into(), inputs.join(directory).to_string_lossy().into()]);
+    }
+    for (key, value) in &project.defines {
+        args.extend(["-D".into(), format!("{key}={value}")]);
+    }
+    for (key, value) in &project.parameters {
+        args.extend(["-G".into(), format!("{key}={value}")]);
+    }
+    args.extend(
+        project
+            .sources
+            .iter()
+            .map(|source| inputs.join(&source.path).to_string_lossy().into_owned()),
+    );
+    r.run("python3", &args, dir, "gate-simulation-context")?;
+    let mut files: Vec<PathBuf> = read_json(&packages)?;
+    let declarations = fs::read_to_string(declarations)?;
+    if declarations.is_empty() {
+        files.push(netlist.into());
+    } else {
+        let path = dir.join("netlist.v");
+        fs::write(
+            &path,
+            declare_in_top(&fs::read_to_string(netlist)?, &project.top, &declarations)?,
+        )?;
+        files.push(path);
+    }
+    Ok(files)
+}
+/// Insert declarations after the port list of `module top (...);`.
+fn declare_in_top(netlist: &str, top: &str, declarations: &str) -> Result<String> {
+    let mut offset = 0;
+    for line in netlist.split_inclusive('\n') {
+        let name = line
+            .trim_start()
+            .strip_prefix("module")
+            .filter(|rest| rest.starts_with(char::is_whitespace))
+            .map(|rest| {
+                rest.trim_start()
+                    .split(['(', ';', ' ', '\t', '\n', '\r'])
+                    .next()
+            });
+        if name == Some(Some(top)) {
+            let end = offset
+                + netlist[offset..]
+                    .find(';')
+                    .context("Netlist top has no port list")?
+                + 1;
+            return Ok(format!(
+                "{}\n{declarations}{}",
+                &netlist[..end],
+                &netlist[end..]
+            ));
+        }
+        offset += line.len();
+    }
+    bail!("Netlist does not define {top}")
+}
+/// The project's parameters at the DUT instance, not the testbench top.
+fn dut_parameters<'a>(
+    project: &'a ProjectConfig,
     config: &SimulationConfig,
-) -> Result<String> {
+) -> Result<Vec<(String, &'a str)>> {
     if config.dut_scope.first() != Some(&config.top) {
         bail!("DUT scope must begin with the testbench top")
     }
     let target = config.dut_scope.join(".");
-    let mut overrides = String::new();
-    for (key, value) in &project.parameters {
-        if value.contains([';', '\n', '\r']) {
-            bail!("Invalid parameter expression")
-        }
-        overrides.push_str(&format!("defparam {target}.{key} = {value};\n"));
-    }
-    Ok(overrides)
+    project
+        .parameters
+        .iter()
+        .map(|(key, value)| {
+            if value.contains([';', '\n', '\r']) {
+                bail!("Invalid parameter expression")
+            }
+            Ok((format!("{target}.{key}"), value.as_str()))
+        })
+        .collect()
+}
+/// Match the RTL simulator's specialization.
+pub(crate) fn rtl_parameter_overrides(
+    project: &ProjectConfig,
+    config: &SimulationConfig,
+) -> Result<String> {
+    Ok(dut_parameters(project, config)?
+        .iter()
+        .map(|(parameter, value)| format!("defparam {parameter} = {value};\n"))
+        .collect())
+}
+/// Verilator rejects a `defparam` into the testbench hierarchy. The testbench must
+/// set the project's values itself; anything else stops the run at time zero.
+fn verilator_parameter_checks(
+    project: &ProjectConfig,
+    config: &SimulationConfig,
+) -> Result<String> {
+    Ok(dut_parameters(project, config)?
+        .iter()
+        .map(|(parameter, value)| {
+            let message = format!(
+                "{parameter} must be {value}, as in Project Settings: Verilator cannot override it, so set it in the testbench"
+            );
+            format!(
+                "  initial if ({parameter} != ({value})) $fatal(1, {});\n",
+                verilog_string(&message)
+            )
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -381,6 +514,32 @@ mod tests {
     use super::*;
     fn trace(path: &std::path::Path, scope: &str) {
         fs::write(path, format!("$timescale 1 ns $end\n$scope module tb $end\n$scope module {scope} $end\n$var wire 1 ! data $end\n$upscope $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n")).unwrap();
+    }
+    #[test]
+    fn verilator_checks_the_project_parameters_it_cannot_override() {
+        let project: ProjectConfig = serde_json::from_value(serde_json::json!({
+            "schema_version":3,"name":"p","top":"top","sources":[],"parameters":{"N":"8"},
+            "simulations":{"shared":{"simulator":"verilator","top":"tb","dut_scope":["tb","dut"],"testbench":[]}}
+        })).unwrap();
+        let config = &project.simulations["shared"];
+        assert_eq!(
+            rtl_parameter_overrides(&project, config).unwrap(),
+            "defparam tb.dut.N = 8;\n"
+        );
+        assert_eq!(
+            verilator_parameter_checks(&project, config).unwrap(),
+            "  initial if (tb.dut.N != (8)) $fatal(1, \"tb.dut.N must be 8, as in Project Settings: Verilator cannot override it, so set it in the testbench\");\n"
+        );
+    }
+    #[test]
+    fn parameters_are_declared_in_the_netlist_top_only() {
+        let netlist =
+            "module top_cell(a);\nendmodule\nmodule top(a,\n  b);\n  input a;\nendmodule\n";
+        assert_eq!(
+            declare_in_top(netlist, "top", "  parameter int N = 8;\n").unwrap(),
+            "module top_cell(a);\nendmodule\nmodule top(a,\n  b);\n  parameter int N = 8;\n\n  input a;\nendmodule\n"
+        );
+        assert!(declare_in_top(netlist, "other", "").is_err());
     }
     #[test]
     fn collects_only_unambiguous_current_run_traces() {

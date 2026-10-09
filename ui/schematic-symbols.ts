@@ -37,7 +37,7 @@ interface PinAnchor {
   /** A constant or undriven input: nothing is routed to this pin. */
   unwired?: boolean;
 }
-interface SymbolGeometry {
+export interface SymbolGeometry {
   width: number;
   height: number;
   paths: SymbolPath[];

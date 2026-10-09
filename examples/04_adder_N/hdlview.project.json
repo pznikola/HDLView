@@ -1,8 +1,11 @@
 {
+  "technology": "sky130",
   "schema_version": 3,
   "name": "04_adder_N",
-  "technology": "sky130",
   "top": "adder_N",
+  "simulation_sources": [
+    "dv/adder_N_tb.sv"
+  ],
   "sources": [
     {
       "path": "rtl/adder_N.sv",
@@ -14,20 +17,41 @@
     }
   ],
   "standard": "1800-2017",
+  "include_dirs": [],
+  "defines": {},
   "parameters": {
     "N": "8"
   },
-  "simulation_sources": ["dv/adder_N_tb.sv"],
+  "assets": [],
   "simulations": {
     "rtl": {
       "simulator": "icarus",
       "top": "adder_N_tb",
-      "dut_scope": ["adder_N_tb", "i_adder_N"],
-      "testbench": ["dv/adder_N_tb.sv"],
+      "dut_scope": [
+        "adder_N_tb",
+        "i_adder_N"
+      ],
+      "testbench": [
+        "dv/adder_N_tb.sv"
+      ],
+      "args": [],
       "stop_time": "2us",
+      "sdf": null,
+      "models": [],
       "defines": {
         "N": "8"
-      }
+      },
+      "timing_corner": null,
+      "delay_selection": null,
+      "use_snapshot_sdf": false
     }
+  },
+  "physical": {
+    "pdk": "sky130A",
+    "library": "sky130_fd_sc_hd",
+    "clock_port": null,
+    "clock_period_ns": 10.0,
+    "sdc": null,
+    "overrides": {}
   }
 }

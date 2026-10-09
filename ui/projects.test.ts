@@ -21,6 +21,14 @@ describe("shared simulation configurations", () => {
     ] as const)
       expect(canSimulate(shared, { representation, sdf: {} })).toBe(true);
   });
+  it("offers Verilator for RTL only", () => {
+    const verilator = { ...shared, simulator: "verilator" as const };
+    expect(
+      canSimulate(verilator, { representation: "elaborated", sdf: {} }),
+    ).toBe(true);
+    for (const representation of ["mapped", "post_layout"] as const)
+      expect(canSimulate(verilator, { representation, sdf: {} })).toBe(false);
+  });
   it("requires a gate snapshot, Icarus, and an available SDF selection", () => {
     const config = { ...shared, use_snapshot_sdf: true };
     expect(canSimulate(config)).toBe(false);

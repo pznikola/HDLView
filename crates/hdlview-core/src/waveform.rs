@@ -15,8 +15,12 @@ pub struct WaveStore {
     times: Vec<u64>,
     refs: Vec<VarRef>,
     pub info: WaveInfo,
-    loaded: HashMap<WSignalRef, Signal>,
+    /// Decoded signals with the request that last used each.
+    loaded: HashMap<WSignalRef, (u64, Signal)>,
+    requests: u64,
 }
+/// Rows on screen and the schematic's cursor values alternate; both stay decoded.
+const LOADED_SIGNALS: usize = 512;
 fn walk(h: &Hierarchy, scope: ScopeRef, path: &[String], out: &mut Vec<(Vec<String>, VarRef)>) {
     let mut p = path.to_vec();
     p.push(h[scope].name(h).into());
@@ -95,6 +99,7 @@ impl WaveStore {
             refs: vars.into_iter().map(|(_, r)| r).collect(),
             info,
             loaded: HashMap::new(),
+            requests: 0,
         })
     }
     pub fn window(
@@ -119,7 +124,7 @@ impl WaveStore {
                     .context("Unknown waveform variable")
             })
             .collect::<Result<_>>()?;
-        self.loaded.retain(|id, _| refs.contains(id));
+        self.requests += 1;
         let missing: Vec<_> = refs
             .iter()
             .filter(|r| !self.loaded.contains_key(r))
@@ -128,7 +133,18 @@ impl WaveStore {
             .into_iter()
             .collect();
         for s in self.source.load_signals(&missing, &self.hierarchy, true) {
-            self.loaded.insert(s.signal_ref(), s);
+            self.loaded.insert(s.signal_ref(), (self.requests, s));
+        }
+        for r in &refs {
+            if let Some((used, _)) = self.loaded.get_mut(r) {
+                *used = self.requests;
+            }
+        }
+        if self.loaded.len() > LOADED_SIGNALS {
+            let mut uses: Vec<u64> = self.loaded.values().map(|(used, _)| *used).collect();
+            uses.sort_unstable_by(|a, b| b.cmp(a));
+            let oldest_kept = uses[LOADED_SIGNALS - 1];
+            self.loaded.retain(|_, (used, _)| *used >= oldest_kept);
         }
         let pixels = pixels.clamp(1, 8192) as u128;
         let span = (end as u128 - start as u128).max(1);
@@ -137,7 +153,21 @@ impl WaveStore {
             .zip(refs)
             .map(|(id, r)| {
                 let mut result = Vec::new();
-                if let Some(sig) = self.loaded.get(&r) {
+                if let Some((_, sig)) = self.loaded.get(&r) {
+                    let value = |idx| {
+                        let offset = sig.get_offset(idx).unwrap();
+                        sig.get_value_at(&offset, 0).to_string()
+                    };
+                    // Only the last transition of a busy pixel is shown, so only it is formatted.
+                    let mut busy = None;
+                    let settle = |result: &mut Vec<Transition>, busy: &mut Option<(u64, _)>| {
+                        if let (Some((time, idx)), Some(last)) = (busy.take(), result.last_mut()) {
+                            *last = Transition {
+                                time: time.to_string(),
+                                value: format!("activity:{}", value(idx)),
+                            };
+                        }
+                    };
                     let indices = sig.time_indices();
                     let first = indices
                         .partition_point(|i| self.times[*i as usize] < start)
@@ -149,30 +179,25 @@ impl WaveStore {
                         if t > end {
                             break;
                         }
-                        let offset = sig.get_offset(idx).unwrap();
-                        let value = sig.get_value_at(&offset, 0).to_string();
                         let bucket =
                             ((t.max(start) as u128 - start as u128) * pixels / span).min(pixels);
                         if previous_bucket == Some(bucket) {
                             bucket_count += 1;
                             if bucket_count > 1 {
-                                if let Some(last) = result.last_mut() {
-                                    *last = Transition {
-                                        time: t.to_string(),
-                                        value: format!("activity:{value}"),
-                                    };
-                                }
+                                busy = Some((t, idx));
                                 continue;
                             }
                         } else {
+                            settle(&mut result, &mut busy);
                             previous_bucket = Some(bucket);
                             bucket_count = 0;
                         }
                         result.push(Transition {
                             time: t.to_string(),
-                            value,
+                            value: value(idx),
                         });
                     }
+                    settle(&mut result, &mut busy);
                 }
                 WaveRow {
                     id: *id,
@@ -356,5 +381,26 @@ mod tests {
         let rows = w.window(&[0, 1], 0, 9007199254740993, 100).unwrap();
         assert_eq!(rows[0].transitions.last().unwrap().time, "9007199254740993");
         assert_eq!(rows[1].transitions.last().unwrap().value, "1");
+    }
+    #[test]
+    fn busy_pixels_show_their_last_value_and_other_requests_keep_rows_decoded() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("test.vcd");
+        let mut text = String::from("$timescale 1 ps $end\n$scope module tb $end\n$var wire 1 ! a $end\n$var wire 1 \" b $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n0\"\n");
+        for time in 1..=9 {
+            text.push_str(&format!("#{time}\n{}!\n", time % 2));
+        }
+        text.push_str("#1000\n0!\n1\"\n");
+        std::fs::write(&p, text).unwrap();
+        let mut w = WaveStore::open(&p).unwrap();
+        let rows = w.window(&[0], 0, 1000, 10).unwrap();
+        let shown: Vec<_> = rows[0]
+            .transitions
+            .iter()
+            .map(|t| (t.time.as_str(), t.value.as_str()))
+            .collect();
+        assert_eq!(shown, [("0", "0"), ("9", "activity:1"), ("1000", "0")]);
+        w.values(&[1], 1000).unwrap();
+        assert_eq!(w.loaded.len(), 2);
     }
 }

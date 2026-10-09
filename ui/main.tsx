@@ -255,7 +255,7 @@ function App() {
     const current = generation.current;
     const [info, binding] = await Promise.all([
       api<WaveInfo>("wave_info", { run_id: r.id }),
-      api<Binding[]>("bindings", { snapshot_id: r.snapshot_id, run_id: r.id }),
+      api<Binding[]>("bindings", { run_id: r.id }),
     ]);
     if (current !== generation.current) return;
     setRun(r);
@@ -404,11 +404,11 @@ function App() {
     try {
       if (
         ["mapped", "post_layout"].includes(rep) &&
-        (!project?.physical?.clock_port || !project.physical.clock_period_ns)
+        !project?.physical?.clock_period_ns
       ) {
         working.setSettingsSection("physical");
         throw new Error(
-          "Set technology, clock port, and clock period in Project Settings before a mapped or physical build.",
+          "Set technology and clock period in Project Settings before a mapped or physical build.",
         );
       }
       if (!(await working.beforeBuild())) return;

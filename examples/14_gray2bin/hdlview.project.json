@@ -1,8 +1,11 @@
 {
+  "technology": "sky130",
   "schema_version": 3,
   "name": "14_gray2bin",
-  "technology": "sky130",
   "top": "gray2bin",
+  "simulation_sources": [
+    "dv/gray2bin_tb.sv"
+  ],
   "sources": [
     {
       "path": "rtl/gray2bin.sv",
@@ -10,20 +13,41 @@
     }
   ],
   "standard": "1800-2017",
+  "include_dirs": [],
+  "defines": {},
   "parameters": {
     "N": "6"
   },
-  "simulation_sources": ["dv/gray2bin_tb.sv"],
+  "assets": [],
   "simulations": {
     "rtl": {
       "simulator": "icarus",
       "top": "gray2bin_tb",
-      "dut_scope": ["gray2bin_tb", "i_gray2bin"],
-      "testbench": ["dv/gray2bin_tb.sv"],
+      "dut_scope": [
+        "gray2bin_tb",
+        "i_gray2bin"
+      ],
+      "testbench": [
+        "dv/gray2bin_tb.sv"
+      ],
+      "args": [],
       "stop_time": "2us",
+      "sdf": null,
+      "models": [],
       "defines": {
         "N": "6"
-      }
+      },
+      "timing_corner": null,
+      "delay_selection": null,
+      "use_snapshot_sdf": false
     }
+  },
+  "physical": {
+    "pdk": "sky130A",
+    "library": "sky130_fd_sc_hd",
+    "clock_port": null,
+    "clock_period_ns": 10.0,
+    "sdc": null,
+    "overrides": {}
   }
 }

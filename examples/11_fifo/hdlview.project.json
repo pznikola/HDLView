@@ -1,8 +1,11 @@
 {
+  "technology": "sky130",
   "schema_version": 3,
   "name": "11_fifo",
-  "technology": "sky130",
   "top": "fifo",
+  "simulation_sources": [
+    "dv/fifo_tb.sv"
+  ],
   "sources": [
     {
       "path": "rtl/fifo.sv",
@@ -10,22 +13,43 @@
     }
   ],
   "standard": "1800-2017",
+  "include_dirs": [],
+  "defines": {},
   "parameters": {
-    "DSIZE": "8",
-    "ASIZE": "6"
+    "ASIZE": "6",
+    "DSIZE": "8"
   },
-  "simulation_sources": ["dv/fifo_tb.sv"],
+  "assets": [],
   "simulations": {
     "rtl": {
       "simulator": "icarus",
       "top": "fifo_tb",
-      "dut_scope": ["fifo_tb", "u_fifo"],
-      "testbench": ["dv/fifo_tb.sv"],
+      "dut_scope": [
+        "fifo_tb",
+        "u_fifo"
+      ],
+      "testbench": [
+        "dv/fifo_tb.sv"
+      ],
+      "args": [],
       "stop_time": "2us",
+      "sdf": null,
+      "models": [],
       "defines": {
-        "DSIZE": "8",
-        "ASIZE": "6"
-      }
+        "ASIZE": "6",
+        "DSIZE": "8"
+      },
+      "timing_corner": null,
+      "delay_selection": null,
+      "use_snapshot_sdf": false
     }
+  },
+  "physical": {
+    "pdk": "sky130A",
+    "library": "sky130_fd_sc_hd",
+    "clock_port": "clk_i",
+    "clock_period_ns": 10.0,
+    "sdc": null,
+    "overrides": {}
   }
 }

@@ -2,21 +2,40 @@
   "schema_version": 3,
   "name": "Verilog range direction",
   "top": "bridge",
-  "standard": "1364-2005",
+  "simulation_sources": [
+    "tb.sv"
+  ],
   "sources": [
     {
       "path": "bridge.v",
       "language": "verilog"
     }
   ],
+  "standard": "1364-2005",
+  "include_dirs": [],
+  "defines": {},
+  "parameters": {},
+  "assets": [],
   "simulations": {
     "rtl": {
       "simulator": "icarus",
       "top": "tb",
-      "dut_scope": ["tb", "dut"],
-      "testbench": ["tb.sv"],
-      "stop_time": "100ns"
+      "dut_scope": [
+        "tb",
+        "dut"
+      ],
+      "testbench": [
+        "tb.sv"
+      ],
+      "args": [],
+      "stop_time": "100ns",
+      "sdf": null,
+      "models": [],
+      "defines": {},
+      "timing_corner": null,
+      "delay_selection": null,
+      "use_snapshot_sdf": false
     }
   },
-  "simulation_sources": ["tb.sv"]
+  "physical": null
 }

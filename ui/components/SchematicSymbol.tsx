@@ -1,20 +1,25 @@
 import { pinSelected, pinTarget, type ConnectionTarget } from "../selection";
 import type { Node } from "../types";
-import { pinTitle, symbolGeometry } from "../schematic-symbols";
+import {
+  pinTitle,
+  symbolGeometry,
+  type SymbolGeometry,
+} from "../schematic-symbols";
 export function SchematicSymbol({
   node,
+  geometry = symbolGeometry(node),
   selected,
   onSignal,
   target,
   scale = 1,
 }: {
   node: Node;
+  geometry?: SymbolGeometry;
   selected?: string;
   onSignal?: (ids: string[], target: ConnectionTarget) => void;
   target?: ConnectionTarget;
   scale?: number;
 }) {
-  const geometry = symbolGeometry(node);
   return (
     <>
       {geometry.paths.map((path, index) => (

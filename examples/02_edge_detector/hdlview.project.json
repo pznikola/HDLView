@@ -1,8 +1,11 @@
 {
+  "technology": "sky130",
   "schema_version": 3,
   "name": "02_edge_detector",
-  "technology": "sky130",
   "top": "edge_detector",
+  "simulation_sources": [
+    "dv/edge_detector_tb.sv"
+  ],
   "sources": [
     {
       "path": "rtl/edge_detector.sv",
@@ -10,16 +13,37 @@
     }
   ],
   "standard": "1800-2017",
+  "include_dirs": [],
+  "defines": {},
   "parameters": {},
-  "simulation_sources": ["dv/edge_detector_tb.sv"],
+  "assets": [],
   "simulations": {
     "rtl": {
       "simulator": "icarus",
       "top": "edge_detector_tb",
-      "dut_scope": ["edge_detector_tb", "i_edge_detector"],
-      "testbench": ["dv/edge_detector_tb.sv"],
+      "dut_scope": [
+        "edge_detector_tb",
+        "i_edge_detector"
+      ],
+      "testbench": [
+        "dv/edge_detector_tb.sv"
+      ],
+      "args": [],
       "stop_time": "2us",
-      "defines": {}
+      "sdf": null,
+      "models": [],
+      "defines": {},
+      "timing_corner": null,
+      "delay_selection": null,
+      "use_snapshot_sdf": false
     }
+  },
+  "physical": {
+    "pdk": "sky130A",
+    "library": "sky130_fd_sc_hd",
+    "clock_port": "clk_i",
+    "clock_period_ns": 10.0,
+    "sdc": null,
+    "overrides": {}
   }
 }

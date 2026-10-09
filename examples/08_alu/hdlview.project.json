@@ -1,8 +1,11 @@
 {
+  "technology": "sky130",
   "schema_version": 3,
   "name": "08_alu",
-  "technology": "sky130",
   "top": "alu",
+  "simulation_sources": [
+    "dv/alu_tb.sv"
+  ],
   "sources": [
     {
       "path": "rtl/alu_pkg.sv",
@@ -34,20 +37,41 @@
     }
   ],
   "standard": "1800-2017",
+  "include_dirs": [],
+  "defines": {},
   "parameters": {
     "N": "8"
   },
-  "simulation_sources": ["dv/alu_tb.sv"],
+  "assets": [],
   "simulations": {
     "rtl": {
       "simulator": "icarus",
       "top": "alu_tb",
-      "dut_scope": ["alu_tb", "i_alu"],
-      "testbench": ["dv/alu_tb.sv"],
+      "dut_scope": [
+        "alu_tb",
+        "i_alu"
+      ],
+      "testbench": [
+        "dv/alu_tb.sv"
+      ],
+      "args": [],
       "stop_time": "2us",
+      "sdf": null,
+      "models": [],
       "defines": {
         "N": "8"
-      }
+      },
+      "timing_corner": null,
+      "delay_selection": null,
+      "use_snapshot_sdf": false
     }
+  },
+  "physical": {
+    "pdk": "sky130A",
+    "library": "sky130_fd_sc_hd",
+    "clock_port": null,
+    "clock_period_ns": 10.0,
+    "sdc": null,
+    "overrides": {}
   }
 }

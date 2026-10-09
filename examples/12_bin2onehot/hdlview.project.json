@@ -1,8 +1,11 @@
 {
+  "technology": "sky130",
   "schema_version": 3,
   "name": "12_bin2onehot",
-  "technology": "sky130",
   "top": "bin2onehot",
+  "simulation_sources": [
+    "dv/bin2onehot_tb.sv"
+  ],
   "sources": [
     {
       "path": "rtl/bin2onehot.sv",
@@ -10,20 +13,41 @@
     }
   ],
   "standard": "1800-2017",
+  "include_dirs": [],
+  "defines": {},
   "parameters": {
     "N": "4"
   },
-  "simulation_sources": ["dv/bin2onehot_tb.sv"],
+  "assets": [],
   "simulations": {
     "rtl": {
       "simulator": "icarus",
       "top": "bin2onehot_tb",
-      "dut_scope": ["bin2onehot_tb", "i_bin2onehot"],
-      "testbench": ["dv/bin2onehot_tb.sv"],
+      "dut_scope": [
+        "bin2onehot_tb",
+        "i_bin2onehot"
+      ],
+      "testbench": [
+        "dv/bin2onehot_tb.sv"
+      ],
+      "args": [],
       "stop_time": "2us",
+      "sdf": null,
+      "models": [],
       "defines": {
         "N": "4"
-      }
+      },
+      "timing_corner": null,
+      "delay_selection": null,
+      "use_snapshot_sdf": false
     }
+  },
+  "physical": {
+    "pdk": "sky130A",
+    "library": "sky130_fd_sc_hd",
+    "clock_port": null,
+    "clock_period_ns": 10.0,
+    "sdc": null,
+    "overrides": {}
   }
 }

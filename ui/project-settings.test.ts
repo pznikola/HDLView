@@ -54,6 +54,33 @@ describe("project settings drafts", () => {
   it("round trips existing settings without losing roots, hierarchy, models or expression overrides", () => {
     expect(settingsProject(settingsDraft(project))).toEqual(project);
   });
+  it("keeps a design without a clock as no clock port, shown as an empty field", () => {
+    const clockless = {
+      ...project,
+      physical: project.physical && { ...project.physical, clock_port: null },
+    };
+    const draft = settingsDraft(clockless);
+    expect(draft.physical?.clock_port).toBe("");
+    expect(settingsProject(draft)).toEqual(clockless);
+  });
+  it("keeps further clocks with their periods and writes them only when used", () => {
+    const draft = settingsDraft(project);
+    expect(settingsProject(draft).physical).not.toHaveProperty(
+      "additional_clocks",
+    );
+    if (!draft.physical)
+      throw new Error("fixture has a physical configuration");
+    draft.physical.additional_clocks = [["rd_clk", "12.5"]];
+    draft.physical.related_clocks = true;
+    const saved = settingsProject(draft);
+    expect(saved.physical).toMatchObject({
+      additional_clocks: [{ port: "rd_clk", period_ns: 12.5 }],
+      related_clocks: true,
+    });
+    expect(settingsProject(settingsDraft(saved))).toEqual(saved);
+    draft.physical.additional_clocks = [["rd_clk", ""]];
+    expect(() => settingsProject(draft)).toThrow("Enter a port and a period");
+  });
   it("creates explicit simulation defaults without inventing names or hierarchy", () => {
     const config = newSimulation(project.simulation_sources ?? []);
     expect(config.top).toBe("");

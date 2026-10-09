@@ -21,7 +21,7 @@ Build a Linux-first desktop application for small and medium ASIC designs target
 
 Do not add a separately hosted application service. Reuse existing HDL parsers, simulators, synthesis, timing, placement/routing, and extraction engines.
 
-Support Verilog/SystemVerilog projects only. Reject unsupported projects without replacing the current workspace. Icarus and explicitly selected Verilator handle RTL and compatible gate runs. A shared testbench configuration compiles captured RTL or the exact exported Verilog netlist according to the selected snapshot. Icarus is the SDF backend; Verilator is not.
+Support Verilog/SystemVerilog projects only. Reject unsupported projects without replacing the current workspace. Icarus handles RTL and gate runs; explicitly selected Verilator handles RTL runs only. A shared testbench configuration compiles captured RTL or the exact exported Verilog netlist according to the selected snapshot. Icarus is the SDF backend; Verilator is not.
 
 Physical-design integration configures and launches LibreLane, collects progress/reports/artifacts, and creates a matching post-layout snapshot. Detailed layout viewing stays in external tools.
 
@@ -115,7 +115,7 @@ The common runner must use argument arrays, isolated work directories, reproduci
 
 Docker mounts captured inputs/PDKs read-only and outputs writable. No VNC/desktop or nested Docker is needed. Do not mount the Docker socket inside tool containers. Run LibreLane directly in the selected image.
 
-Cache only when actual input contents, settings, compiler/plugin identities, and relevant PDK/config contents are accounted for. Conservative rebuilding is preferable to unsafe cache reuse. Edits create a new snapshot; old sessions keep their original inputs and trace. Reopening must detect changed artifacts.
+Cache only when actual input contents, settings, compiler/plugin identities, and relevant PDK/config contents are accounted for. Conservative rebuilding is preferable to unsafe cache reuse. Tool versions are probed once per toolchain identity (image digest, or native executable size and modification time) per session, and again on an explicit toolchain check. Edits create a new snapshot; old sessions keep their original inputs and trace. Reopening must detect changed artifacts.
 
 ## 4. Representations
 
@@ -273,11 +273,11 @@ Targets remain targets until measured; report raw evidence and counterexamples.
 
 ## 7. Simulation and physical integration
 
-| Run                       | Backend                                          |
-| ------------------------- | ------------------------------------------------ |
-| Verilog/SystemVerilog RTL | Icarus or explicitly selected Verilator          |
-| Zero-delay mapped gates   | Icarus; Verilator only after model qualification |
-| SDF-annotated gates       | Icarus only                                      |
+| Run                       | Backend                                                      |
+| ------------------------- | ------------------------------------------------------------ |
+| Verilog/SystemVerilog RTL | Icarus or explicitly selected Verilator                      |
+| Zero-delay mapped gates   | Icarus only; Verilator is refused (2026-10-09 qualification) |
+| SDF-annotated gates       | Icarus only                                                  |
 
 Keep synthesis and testbench sources separate. Configure testbench top, DUT instance path, parameters, runtime arguments, stop time, dump scope, and expected trace. Instrument only generated run files; never edit user HDL. Testbenches must be simulator-compatible; do not promise automatic translation. Shared testbenches should use named ports and public DUT interfaces because export can reorder declarations and remove internal RTL hierarchy. Ordinary configurations apply to either stage; SDF is gate-only. Explicit model files are compiled only for gates. Waveforms remain bound to one immutable snapshot/representation.
 
@@ -285,7 +285,7 @@ Resolve actual PDK functional/timing simulation model sets, primitives, include 
 
 LibreLane adapter sequence:
 
-1. Collect top, clocks, SDC, PDK/library, floorplan/utilization and macro options.
+1. Collect top, clock period, optional clock port, SDC, PDK/library, floorplan/utilization and macro options. A design without a clock passes no clock port; LibreLane's default constraints then time it against a virtual clock of that period and skip clock-tree synthesis. Additional clocks are explicit port and period pairs; with more than one clock and no custom SDC, HDLView writes constraints that follow LibreLane's default file for every clock and declare the clocks asynchronous unless the project marks them related. A Post-layout build synthesizes first and lowers core utilization when the cell area would give a core narrower than one power strap set, using the PDK's resolved strap dimensions.
 2. Export normalized Verilog for frontend compatibility where necessary.
 3. Launch a pinned Classic flow in a unique directory.
 4. Show steps/logs/reports and completion/failure.

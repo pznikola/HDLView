@@ -3,6 +3,9 @@
   "schema_version": 3,
   "name": "Two counters",
   "top": "counter",
+  "simulation_sources": [
+    "tb.sv"
+  ],
   "sources": [
     {
       "path": "counter.sv",
@@ -18,8 +21,13 @@
     "rtl": {
       "simulator": "icarus",
       "top": "tb",
-      "dut_scope": ["tb", "dut"],
-      "testbench": ["tb.sv"],
+      "dut_scope": [
+        "tb",
+        "dut"
+      ],
+      "testbench": [
+        "tb.sv"
+      ],
       "args": [],
       "stop_time": "1us",
       "sdf": null,
@@ -32,8 +40,13 @@
     "timing": {
       "simulator": "icarus",
       "top": "tb",
-      "dut_scope": ["tb", "dut"],
-      "testbench": ["tb.sv"],
+      "dut_scope": [
+        "tb",
+        "dut"
+      ],
+      "testbench": [
+        "tb.sv"
+      ],
       "args": [],
       "stop_time": "1us",
       "sdf": null,
@@ -46,8 +59,13 @@
     "verilator": {
       "simulator": "verilator",
       "top": "tb",
-      "dut_scope": ["tb", "dut"],
-      "testbench": ["tb.sv"],
+      "dut_scope": [
+        "tb",
+        "dut"
+      ],
+      "testbench": [
+        "tb.sv"
+      ],
       "args": [],
       "stop_time": "1us",
       "sdf": null,
@@ -68,6 +86,5 @@
       "FP_CORE_UTIL": 25,
       "PL_TARGET_DENSITY_PCT": 35
     }
-  },
-  "simulation_sources": ["tb.sv"]
+  }
 }

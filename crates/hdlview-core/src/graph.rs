@@ -573,13 +573,19 @@ pub fn view_for_schematic(
             display: None,
         });
     };
+    let children: BTreeSet<&[String]> = s
+        .design
+        .scopes
+        .iter()
+        .map(|sc| sc.path.as_slice())
+        .collect();
     for p in &m.ports {
         add(&p.name, "port", std::slice::from_ref(p), true, None, None);
     }
     for c in selected {
         let mut p = scope.to_vec();
         p.push(c.name.clone());
-        let child = s.design.scopes.iter().any(|sc| sc.path == p).then_some(p);
+        let child = children.contains(p.as_slice()).then_some(p);
         add(&c.name, &c.kind, &c.ports, false, c.source.clone(), child);
     }
     for (drivers, loads) in endpoints.values_mut() {
@@ -714,13 +720,18 @@ pub fn view_for_schematic(
         .collect();
     // Slice labels count along the trunk, in declared indices when a declaration
     // names exactly the trunk.
+    let pins: BTreeMap<&str, _> = nodes
+        .iter()
+        .flat_map(|n| &n.ports)
+        .map(|p| (p.id.as_str(), p))
+        .collect();
     let trunks: Vec<(usize, Option<(i64, bool)>)> = nets
         .iter()
         .map(|net| {
             let bits = net
                 .sources
                 .first()
-                .and_then(|id| nodes.iter().flat_map(|n| &n.ports).find(|p| &p.id == id))
+                .and_then(|id| pins.get(id.as_str()))
                 .and_then(|p| p.display.as_ref())
                 .map_or(&net.bits, |d| &d.bits);
             let declared = m

@@ -121,9 +121,12 @@ for name, project_path, stages in projects:
             simulate(snapshot, configuration, f"{name}/{stage}")
 if args.schematics:
     for project_path in sorted(pathlib.Path("examples").glob("*/hdlview.project.json")):
-        label = f"examples/{project_path.parent.name}/elaborated"
-        snapshot = run(["build", str(project_path), "--representation", "elaborated"], label)
-        if snapshot:
-            view_top(snapshot, label)
-            simulate(snapshot, "rtl", label)
+        # Every example carries a physical configuration; half have no clock.
+        stages = ["elaborated"] + (["mapped"] if args.mapped else []) + (["post_layout"] if args.physical else [])
+        for stage in stages:
+            label = f"examples/{project_path.parent.name}/{stage}"
+            snapshot = run(["build", str(project_path), "--representation", stage], label)
+            if snapshot:
+                view_top(snapshot, label)
+                simulate(snapshot, "rtl", label)
 raise SystemExit(any(r["exit_code"] for r in records))

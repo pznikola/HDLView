@@ -7,7 +7,8 @@ The snapshot's captured profile and inputs determine the actual simulation.
 - Keep synthesis sources and testbench sources separate. Check testbench top,
   DUT scope, runtime arguments, stop time, dump instrumentation, and expected trace.
   Generate instrumentation in the run directory; do not edit user HDL to obtain a dump.
-- Verilog/SystemVerilog uses the explicitly selected Icarus or Verilator. Ordinary
+- Verilog/SystemVerilog uses the explicitly selected Icarus or Verilator; gate
+  snapshots run under Icarus only (Verilator mis-models cell flip-flops). Ordinary
   configurations reuse the same ordered testbench inputs across RTL/gate snapshots;
   the snapshot selects captured RTL or the exact exported netlist. Named port
   connections and public-interface checks avoid synthesized hierarchy and declaration

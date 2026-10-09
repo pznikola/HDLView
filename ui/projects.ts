@@ -184,13 +184,12 @@ export function canSimulate(
   config: SimulationConfig,
   snapshot?: Pick<Snapshot, "representation" | "sdf">,
 ): boolean {
+  const gate =
+    !!snapshot && ["mapped", "post_layout"].includes(snapshot.representation);
+  // Gate netlists run under Icarus only: Verilator mis-models cell flip-flops.
+  if (gate && config.simulator !== "icarus") return false;
   if (!config.sdf && !config.use_snapshot_sdf) return true;
-  if (
-    !snapshot ||
-    !["mapped", "post_layout"].includes(snapshot.representation) ||
-    config.simulator !== "icarus"
-  )
-    return false;
+  if (!gate) return false;
   if (!config.use_snapshot_sdf) return true;
   return config.timing_corner
     ? Boolean(snapshot.sdf[config.timing_corner])
