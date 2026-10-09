@@ -202,7 +202,7 @@ Preserve UTF-8 BOM and line endings; explicitly diagnose unsupported encoding, m
 
 Schematic source navigation opens captured snapshot text read-only at the recorded location. A separate Open Working File action uses original-source mappings. Never apply old snapshot line numbers to edited working files. Existing snapshots and waveform sessions remain immutable.
 
-Lay out only the current module or bounded neighborhood; automatically limit large views to 2,000 nodes/cells and offer focused exploration. Use deterministic port ordering, orthogonal layered layout, and snapshot-scoped caching. Selection/cursor movement must not request layout.
+Lay out only the current module or bounded neighborhood; automatically limit large views to 5,000 cells with signal pins, chosen before any physical-only cell, and 20,000 cells in all, and offer focused exploration. Use deterministic port ordering, orthogonal layered layout, and snapshot-scoped caching. Selection/cursor movement must not request layout.
 
 ### Professional schematic presentation
 
@@ -267,6 +267,8 @@ Targets on a documented Linux SSD workstation with at least 16 GB RAM:
 - ordinary loaded selection below 100 ms;
 - cached values for 200 visible signals below 100 ms;
 - initial 1,000-node layout below 3 seconds;
+- a flat 2,500-cell gate sheet drawn within 10 seconds, with pan and zoom that do not
+  depend on its size;
 - cancellation during parsing, compilation, layout, and physical jobs.
 
 Targets remain targets until measured; report raw evidence and counterexamples.
@@ -285,7 +287,7 @@ Resolve actual PDK functional/timing simulation model sets, primitives, include 
 
 LibreLane adapter sequence:
 
-1. Collect top, clock period, optional clock port, SDC, PDK/library, floorplan/utilization and macro options. A design without a clock passes no clock port; LibreLane's default constraints then time it against a virtual clock of that period and skip clock-tree synthesis. Additional clocks are explicit port and period pairs; with more than one clock and no custom SDC, HDLView writes constraints that follow LibreLane's default file for every clock and declare the clocks asynchronous unless the project marks them related. A Post-layout build synthesizes first and lowers core utilization when the cell area would give a core narrower than one power strap set, using the PDK's resolved strap dimensions.
+1. Collect top, clock period, optional clock port, SDC, PDK/library, floorplan/utilization and macro options. A design without a clock passes no clock port; LibreLane's default constraints then time it against a virtual clock of that period and skip clock-tree synthesis. Additional clocks are explicit port and period pairs; with more than one clock and no custom SDC, HDLView writes constraints that follow LibreLane's default file for every clock and declare the clocks asynchronous unless the project marks them related. A Mapped gates build keeps the module hierarchy (`SYNTH_HIERARCHY_MODE` `keep`) unless the project sets `flatten_mapped`; a Post-layout build never asks for it, since place and route flattens. A Post-layout build synthesizes first and lowers core utilization when the cell area would give a core narrower than one power strap set, using the PDK's resolved strap dimensions.
 2. Export normalized Verilog for frontend compatibility where necessary.
 3. Launch a pinned Classic flow in a unique directory.
 4. Show steps/logs/reports and completion/failure.
@@ -478,7 +480,27 @@ have the layout engine reverse exactly those: a register sits after the logic th
 computes its input. Electrical nets reserve no label space. A net name is drawn on the
 straight run leaving its single driver only when that run has room, no wire crosses the
 name, and the driver does not already show it; names remain in tooltips and inspection.
-Views above 400 nodes use longest-path layering with Brandes–Köpf placement.
+Views above 400 nodes use longest-path layering with Brandes–Köpf placement and do not
+ask the engine to keep the model order within a layer: that request alone takes minutes
+on a few thousand nodes. Cells without signal pins are not part of the dataflow; they
+fill rows below it.
+
+**Large views.** A view above 400 nodes draws only the cells, wires and connectors
+around the window, with one window of margin on every side, and redraws when the camera
+leaves that margin or the zoom crosses a power of two. Below a quarter of full size it
+draws one outline path for all cells and one for all wires; the selected wire and the
+inspected cell are still drawn in full on top, and a click finds the cell under the
+pointer from the layout. Export always renders the whole sheet in full detail. Wires are
+culled by straight segment, not as a whole, because a long net passes far outside the
+window. A minimap in the lower right corner draws the cell outlines of the whole sheet,
+the window as a rectangle moved without rendering, and a marker at the selection;
+clicking or dragging in it centres the window there.
+
+**Showing the selection.** **Show selection** moves the camera to the selected wire, the
+cells a selected signal reaches, or the inspected cell, at full size or smaller when the
+object needs it. A selection made in the waveform or the signal list does the same when
+its object is not already in the window; a selection made in the schematic never moves
+the camera. Neither requests layout.
 
 **Symbols.** Synchronous inputs enter on the left with the data: clock, enable, select
 and synchronous reset. Outputs leave on the right. Only asynchronous clear and load

@@ -539,6 +539,56 @@ describe("schematic geometry and routing", () => {
       );
     }
   });
+  it("records where every wire segment runs", async () => {
+    const g = graph(
+      [input("a"), gate("g", "and"), gate("h", "or"), output("y")],
+      [net("n1", ["a:p"], ["g:a", "h:a", "h:b"]), net("n2", ["g:y"], ["y:p"])],
+    );
+    const view = await layout(g);
+    for (const wire of view.wires) {
+      expect(wire.paths.length).toBeGreaterThan(0);
+      for (const path of wire.paths) {
+        const [left, top, right, bottom] = path.box;
+        const points = [...path.d.matchAll(/(-?[\d.]+),(-?[\d.]+)/g)];
+        for (const [, x, y] of points) {
+          expect(Number(x)).toBeGreaterThanOrEqual(left);
+          expect(Number(x)).toBeLessThanOrEqual(right);
+          expect(Number(y)).toBeGreaterThanOrEqual(top);
+          expect(Number(y)).toBeLessThanOrEqual(bottom);
+        }
+        // A segment never leaves the box of its wire.
+        expect(left).toBeGreaterThanOrEqual(wire.box[0]);
+        expect(top).toBeGreaterThanOrEqual(wire.box[1]);
+        expect(right).toBeLessThanOrEqual(wire.box[2]);
+        expect(bottom).toBeLessThanOrEqual(wire.box[3]);
+      }
+    }
+  });
+  it("packs cells without signal pins into rows below the dataflow", async () => {
+    const fill = Array.from({ length: 40 }, (_, i) =>
+      node(`fill${i}`, "physical", []),
+    );
+    const g = graph(
+      [input("a"), gate("g", "and"), output("y"), ...fill],
+      [net("n1", ["a:p"], ["g:a"]), net("n2", ["g:y"], ["y:p"])],
+    );
+    const view = await layout(g);
+    expect(violations(view, g)).toEqual([]);
+    const placed = new Map(view.graph.children?.map((n) => [n.id, n]));
+    const cells = fill.map((cell) => placed.get(cell.id));
+    const logicBottom =
+      (placed.get("g")?.y ?? 0) + (placed.get("g")?.height ?? 0);
+    expect(cells.every((cell) => (cell?.y ?? 0) > logicBottom)).toBe(true);
+    const rows = new Set(cells.map((cell) => cell?.y)).size;
+    expect(rows).toBeGreaterThan(1);
+    expect(rows).toBeLessThan(fill.length / 2);
+    expect(
+      cells.every(
+        (cell) =>
+          (cell?.y ?? 0) + (cell?.height ?? 0) <= (view.graph.height ?? 0),
+      ),
+    ).toBe(true);
+  });
   it("aligns boundary ports per side even when every port is disconnected", async () => {
     const nodes = [
       node("z", "port", [pin("z:p", "output")]),

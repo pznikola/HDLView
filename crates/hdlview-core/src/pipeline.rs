@@ -627,6 +627,11 @@ fn run_physical(
         config.insert("PNR_SDC_FILE".into(), json!(sdc));
         config.insert("SIGNOFF_SDC_FILE".into(), json!(sdc));
     }
+    if synthesis_only && !cfg.flatten_mapped {
+        // Place and route flattens whatever it is given, so only the Mapped
+        // gates netlist can keep the modules.
+        config.insert("SYNTH_HIERARCHY_MODE".into(), json!("keep"));
+    }
     for (k, v) in &cfg.overrides {
         if ["DESIGN_NAME", "VERILOG_FILES", "PDK", "STD_CELL_LIBRARY"].contains(&k.as_str()) {
             bail!("Reserved physical configuration key {k}")

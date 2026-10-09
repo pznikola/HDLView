@@ -246,6 +246,9 @@ pub struct PhysicalConfig {
     /// Time the paths between different clocks; they are asynchronous otherwise.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub related_clocks: bool,
+    /// Flatten the Mapped gates netlist; it keeps the module hierarchy otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flatten_mapped: bool,
     #[serde(default)]
     pub sdc: Option<FileRef>,
     #[serde(default)]
@@ -426,6 +429,10 @@ pub struct SignalBinding {
     pub status: String,
     pub evidence: String,
     pub bit_correspondence: Vec<(i64, i64)>,
+    /// Set when the signal is one bit of the variable: its place in the
+    /// variable's value, counted from the right.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variable_bit: Option<u32>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViewNode {

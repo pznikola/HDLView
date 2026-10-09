@@ -40,10 +40,8 @@ module shift_register_tb ();
     rst_n = 1'b1;
   end
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
+  // Check if enough data was sent, and if so terminate the test
 	initial begin
-    $dumpfile("shift_register.vcd");
-    $dumpvars(0, shift_register_tb);
 		wait(counter == `MAX_DATA);
 		$finish;
 	end

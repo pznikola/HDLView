@@ -12,15 +12,18 @@ interface ControlConnector {
   edge_id: string;
   label: string;
 }
+type Box = [number, number, number, number];
 interface RoutedWire {
   id: string;
   edge_id: string;
   signal_ids: string[];
   width: number;
   /** Segments of a bus narrow where only a slice continues. */
-  paths: { d: string; width: number }[];
+  paths: { d: string; width: number; box: Box }[];
   junctions: ElkPoint[];
   labels: { x: number; y: number; text: string }[];
+  /** Left, top, right and bottom of the routes. */
+  box: Box;
 }
 export interface LayoutView {
   graph: ElkNode;
@@ -37,6 +40,11 @@ export interface LayoutView {
 
 /** Length of the stub a control connector draws beside its pin. */
 export const CONNECTOR = 18;
+/** Above this many nodes a view is laid out for speed and drawn only where visible. */
+export const LARGE_VIEW = 400;
+const NODE_GAP = 30;
+/** A cell without signal pins has no place in the dataflow. */
+const unwired = (node: Node) => node.display.symbol === "physical";
 
 function syntheticDisplay(symbol: string, title: string) {
   return {
@@ -412,7 +420,7 @@ export function prepareLayout(
       ),
     ),
   );
-  const large = visible.length > 400;
+  const large = visible.filter((node) => !unwired(node)).length > LARGE_VIEW;
   return {
     graph: {
       id: "root",
@@ -420,12 +428,15 @@ export function prepareLayout(
         "elk.algorithm": "layered",
         "elk.direction": "RIGHT",
         "elk.edgeRouting": "ORTHOGONAL",
-        "elk.spacing.nodeNode": "30",
+        "elk.spacing.nodeNode": String(NODE_GAP),
         "elk.layered.spacing.nodeNodeBetweenLayers": "56",
         "elk.spacing.edgeNode": "12",
         "elk.layered.spacing.edgeEdgeBetweenLayers": "10",
         "elk.layered.cycleBreaking.strategy": "MODEL_ORDER",
-        "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+        // Keeping the model order costs minutes on a few thousand nodes.
+        "elk.layered.considerModelOrder.strategy": large
+          ? "NONE"
+          : "NODES_AND_EDGES",
         "elk.separateConnectedComponents": "false",
         "elk.randomSeed": "1",
         "elk.layered.thoroughness": large ? "1" : "7",
@@ -434,7 +445,10 @@ export function prepareLayout(
           : "NETWORK_SIMPLEX",
         "elk.layered.nodePlacement.strategy": "BRANDES_KOEPF",
       },
-      children: order.flatMap((i) => children[i] ?? []),
+      children: order.flatMap((i) => {
+        const node = visible[i];
+        return node && !unwired(node) ? (children[i] ?? []) : [];
+      }),
       edges,
     },
     render_nodes: visible,
@@ -496,6 +510,13 @@ export function finishLayout(view: LayoutView, graph: Graph): LayoutView {
       })),
     );
     const width = Math.max(1, ...drawn.map((route) => route.width));
+    const box: RoutedWire["box"] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const { x, y } of drawn.flatMap((route) => route.points)) {
+      box[0] = Math.min(box[0], x);
+      box[1] = Math.min(box[1], y);
+      box[2] = Math.max(box[2], x);
+      box[3] = Math.max(box[3], y);
+    }
     const normalized = electricalPaths(
       drawn,
       terminals,
@@ -541,9 +562,44 @@ export function finishLayout(view: LayoutView, graph: Graph): LayoutView {
         width,
         ...normalized,
         labels,
+        box,
       },
     ];
   });
+  // Unwired cells fill rows below the dataflow, about as wide as it is.
+  const loose = view.render_nodes.filter(unwired).map((node) => ({
+    id: node.id,
+    ...symbolGeometry(node),
+  }));
+  if (loose.length) {
+    const children = (view.graph.children ??= []);
+    const area = loose.reduce(
+      (sum, cell) => sum + (cell.width + NODE_GAP) * (cell.height + NODE_GAP),
+      0,
+    );
+    const width = Math.max(view.graph.width ?? 0, Math.sqrt(1.6 * area));
+    let x = 0,
+      y = (view.graph.height ?? 0) + NODE_GAP,
+      row = 0;
+    for (const cell of loose) {
+      if (x > 0 && x + cell.width > width) {
+        x = 0;
+        y += row + NODE_GAP;
+        row = 0;
+      }
+      children.push({
+        id: cell.id,
+        x,
+        y,
+        width: cell.width,
+        height: cell.height,
+      });
+      x += cell.width + NODE_GAP;
+      row = Math.max(row, cell.height);
+    }
+    view.graph.width = width;
+    view.graph.height = y + row;
+  }
   return view;
 }
 const rounded = (n: number) => Math.round(n * 100000) / 100000;
@@ -585,7 +641,7 @@ function electricalPaths(
   // Coverage decides junctions; a shared stretch is drawn at its widest route.
   const horizontal = new Map<number, Interval[]>(),
     vertical = new Map<number, Interval[]>();
-  const paths: { d: string; width: number }[] = [];
+  const paths: RoutedWire["paths"] = [];
   for (const [runs, covered, h] of [
     [horizontalRuns, horizontal, true],
     [verticalRuns, vertical, false],
@@ -610,6 +666,9 @@ function electricalPaths(
               ? `M${open[0]},${key} L${open[1]},${key}`
               : `M${key},${open[0]} L${key},${open[1]}`,
             width: open[2],
+            box: h
+              ? [open[0], key, open[1], key]
+              : [key, open[0], key, open[1]],
           });
         open = undefined;
       };

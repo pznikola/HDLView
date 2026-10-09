@@ -118,7 +118,7 @@ fn main() -> Result<()> {
                 &s,
                 &scope,
                 focus.as_deref(),
-                2000,
+                hdlview_core::graph::LOGIC_LIMIT,
                 false,
                 &SchematicOptions::default(),
             )?)?

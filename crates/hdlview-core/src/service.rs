@@ -605,7 +605,9 @@ impl Service {
                     &snapshot,
                     &scope,
                     v["focus"].as_str(),
-                    v["limit"].as_u64().unwrap_or(2000) as usize,
+                    v["limit"]
+                        .as_u64()
+                        .map_or(crate::graph::LOGIC_LIMIT, |n| n as usize),
                     v["split_buses"].as_bool().unwrap_or(false),
                     &options,
                 )?)?)

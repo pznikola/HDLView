@@ -6,10 +6,11 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import type { Graph, Node } from "../types";
 import type { LayoutResponse } from "../layout.worker";
 import { pinSelected, pinTarget, type ConnectionTarget } from "../selection";
-import { CONNECTOR, type LayoutView } from "../schematic-layout";
+import { CONNECTOR, LARGE_VIEW, type LayoutView } from "../schematic-layout";
 import type { SchematicPreferences } from "../schematic-display";
 import {
   GEOMETRY_VERSION,
@@ -21,8 +22,13 @@ import { SchematicSymbol, schematicStyle } from "./SchematicSymbol";
 import { saveSchematicSvg } from "../api";
 
 type Camera = { x: number; y: number; scale: number };
-const MIN_SCALE = 0.05,
+const MIN_SCALE = 0.005,
   MAX_SCALE = 5;
+/** Below this zoom level a large view is drawn as outlines only. */
+const OVERVIEW_LEVEL = -2;
+type Box = [number, number, number, number];
+const overlaps = (a: Box, b: Box) =>
+  a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 const EXPORT_MARGIN = 20;
 /** Zoom steps at which pin hit areas and label detail are redrawn. */
 const zoomLevel = (scale: number) => Math.floor(Math.log2(scale));
@@ -69,6 +75,7 @@ export function Schematic({
   selected,
   target,
   inspected,
+  reveal,
   onSignal,
   onScope,
   onInspect,
@@ -83,6 +90,8 @@ export function Schematic({
   selected?: string;
   target?: ConnectionTarget;
   inspected?: string;
+  /** Changes when a selection made outside the schematic should come into view. */
+  reveal?: number;
   onSignal: (ids: string[], target?: ConnectionTarget) => void;
   onScope: (scope: string[]) => void;
   onInspect: (node: Node) => void;
@@ -93,7 +102,8 @@ export function Schematic({
 }) {
   const [layout, setLayout] = useState<LayoutView>();
   const [pending, setPending] = useState(false);
-  // Panning and zooming move one transform; they never re-render the drawing.
+  // Panning and zooming move one transform; they re-render nothing until a large
+  // view needs another part of its sheet.
   const camera = useRef<Camera>({ x: 20, y: 70, scale: 1 });
   const [level, setLevel] = useState(0);
   const [displayOpen, setDisplayOpen] = useState(false);
@@ -103,6 +113,18 @@ export function Schematic({
   const drag = useRef<
     { x: number; y: number; cx: number; cy: number } | undefined
   >(undefined);
+  // A large view draws only the part of the sheet around the window.
+  const large = (layout?.graph.children?.length ?? 0) > LARGE_VIEW;
+  const sheetWidth = layout?.graph.width ?? 0,
+    sheetHeight = layout?.graph.height ?? 0;
+  const sheet = useRef<[number, number] | undefined>(undefined);
+  const mapWindow = useRef<HTMLDivElement>(null);
+  const drawn = useRef<{ level: number; box: Box } | undefined>(undefined);
+  const [region, setRegion] = useState<Box>();
+  const [exporting, setExporting] = useState(false);
+  useLayoutEffect(() => {
+    sheet.current = large ? [sheetWidth, sheetHeight] : undefined;
+  }, [large, sheetWidth, sheetHeight]);
   const worker = useRef<Worker | undefined>(undefined);
   const laying = useRef(false);
   const sequence = useRef(0);
@@ -130,7 +152,48 @@ export function Schematic({
         .querySelector("circle")
         ?.setAttribute("r", String(Math.max(0.8, 0.65 / scale)));
     }
-    setLevel(zoomLevel(scale));
+    const level = zoomLevel(scale);
+    setLevel(level);
+    const bounds = ref.current?.getBoundingClientRect();
+    if (!sheet.current || !bounds) return;
+    const seen: Box = [
+      -x / scale,
+      -y / scale,
+      (bounds.width - x) / scale,
+      (bounds.height - y) / scale,
+    ];
+    const frame = mapWindow.current,
+      map = frame?.parentElement;
+    if (frame && map) {
+      const kx = map.clientWidth / (sheet.current[0] || 1),
+        ky = map.clientHeight / (sheet.current[1] || 1);
+      const left = Math.max(0, seen[0] * kx),
+        top = Math.max(0, seen[1] * ky);
+      frame.style.left = `${left}px`;
+      frame.style.top = `${top}px`;
+      frame.style.width = `${Math.max(2, Math.min(map.clientWidth, seen[2] * kx) - left)}px`;
+      frame.style.height = `${Math.max(2, Math.min(map.clientHeight, seen[3] * ky) - top)}px`;
+    }
+    const held = drawn.current;
+    if (
+      held?.level === level &&
+      held.box[0] <= seen[0] &&
+      held.box[1] <= seen[1] &&
+      held.box[2] >= seen[2] &&
+      held.box[3] >= seen[3]
+    )
+      return;
+    // One window of margin on every side, so most pans draw nothing new.
+    const width = seen[2] - seen[0],
+      height = seen[3] - seen[1];
+    const box: Box = [
+      seen[0] - width,
+      seen[1] - height,
+      seen[2] + width,
+      seen[3] + height,
+    ];
+    drawn.current = { level, box };
+    setRegion(box);
   }, []);
   const moveCamera = useCallback(
     (next: Camera) => {
@@ -250,13 +313,21 @@ export function Schematic({
       window.removeEventListener("keydown", escape);
     };
   }, [displayOpen]);
-  const edges = new Map(graph.edges.map((edge) => [edge.id, edge]));
-  const portOwners = new Map(
-    graph.nodes.flatMap((node) =>
-      node.ports.map((port) => [port.id, node.label]),
-    ),
+  const { edges, portOwners } = useMemo(
+    () => ({
+      edges: new Map(graph.edges.map((edge) => [edge.id, edge])),
+      portOwners: new Map(
+        graph.nodes.flatMap((node) =>
+          node.ports.map((port) => [port.id, node.label]),
+        ),
+      ),
+    }),
+    [graph],
   );
-  const { renderNodes, geometries, placedPins } = useMemo(() => {
+  const overview = large && level < OVERVIEW_LEVEL && !exporting;
+  const shown = (box: Box) =>
+    !large || exporting || (region !== undefined && overlaps(box, region));
+  const { renderNodes, geometries, placedPins, outline } = useMemo(() => {
     const renderNodes = new Map(
       layout?.render_nodes.map((node) => [node.id, node]),
     );
@@ -277,12 +348,113 @@ export function Schematic({
           : [];
       }),
     );
-    return { renderNodes, geometries, placedPins };
-  }, [layout]);
+    const outline = large && {
+      nodes: (layout?.graph.children ?? [])
+        .filter((placed) => renderNodes.get(placed.id)?.kind !== "net junction")
+        .map(
+          (placed) =>
+            `M${placed.x},${placed.y}h${placed.width}v${placed.height}h${-(placed.width ?? 0)}z`,
+        )
+        .join(""),
+      wires: (layout?.wires ?? [])
+        .flatMap((wire) => wire.paths.map((path) => path.d))
+        .join(""),
+    };
+    return { renderNodes, geometries, placedPins, outline };
+  }, [layout, large]);
+  // Where the selection is drawn: its wires, else the cells it reaches, else the inspected cell.
+  const focus = useMemo((): Box | undefined => {
+    if (!layout) return undefined;
+    const cells = (keep: (node: Node) => boolean) =>
+      (layout.graph.children ?? []).flatMap((placed): Box[] => {
+        const node = renderNodes.get(placed.id);
+        const x = placed.x ?? 0,
+          y = placed.y ?? 0;
+        return node && keep(node)
+          ? [[x, y, x + (placed.width ?? 0), y + (placed.height ?? 0)]]
+          : [];
+      });
+    const wires = layout.wires
+      .filter((wire) =>
+        target
+          ? target.kind === "wire" && target.wireId === wire.id
+          : wire.signal_ids.includes(selected ?? ""),
+      )
+      .map((wire) => wire.box);
+    const boxes = wires.length
+      ? wires
+      : target?.kind === "pin"
+        ? cells((node) => node.id === target.nodeId)
+        : selected
+          ? cells((node) =>
+              node.ports.some((port) => port.signal_ids.includes(selected)),
+            )
+          : [];
+    const found = boxes.length ? boxes : cells((node) => node.id === inspected);
+    return found.length
+      ? [
+          Math.min(...found.map((box) => box[0])),
+          Math.min(...found.map((box) => box[1])),
+          Math.max(...found.map((box) => box[2])),
+          Math.max(...found.map((box) => box[3])),
+        ]
+      : undefined;
+  }, [layout, renderNodes, selected, target, inspected]);
+  const show = useCallback(
+    (box: Box, always: boolean) => {
+      const bounds = ref.current?.getBoundingClientRect();
+      if (!bounds) return;
+      const { x, y, scale } = camera.current;
+      if (
+        !always &&
+        box[0] * scale + x >= 0 &&
+        box[1] * scale + y >= 0 &&
+        box[2] * scale + x <= bounds.width &&
+        box[3] * scale + y <= bounds.height
+      )
+        return;
+      const next = Math.max(
+        MIN_SCALE,
+        Math.min(
+          1,
+          (bounds.width - 160) / (box[2] - box[0] || 1),
+          (bounds.height - 200) / (box[3] - box[1] || 1),
+        ),
+      );
+      moveCamera({
+        x: bounds.width / 2 - ((box[0] + box[2]) / 2) * next,
+        y: bounds.height / 2 - ((box[1] + box[3]) / 2) * next,
+        scale: next,
+      });
+    },
+    [moveCamera],
+  );
+  useEffect(() => {
+    if (reveal !== undefined && focus) show(focus, false);
+  }, [reveal, focus, show]);
+  const mapScale = Math.min(180 / (sheetWidth || 1), 240 / (sheetHeight || 1));
+  const centre = (e: React.PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect(),
+      bounds = ref.current?.getBoundingClientRect();
+    if (!bounds) return;
+    const { scale } = camera.current;
+    moveCamera({
+      x:
+        bounds.width / 2 -
+        ((e.clientX - rect.left) / rect.width) * sheetWidth * scale,
+      y:
+        bounds.height / 2 -
+        ((e.clientY - rect.top) / rect.height) * sheetHeight * scale,
+      scale,
+    });
+  };
   return (
     <div className="schematic" data-theme={preferences.theme}>
       <div className="canvas-tools">
         <button onClick={() => fit(layout)}>Fit</button>
+        <button onClick={() => focus && show(focus, true)} disabled={!focus}>
+          Show selection
+        </button>
         <button
           aria-label="Zoom schematic in"
           onClick={() => zoom(1.3, camera.current.x, camera.current.y)}
@@ -297,10 +469,12 @@ export function Schematic({
         </button>
         <button
           onClick={() => {
-            if (ref.current && layout)
-              void saveSchematicSvg(
-                standaloneSvg(ref.current, layout, preferences.theme),
-              ).catch((error) => onError(String(error)));
+            if (!ref.current || !layout) return;
+            // The file holds the whole sheet, whatever part is drawn now.
+            flushSync(() => setExporting(true));
+            const svg = standaloneSvg(ref.current, layout, preferences.theme);
+            setExporting(false);
+            void saveSchematicSvg(svg).catch((error) => onError(String(error)));
           }}
           disabled={!layout}
         >
@@ -390,6 +564,19 @@ export function Schematic({
                 />
                 Show grid
               </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={preferences.minimap}
+                  onChange={(e) =>
+                    onPreferences({
+                      ...preferences,
+                      minimap: e.target.checked,
+                    })
+                  }
+                />
+                Show minimap on large sheets
+              </label>
             </div>
           )}
         </div>
@@ -424,7 +611,7 @@ export function Schematic({
       <svg
         ref={ref}
         aria-label="Schematic"
-        className={`schematic-canvas ${level < -1 ? "zoomed-out" : ""}`}
+        className={`schematic-canvas ${level < -1 ? "zoomed-out" : ""} ${overview ? "overview" : ""}`}
         onWheel={(e) => {
           e.preventDefault();
           const rect = e.currentTarget.getBoundingClientRect();
@@ -454,8 +641,29 @@ export function Schematic({
               y: d.cy + e.clientY - d.y,
             });
         }}
-        onPointerUp={() => {
+        onPointerUp={(e) => {
+          const d = drag.current;
           drag.current = undefined;
+          // An outline has no elements to click: find the cell under the pointer.
+          if (
+            !overview ||
+            !d ||
+            Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4
+          )
+            return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          const { x, y, scale } = camera.current;
+          const px = (e.clientX - rect.left - x) / scale,
+            py = (e.clientY - rect.top - y) / scale;
+          const hit = layout?.graph.children?.find(
+            (placed) =>
+              (placed.x ?? 0) <= px &&
+              px <= (placed.x ?? 0) + (placed.width ?? 0) &&
+              (placed.y ?? 0) <= py &&
+              py <= (placed.y ?? 0) + (placed.height ?? 0),
+          );
+          const node = hit && renderNodes.get(hit.id);
+          if (node && node.kind !== "net junction") onInspect(node);
         }}
       >
         <style>{schematicStyle(preferences.theme)}</style>
@@ -486,12 +694,23 @@ export function Schematic({
           </>
         )}
         <g data-world>
+          {overview && outline && (
+            <>
+              <path className="edge" d={outline.wires} pointerEvents="none" />
+              <path
+                className="nodebox symbol-fill"
+                d={outline.nodes}
+                pointerEvents="none"
+              />
+            </>
+          )}
           {layout?.wires.map((wire) => {
             const original = edges.get(wire.edge_id);
             if (!original) return null;
             const active = target
               ? target.kind === "wire" && target.wireId === wire.id
               : wire.signal_ids.includes(selected ?? "");
+            if (overview ? !active : !shown(wire.box)) return null;
             const context =
               target?.kind === "pin" &&
               [...original.sources, ...original.targets].includes(
@@ -520,29 +739,40 @@ export function Schematic({
                 }}
               >
                 <title>{`Wire ${original.label || "unnamed net"} · ${wire.width} bits · ${[...new Set([...original.sources, ...original.targets].map((id) => portOwners.get(id)).filter(Boolean))].join(" → ")}`}</title>
-                {wire.paths.map((path, i) => (
-                  <g key={i}>
-                    <path d={path.d} className="edge-hit" />
-                    <path
-                      d={path.d}
-                      className={`edge ${path.width > 1 ? "bus" : ""} ${active ? "selected" : ""} ${context ? "context" : ""}`}
+                {wire.paths.map((path, i) =>
+                  overview || shown(path.box) ? (
+                    <g key={i}>
+                      <path d={path.d} className="edge-hit" />
+                      <path
+                        d={path.d}
+                        className={`edge ${path.width > 1 ? "bus" : ""} ${active ? "selected" : ""} ${context ? "context" : ""}`}
+                      />
+                    </g>
+                  ) : null,
+                )}
+                {wire.junctions.map((p, i) =>
+                  overview || shown([p.x, p.y, p.x, p.y]) ? (
+                    <circle
+                      key={i}
+                      cx={p.x}
+                      cy={p.y}
+                      r="2.5"
+                      className="junction"
                     />
-                  </g>
-                ))}
-                {wire.junctions.map((p, i) => (
-                  <circle
-                    key={i}
-                    cx={p.x}
-                    cy={p.y}
-                    r="2.5"
-                    className="junction"
-                  />
-                ))}
-                {wire.labels.map((label, i) => (
-                  <text key={i} x={label.x} y={label.y} className="wire-label">
-                    {label.text}
-                  </text>
-                ))}
+                  ) : null,
+                )}
+                {wire.labels.map((label, i) =>
+                  shown([label.x, label.y, label.x, label.y]) ? (
+                    <text
+                      key={i}
+                      x={label.x}
+                      y={label.y}
+                      className="wire-label"
+                    >
+                      {label.text}
+                    </text>
+                  ) : null,
+                )}
               </g>
             );
           })}
@@ -551,6 +781,14 @@ export function Schematic({
             if (!node || node.kind === "net junction") return null;
             const geometry = geometries.get(node.id);
             if (!geometry) return null;
+            const x = placed.x ?? 0,
+              y = placed.y ?? 0;
+            if (
+              overview
+                ? inspected !== node.id
+                : !shown([x, y, x + geometry.width, y + geometry.height])
+            )
+              return null;
             const open = () => {
               if (node.display.detail) onDetail(node.display.detail);
               else if (node.child_scope) onScope(node.child_scope);
@@ -640,6 +878,7 @@ export function Schematic({
               x: placed.x + anchor.x,
               y: placed.y + anchor.y,
             };
+            if (overview || !shown([pin.x, pin.y, pin.x, pin.y])) return null;
             const dx =
               anchor.side === "EAST"
                 ? CONNECTOR
@@ -691,6 +930,40 @@ export function Schematic({
           })}
         </g>
       </svg>
+      {outline && preferences.minimap && (
+        <div
+          className="schematic-minimap"
+          aria-label="Schematic minimap"
+          style={{
+            width: Math.max(48, sheetWidth * mapScale),
+            height: Math.max(48, sheetHeight * mapScale),
+          }}
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            centre(e);
+          }}
+          onPointerMove={(e) => {
+            if (e.buttons) centre(e);
+          }}
+        >
+          <svg
+            viewBox={`0 0 ${sheetWidth} ${sheetHeight}`}
+            preserveAspectRatio="none"
+          >
+            <path d={outline.nodes} />
+          </svg>
+          {focus && (
+            <div
+              className="minimap-selection"
+              style={{
+                left: `${(100 * (focus[0] + focus[2])) / 2 / (sheetWidth || 1)}%`,
+                top: `${(100 * (focus[1] + focus[3])) / 2 / (sheetHeight || 1)}%`,
+              }}
+            />
+          )}
+          <div className="minimap-window" ref={mapWindow} />
+        </div>
+      )}
     </div>
   );
 }

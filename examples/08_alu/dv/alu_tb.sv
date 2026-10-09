@@ -64,12 +64,6 @@ module alu_tb
     .result_o  (result_o)
   );
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
-	initial begin
-    $dumpfile("alu.vcd");
-    $dumpvars(0, alu_tb);
-	end
-
   initial begin
     for (int opcode = 0; opcode < 11; opcode++) begin
       opcode_i = 4'(opcode);

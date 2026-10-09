@@ -33,12 +33,6 @@ module adder_N_tb ();
     /* verilator lint_on UNUSEDSIGNAL */
   endfunction
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
-	initial begin
-    $dumpfile("adder_N.vcd");
-    $dumpvars(0, adder_N_tb);
-	end
-
   initial begin
     for (int i = 0; i < `MAX_DATA; i++) begin
       a_i = `N'($urandom_range(0, `MAX_RANGE));

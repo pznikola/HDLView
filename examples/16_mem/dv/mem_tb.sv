@@ -34,12 +34,6 @@ module mem_tb ();
   );
 
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
-	initial begin
-    $dumpfile("mem.vcd");
-    $dumpvars(0, mem_tb);
-	end
-
   // Read and write random data to random addresses
   initial begin
     for (int i = 0; i <= `MAX_DATA; i++) begin

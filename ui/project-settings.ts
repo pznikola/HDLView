@@ -21,6 +21,7 @@ interface PhysicalDraft
     | "clock_period_ns"
     | "additional_clocks"
     | "related_clocks"
+    | "flatten_mapped"
     | "overrides"
   > {
   clock_port: string;
@@ -28,6 +29,7 @@ interface PhysicalDraft
   /** Port and period of each further clock. */
   additional_clocks: SettingPair[];
   related_clocks: boolean;
+  flatten_mapped: boolean;
   overrides: string;
   utilization: string;
   density: string;
@@ -60,6 +62,7 @@ export function physicalDraft(
     clock_period_ns: "",
     additional_clocks: [],
     related_clocks: false,
+    flatten_mapped: false,
     overrides: "{}",
     utilization: "",
     density: "",
@@ -92,6 +95,7 @@ export function settingsDraft(project: Project): SettingsDraft {
             (clock): SettingPair => [clock.port, String(clock.period_ns)],
           ),
           related_clocks: physical.related_clocks ?? false,
+          flatten_mapped: physical.flatten_mapped ?? false,
           overrides: JSON.stringify(overrides, null, 2),
           utilization,
           density,
@@ -211,6 +215,7 @@ export function settingsProject(draft: SettingsDraft): Project {
             ...(physical.related_clocks ? { related_clocks: true } : {}),
           }
         : {}),
+      ...(physical.flatten_mapped ? { flatten_mapped: true } : {}),
     };
   }
   return {

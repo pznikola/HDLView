@@ -21,12 +21,6 @@ module bin2onehot_tb ();
     .onehot_o(onehot_o)
   );
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
-	initial begin
-    $dumpfile("bin2onehot.vcd");
-    $dumpvars(0, bin2onehot_tb);
-	end
-
   // Gold model - TODO: Think how to do this better
   assign gold_w = 1'b1 << bin_i;
 

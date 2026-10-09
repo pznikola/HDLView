@@ -19,12 +19,6 @@ module bin2gray_tb ();
     .gray_o(gray_o)
   );
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
-	initial begin
-    $dumpfile("bin2gray.vcd");
-    $dumpvars(0, bin2gray_tb);
-	end
-
   // Gold model - TODO: Think how to do this better
   assign gold_w = (bin_i>>1) ^ bin_i;
 

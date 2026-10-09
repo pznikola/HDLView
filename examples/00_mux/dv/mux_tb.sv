@@ -32,11 +32,6 @@ module mux_tb ();
     $finish;
   end
 
-  initial begin
-    $dumpfile("mux.vcd");
-    $dumpvars(0, mux_tb);
-  end
-
   // Check the results
   always @(c_o) begin
     if (sel_i) begin: gen_expect_a

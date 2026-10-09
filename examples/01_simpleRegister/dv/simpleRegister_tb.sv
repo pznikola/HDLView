@@ -28,10 +28,8 @@ module simpleRegister_tb ();
   // toggle clock
   always #(`CLK_PERIOD/2) clk <= ~clk;
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
+  // Check if enough data was sent, and if so terminate the test
 	initial begin
-    $dumpfile("simpleRegister.vcd");
-    $dumpvars(0, simpleRegister_tb);
 		wait(counter == `MAX_DATA);
 		$finish;
 	end

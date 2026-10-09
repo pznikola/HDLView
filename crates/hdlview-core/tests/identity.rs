@@ -33,6 +33,70 @@ fn repeated_instances_never_bind_by_basename() {
     );
 }
 #[test]
+fn a_wire_named_per_bit_binds_to_its_bit_of_the_joined_trace_vector() {
+    let (mut s, r, mut w) = fixture();
+    let leaf = s.design.modules.get_mut("leaf").unwrap();
+    let mut wire = leaf.signals[0].clone();
+    wire.bits.truncate(1);
+    wire.offset = 0;
+    for name in ["bus[2]", "bus[0]", "other[2]", "word[9][1]", "a.b"] {
+        wire.name = name.into();
+        leaf.signals.push(wire.clone());
+    }
+    let path = |name: &str| vec!["tb".into(), "dut".into(), "first".into(), name.into()];
+    w.variables.push(WaveVariable {
+        id: 1,
+        path: path("\\bus"),
+        width: 3,
+        index: Some((2, 0)),
+    });
+    let mut word = path("\\word");
+    word.push("[9]".into());
+    w.variables.push(WaveVariable {
+        id: 4,
+        path: word,
+        width: 2,
+        index: Some((1, 0)),
+    });
+    w.variables.push(WaveVariable {
+        id: 5,
+        path: path("\\a.b"),
+        width: 1,
+        index: None,
+    });
+    // Two declarations of one name leave the wire unbound rather than guessed.
+    for id in [2, 3] {
+        w.variables.push(WaveVariable {
+            id,
+            path: path("\\other"),
+            width: 3,
+            index: Some((2, 0)),
+        });
+    }
+    let b = waveform::bindings(&s, &r, &w, &BTreeMap::new()).unwrap();
+    let bound = |name: &str| {
+        b.iter()
+            .find(|binding| binding.signal_id.contains(&format!("\"first\",\"{name}\"")))
+            .unwrap()
+    };
+    let high = bound("bus[2]");
+    assert_eq!(
+        (high.status.as_str(), &high.variable_ids),
+        ("exact", &vec![1])
+    );
+    assert_eq!(
+        (high.variable_bit, &high.bit_correspondence),
+        (Some(2), &vec![(0, 2)])
+    );
+    assert_eq!(bound("bus[0]").variable_bit, Some(0));
+    let word = bound("word[9][1]");
+    assert_eq!((&word.variable_ids, word.variable_bit), (&vec![4], Some(1)));
+    let plain = bound("a.b");
+    assert_eq!((&plain.variable_ids, plain.variable_bit), (&vec![5], None));
+    assert_eq!(bound("other[2]").status, "missing");
+    assert_eq!(bound("count").variable_bit, None);
+}
+#[test]
 fn range_offsets_are_checked() {
     let (s, r, mut w) = fixture();
     w.variables[0].index = Some((3, 0));

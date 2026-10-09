@@ -342,6 +342,11 @@ fn feeds(
         .collect()
 }
 
+/// Most cells with signal pins in one view: layout time grows faster than their count.
+pub const LOGIC_LIMIT: usize = 5000;
+/// Most cells in one view, counting the cells that have supply pins only.
+const CELL_LIMIT: usize = 20_000;
+
 pub fn view_for_schematic(
     s: &DesignSnapshot,
     scope: &[String],
@@ -352,7 +357,7 @@ pub fn view_for_schematic(
 ) -> Result<GraphView> {
     let sc = s.design.scope(scope).context("Unknown scope")?;
     let m = &s.design.modules[&sc.module];
-    let limit = limit.clamp(1, 2000);
+    let limit = limit.clamp(1, LOGIC_LIMIT);
     let signals = signal_refs(s, scope)?;
     let mut bybit: BTreeMap<Bit, Vec<String>> = BTreeMap::new();
     for (sig, r) in m.signals.iter().zip(&signals) {
@@ -369,18 +374,22 @@ pub fn view_for_schematic(
         .filter(|(_, r)| Some(r.id.as_str()) == focus)
         .flat_map(|(sig, _)| sig.bits.clone())
         .collect();
-    let mut selected: Vec<&Cell> = m
+    let (physical, logic): (Vec<&Cell>, Vec<&Cell>) = m
         .cells
         .iter()
-        .filter(|c| show_physical_cells || !crate::schematic::is_physical(&s.design, c))
-        .filter(|c| {
-            focus.is_none()
-                || c.ports
-                    .iter()
-                    .any(|p| p.bits.iter().any(|b| focusbits.contains(b)))
-        })
-        .take(limit)
-        .collect();
+        .partition(|c| crate::schematic::is_physical(&s.design, c));
+    let focused = |c: &&Cell| {
+        focus.is_none()
+            || c.ports
+                .iter()
+                .any(|p| p.bits.iter().any(|b| focusbits.contains(b)))
+    };
+    // Cells with signal pins come first, so truncation never trades logic for fill.
+    let mut selected: Vec<&Cell> = logic.into_iter().filter(focused).take(limit).collect();
+    if show_physical_cells {
+        let room = CELL_LIMIT - selected.len();
+        selected.extend(physical.iter().copied().filter(focused).take(room));
+    }
     if split_buses {
         let endpoints: usize = m
             .ports
@@ -397,10 +406,7 @@ pub fn view_for_schematic(
     let hidden_physical_cells = if show_physical_cells {
         0
     } else {
-        m.cells
-            .iter()
-            .filter(|c| crate::schematic::is_physical(&s.design, c))
-            .count()
+        physical.len()
     };
     let omitted_cells = m
         .cells
@@ -461,7 +467,9 @@ pub fn view_for_schematic(
             }
         };
         for p in ports {
-            let declarations = m.signals.iter().find(|sig| boundary && sig.name == p.name);
+            let declarations = boundary
+                .then(|| m.signals.iter().find(|sig| sig.name == p.name))
+                .flatten();
             let partitions: Vec<(String, &[Bit])> = if split_buses && p.bits.len() > 1 {
                 p.bits
                     .iter()
@@ -694,24 +702,26 @@ pub fn view_for_schematic(
     for (net, bits) in read_outside {
         nets[net].targets.insert(connector(&bits, "input"));
     }
+    let declared_order: BTreeMap<&str, usize> = signals
+        .iter()
+        .enumerate()
+        .map(|(i, signal)| (signal.id.as_str(), i))
+        .collect();
     let edges: Vec<ViewEdge> = nets
         .iter()
         .enumerate()
         .map(|(i, net)| {
             let bs = &net.bits;
-            let ids: BTreeSet<String> = bs
+            let ids: BTreeSet<(usize, &String)> = bs
                 .iter()
-                .flat_map(|b| bybit.get(b).cloned().unwrap_or_default())
+                .flat_map(|b| bybit.get(b).into_iter().flatten())
+                .map(|id| (declared_order[id.as_str()], id))
                 .collect();
             ViewEdge {
                 id: format!("{scope_id}:edge:{i}"),
                 sources: net.sources.clone(),
                 targets: net.targets.iter().cloned().collect(),
-                signal_ids: signals
-                    .iter()
-                    .filter(|signal| ids.contains(&signal.id))
-                    .map(|signal| signal.id.clone())
-                    .collect(),
+                signal_ids: ids.into_iter().map(|(_, id)| id.clone()).collect(),
                 // Named by `schematic::view` from the declared signals.
                 label: String::new(),
                 bits: bs.clone(),
@@ -725,6 +735,10 @@ pub fn view_for_schematic(
         .flat_map(|n| &n.ports)
         .map(|p| (p.id.as_str(), p))
         .collect();
+    let mut declarations: BTreeMap<&[Bit], &Signal> = BTreeMap::new();
+    for sig in m.signals.iter().filter(|sig| !sig.hidden) {
+        declarations.entry(&sig.bits).or_insert(sig);
+    }
     let trunks: Vec<(usize, Option<(i64, bool)>)> = nets
         .iter()
         .map(|net| {
@@ -734,10 +748,7 @@ pub fn view_for_schematic(
                 .and_then(|id| pins.get(id.as_str()))
                 .and_then(|p| p.display.as_ref())
                 .map_or(&net.bits, |d| &d.bits);
-            let declared = m
-                .signals
-                .iter()
-                .find(|sig| !sig.hidden && &sig.bits == bits);
+            let declared = declarations.get(bits.as_slice());
             (bits.len(), declared.map(|sig| (sig.offset, sig.upto)))
         })
         .collect();

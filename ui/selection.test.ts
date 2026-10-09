@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { nextSelection, position, formatValue } from "./selection";
+import { nextSelection, position, formatValue, valueBit } from "./selection";
 describe("cross-probing and waveform arithmetic", () => {
   it("tracks origin without re-emitting incoming selections", () => {
     const s = nextSelection(undefined, { origin: "schematic", signalId: "a" });
@@ -15,5 +15,11 @@ describe("cross-probing and waveform arithmetic", () => {
   it("does not turn unknown values into numeric zero", () => {
     expect(formatValue("10xz", "hex")).toBe("10xz");
     expect(formatValue("1111", "hex")).toBe("0xf");
+  });
+  it("shows one bit of a vector for a wire that is that bit", () => {
+    expect(valueBit("0100", undefined)).toBe("0100");
+    expect(valueBit("0100", 2)).toBe("1");
+    expect(valueBit("01x0", 1)).toBe("x");
+    expect(valueBit("activity:0100", 0)).toBe("activity:0");
   });
 });

@@ -43,6 +43,12 @@ export function position(
     ) / 1024
   );
 }
+/** One bit of a binary value, counted from the right; the value when no bit is given. */
+export function valueBit(value: string, bit: number | undefined): string {
+  if (bit === undefined) return value;
+  const activity = value.startsWith("activity:") ? "activity:" : "";
+  return activity + (value.slice(activity.length).at(-1 - bit) ?? "");
+}
 export function formatValue(value: string, radix: string): string {
   if (value.startsWith("activity:"))
     return "⋮ " + formatValue(value.slice(9), radix);

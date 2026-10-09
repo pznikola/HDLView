@@ -1,6 +1,6 @@
 import type { Node, Port } from "./types";
 
-export const GEOMETRY_VERSION = 6;
+export const GEOMETRY_VERSION = 7;
 interface SymbolPath {
   d: string;
   fill?: boolean;

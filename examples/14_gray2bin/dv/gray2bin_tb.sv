@@ -19,12 +19,6 @@ module gray2bin_tb ();
     .gray_i(gray_i)
   );
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
-	initial begin
-    $dumpfile("gray2bin.vcd");
-    $dumpvars(0, gray2bin_tb);
-	end
-
   // Gold model - TODO: Think how to do this better
   function automatic logic [`N-1:0] gray2bin(input logic [`N-1:0] g);
     for (int i = 0; i < `N; i++) begin

@@ -50,12 +50,6 @@ module sync_ff_tb ();
     join
   endtask
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
-	initial begin
-    $dumpfile("sync_ff.vcd");
-    $dumpvars(0, sync_ff_tb);
-	end
-
   // Reset
   initial begin
     fork

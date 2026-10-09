@@ -12,6 +12,7 @@ import {
   type Selection,
   type ConnectionTarget,
   formatValue,
+  valueBit,
 } from "./selection";
 import type {
   Snapshot,
@@ -438,7 +439,11 @@ function App() {
       fail(e);
     }
   }
-  function pickSignal(ids: string[], connection?: ConnectionTarget) {
+  function pickSignal(
+    ids: string[],
+    connection?: ConnectionTarget,
+    origin: Selection["origin"] = "schematic",
+  ) {
     // The graph supplies the clicked declaration/endpoint first. A missing pin
     // must never fall through to an electrically connected but delayed net.
     const id = ids[0];
@@ -455,7 +460,7 @@ function App() {
         : undefined;
     setSelection((p) =>
       nextSelection(p, {
-        origin: "schematic",
+        origin,
         signalId: id,
         variableId,
         connection,
@@ -1019,7 +1024,9 @@ function App() {
                       <button
                         key={s.id}
                         className={selection?.signalId === s.id ? "active" : ""}
-                        onClick={() => pickSignal([s.id])}
+                        onClick={() =>
+                          pickSignal([s.id], undefined, "hierarchy")
+                        }
                       >
                         <span>
                           {s.path.at(-1)}
@@ -1031,7 +1038,13 @@ function App() {
                           }
                         >
                           {variableId !== undefined
-                            ? formatValue(values[variableId] ?? "", "hex")
+                            ? formatValue(
+                                valueBit(
+                                  values[variableId] ?? "",
+                                  b?.variable_bit,
+                                ),
+                                "hex",
+                              )
                             : run
                               ? "—"
                               : ""}
@@ -1468,6 +1481,11 @@ function App() {
                   splitBuses={splitBuses}
                   onSplitBuses={() => setSplitBuses(!splitBuses)}
                   selected={selection?.signalId}
+                  reveal={
+                    selection?.origin === "schematic"
+                      ? undefined
+                      : selection?.sequence
+                  }
                   target={selection?.connection}
                   inspected={inspect?.id}
                   onSignal={pickSignal}

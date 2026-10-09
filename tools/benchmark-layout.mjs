@@ -86,13 +86,21 @@ try {
         height: Math.round(view.graph.height),
       };
     };
-    for (const pattern of ["mixed_balanced", "high_fanout"]) {
+    // "memory" is words of write multiplexer and register read through a
+    // multiplexer tree, the shape of a small RAM mapped to flip-flops.
+    for (const [pattern, count] of [
+      ["mixed_balanced", 1000],
+      ["high_fanout", 1000],
+      ["memory", 2500],
+      ["memory", 5000],
+    ]) {
+      const words = Math.floor(count / 3);
       const graph = {
         nodes: [],
         edges: [],
         signals: [],
         truncated: false,
-        total_cells: 1000,
+        total_cells: count,
         hidden_physical_cells: 0,
         omitted_cells: 0,
       };
@@ -110,11 +118,16 @@ try {
           asynchronous: false,
         },
       });
-      for (let i = 0; i < 1000; i++) {
+      const cells = pattern === "memory" ? 3 * words - 1 : count;
+      for (let i = 0; i < cells; i++) {
         const symbol =
           pattern === "mixed_balanced"
             ? ["and", "mux", "register", "operator"][i % 4]
-            : "and";
+            : pattern === "memory"
+              ? i >= words && i < 2 * words
+                ? "register"
+                : "mux"
+              : "and";
         const input = symbol === "register" ? "D" : "A";
         graph.nodes.push({
           id: `n${i}`,
@@ -145,7 +158,30 @@ try {
             pin(`n${i}:Y`, "output"),
           ],
         });
-        if (i)
+        if (pattern === "memory") {
+          // Cells 0..words are write multiplexers, then registers, then the tree.
+          const net = (source, targets) =>
+            graph.edges.push({
+              id: `e${graph.edges.length}`,
+              sources: [`n${source}:Y`],
+              targets,
+              signal_ids: [`e${graph.edges.length}`],
+              label: "",
+              bits: [graph.edges.length + 2],
+            });
+          if (i < words) net(i, [`n${words + i}:D`]);
+          else if (i < 2 * words) {
+            // Leaves of the tree are the registers, two per multiplexer.
+            const leaf = words - 1 + (i - words),
+              parent = 2 * words + Math.floor((leaf - 1) / 2);
+            net(i, [`n${i - words}:A`, `n${parent}:${leaf % 2 ? "A" : "B"}`]);
+          } else if (i > 2 * words) {
+            const j = i - 2 * words;
+            net(i, [
+              `n${2 * words + Math.floor((j - 1) / 2)}:${j % 2 ? "A" : "B"}`,
+            ]);
+          }
+        } else if (i)
           graph.edges.push({
             id: `e${i}`,
             sources: [
@@ -179,8 +215,8 @@ try {
             ? reject(new Error(data.error))
             : resolve({
                 pattern,
-                nodes: 1000,
-                edges: 999,
+                nodes: graph.nodes.length,
+                edges: graph.edges.length,
                 layout_ms,
                 repeat_layout_ms: performance.now() - start,
                 ...quality(data.result),

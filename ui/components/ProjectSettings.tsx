@@ -1200,6 +1200,27 @@ export function ProjectSettings({
                       </button>
                     </div>
                   </label>
+                  <label className="settings-check">
+                    <input
+                      type="checkbox"
+                      aria-label="Keep module hierarchy at Mapped gates"
+                      checked={!flow.flatten_mapped}
+                      onChange={(e) =>
+                        change({
+                          ...draft,
+                          physical: {
+                            ...flow,
+                            flatten_mapped: !e.target.checked,
+                          },
+                        })
+                      }
+                    />
+                    <span>Keep module hierarchy at Mapped gates</span>
+                  </label>
+                  <p className="hint">
+                    Each module is synthesized and drawn on its own sheet.
+                    Post-layout is always one flat netlist.
+                  </p>
                   <label>
                     Core utilization (%)
                     <input

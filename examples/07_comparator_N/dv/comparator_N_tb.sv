@@ -26,12 +26,6 @@ module comparator_N_tb ();
     .greater_o (greater_o)
   );
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
-	initial begin
-    $dumpfile("comparator_N.vcd");
-    $dumpvars(0, comparator_N_tb);
-	end
-
   initial begin
     for (int i = 0; i < `MAX_DATA; i++) begin
       if (i % 8 == 0) begin

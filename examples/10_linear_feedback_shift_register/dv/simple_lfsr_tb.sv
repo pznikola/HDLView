@@ -38,10 +38,8 @@ module simple_lfsr_tb ();
     rst_n = 1'b1;
   end
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
+  // Check if enough data was sent, and if so terminate the test
 	initial begin
-    $dumpfile("simple_lfsr.vcd");
-    $dumpvars(0, simple_lfsr_tb);
 		wait(counter == `MAX_DATA);
 		$finish;
 	end

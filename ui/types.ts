@@ -17,6 +17,8 @@ export interface PhysicalConfig {
   clock_period_ns: number;
   additional_clocks?: { port: string; period_ns: number }[];
   related_clocks?: boolean;
+  /** Mapped gates keeps the module hierarchy unless this is set. */
+  flatten_mapped?: boolean;
   sdc?: FileRef | null;
   overrides: Record<string, unknown>;
 }
@@ -121,6 +123,8 @@ export interface Binding {
   variable_ids: number[];
   status: string;
   evidence: string;
+  /** The signal is this bit of the variable's value, counted from the right. */
+  variable_bit?: number;
 }
 export interface Signal {
   id: string;

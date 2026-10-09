@@ -27,10 +27,8 @@ module edge_detector_tb ();
   // toggle clock
   always #(`CLK_PERIOD/2) clk <= ~clk;
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
+  // Check if enough data was sent, and if so terminate the test
 	initial begin
-    $dumpfile("edge_detector.vcd");
-    $dumpvars(0, edge_detector_tb);
 		wait(counter == `MAX_DATA);
 		$finish;
 	end

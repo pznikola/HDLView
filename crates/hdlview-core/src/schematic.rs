@@ -1583,6 +1583,22 @@ mod tests {
         // stays an explicit unknown.
         assert_eq!(symbol("odd"), "unknown");
         assert_eq!(symbol("bare"), "unknown");
+        // The limit counts cells with signal pins; physical cells never displace them.
+        let options = SchematicOptions {
+            show_physical_cells: true,
+            ..Default::default()
+        };
+        let bounded = view(&s, &["top".into()], None, 1, false, &options).unwrap();
+        let symbols: Vec<_> = bounded
+            .nodes
+            .iter()
+            .filter_map(|n| n.display.as_ref())
+            .map(|d| d.symbol.as_str())
+            .filter(|symbol| !matches!(*symbol, "port" | "connector"))
+            .collect();
+        assert_eq!(symbols.len(), 2);
+        assert!(symbols.contains(&"physical"));
+        assert_eq!(bounded.omitted_cells, 2);
     }
     #[test]
     fn a_grouped_mux_keeps_its_constant_data_input() {

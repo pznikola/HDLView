@@ -219,6 +219,38 @@ fn range_matches(signal: &crate::model::SignalRef, variable: &WaveVariable) -> b
     signal.offset == left.min(right) && signal.offset + signal.width as i64 - 1 == left.max(right)
 }
 
+/// A gate netlist names some wires bit by bit, `\name[3]`, and the simulator dumps
+/// them so. The trace reader joins such neighbours into one vector `\name`, and
+/// files `\name[9][3]` as vector `[9]` in a scope `\name`. Find the vector and the
+/// declared index that a one-bit wire is.
+fn joined_bit<'a>(
+    wavepaths: &BTreeMap<Vec<String>, Vec<&'a WaveVariable>>,
+    key: &[String],
+) -> Option<(&'a WaveVariable, i64)> {
+    let (name, scope) = key.split_last()?;
+    let mut base = name.as_str();
+    let mut indices = Vec::new();
+    while let Some((head, index)) = base.strip_suffix(']').and_then(|b| b.rsplit_once('[')) {
+        if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
+            break;
+        }
+        indices.push(index);
+        base = head;
+    }
+    let index: i64 = indices.first()?.parse().ok()?;
+    let mut path = scope.to_vec();
+    path.push(format!("\\{base}"));
+    path.extend(indices[1..].iter().rev().map(|i| format!("[{i}]")));
+    let mut found = wavepaths.get(&path)?.iter().filter(|v| {
+        v.index.is_some_and(|(left, right)| {
+            (left.min(right)..=left.max(right)).contains(&index)
+                && v.width as i64 == (left - right).abs() + 1
+        })
+    });
+    let variable = found.next()?;
+    found.next().is_none().then_some((*variable, index))
+}
+
 pub fn bindings(
     snapshot: &DesignSnapshot,
     run: &SimulationRun,
@@ -238,13 +270,21 @@ pub fn bindings(
             let mut path = run.dut_scope.clone();
             path.extend_from_slice(&sig.path[1..]);
             let key = path;
-            let candidates: Vec<u32> = wavepaths
-                .get(&key)
+            // The trace keeps the backslash of an escaped identifier.
+            let mut escaped = key.clone();
+            if let Some(name) = escaped.last_mut() {
+                name.insert(0, '\\');
+            }
+            let declared = wavepaths.get(&key).or_else(|| wavepaths.get(&escaped));
+            let candidates: Vec<u32> = declared
                 .into_iter()
                 .flatten()
                 .filter(|v| range_matches(&sig, v))
                 .map(|v| v.id)
                 .collect();
+            let joined = (candidates.is_empty() && sig.width == 1)
+                .then(|| joined_bit(&wavepaths, &key))
+                .flatten();
             let (ids, status, evidence) = if let Some(id) = manual.get(&sig.id) {
                 let v = info
                     .variables
@@ -271,7 +311,13 @@ pub fn bindings(
                     "ambiguous",
                     "Multiple waveform declarations match",
                 )
-            } else if wavepaths.contains_key(&key) {
+            } else if let Some((variable, _)) = joined {
+                (
+                    vec![variable.id],
+                    "exact",
+                    "DUT scope and exact declaration path; the trace groups this wire with its neighbouring bits",
+                )
+            } else if declared.is_some() {
                 (
                     vec![],
                     "range_mismatch",
@@ -293,7 +339,10 @@ pub fn bindings(
                     "No matching dumped declaration; no value inferred",
                 )
             };
-            let bit_correspondence = if ["exact", "manual"].contains(&status) {
+            let joined = joined.filter(|_| !manual.contains_key(&sig.id));
+            let bit_correspondence = if let Some((_, index)) = joined {
+                vec![(sig.offset, index)]
+            } else if ["exact", "manual"].contains(&status) {
                 (0..sig.width)
                     .map(|i| (sig.offset + i as i64, sig.offset + i as i64))
                     .collect()
@@ -306,6 +355,10 @@ pub fn bindings(
                 status: status.into(),
                 evidence: evidence.into(),
                 bit_correspondence,
+                variable_bit: joined.and_then(|(variable, index)| {
+                    let (_, right) = variable.index?;
+                    Some((index - right).unsigned_abs() as u32)
+                }),
             });
         }
     }

@@ -23,12 +23,6 @@ logic rd_empty_o;
 // DUT
 fifo #(.DSIZE(`DSIZE), .ASIZE(`ASIZE)) u_fifo(.*);
 
-// Dump VCD
-initial begin
-  $dumpfile("fifo.vcd");
-	$dumpvars(0, fifo_tb);
-end
-
 // Clock Generation
 always begin
   #(`PERIOD/2); 

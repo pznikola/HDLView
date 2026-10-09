@@ -78,6 +78,11 @@ describe("project settings drafts", () => {
       related_clocks: true,
     });
     expect(settingsProject(settingsDraft(saved))).toEqual(saved);
+    expect(saved.physical).not.toHaveProperty("flatten_mapped");
+    draft.physical.flatten_mapped = true;
+    expect(settingsProject(draft).physical).toMatchObject({
+      flatten_mapped: true,
+    });
     draft.physical.additional_clocks = [["rd_clk", ""]];
     expect(() => settingsProject(draft)).toThrow("Enter a port and a period");
   });

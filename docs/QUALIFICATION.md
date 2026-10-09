@@ -2,6 +2,91 @@
 
 This file records exercised workflows separately from proposed release targets. Version 0.1.0 is an engineering preview; it is not a claim of complete HDL-language coverage or signoff-quality timing simulation.
 
+## Large gate schematics
+
+Measured 9 October 2026 on the saved Post-layout snapshot of `examples/17_afifo`
+(SKY130): one flat module of 16,330 cells, of which 13,968 are fill, tap and decoupling
+cells and 2,362 have signal pins. Chromium, Playwright, release CLI as the service.
+
+| Case                                                | Before                      | After                       |
+| --------------------------------------------------- | --------------------------- | --------------------------- |
+| Cells with signal pins in the view, physical hidden | 2,000 (362 cut off)         | 2,362                       |
+| Cells with signal pins in the view, physical shown  | 7 of the first 2,000        | 2,362                       |
+| Service builds the view (release)                   | not measured                | 0.3 to 0.5 s                |
+| Layout of the sheet, 2,380 nodes, in the worker     | over 150 s, stopped         | 3.4 s                       |
+| Elements in the page at Fit                         | every cell and wire         | 5                           |
+| Elements in the page zoomed to full size            | every cell and wire         | 12,000 to 23,000            |
+| Export SVG, physical hidden / shown                 | not measured                | 1.9 s / 3.7 s               |
+| 1,000-node layout benchmark, first / repeated       | 1.6 to 1.9 s / 1.4 to 1.5 s | 0.7 to 0.8 s / 0.4 to 0.5 s |
+| Memory-shaped benchmark, 2,500 / 5,000 nodes        | not measured                | 1.9 s / 3.5 s               |
+
+- The "before" layout time was measured in Node with the same layout code and stopped
+  after 150 s; the cause is the ELK request to keep the model order within layers, which
+  large views no longer make. Fifteen other option sets changed the time by under 10 %.
+- The sheet is about 9,600 by 64,000 px. Layer-width bounds, compaction, tighter spacing,
+  component separation and high-fanout stubbing all left it between 54,000 and 82,000 px
+  tall: 512 memory flip-flops feed one read multiplexer tree and each needs a row. Only
+  bundling identical instances would shorten it; that is not implemented.
+- The test bridge took 7 s to pass the 13 MB view to the page; that is Playwright, not
+  the application. The same transfer through Tauri was **not measured**, nor was pan and
+  zoom smoothness in the Tauri (WebKitGTK) window.
+- Building the layout cache key (27 ms) and posting the graph to the worker (51 ms) were
+  measured and left as they are.
+- Checked in the browser: click on a cell at full size and in the outline, wire
+  selection kept across Fit, export contains all 2,373 cells and 2,295 wires (16,341
+  cells with physical shown). Cross-probing from a waveform on this sheet was not run.
+
+### Module hierarchy at Mapped gates
+
+9 October 2026, Docker image (LibreLane 3.0.0, Yosys 0.60), SKY130, release CLI.
+
+| Design           | Flat (`flatten_mapped`) | Hierarchical (default)                                 |
+| ---------------- | ----------------------- | ------------------------------------------------------ |
+| `04_adder_N`     | not built               | 9 sheets: top with 8 instances, 5 cells per full adder |
+| `17_afifo`       | 1 sheet, 1,516 nodes    | 6 sheets: top 16 nodes, pointers 60, `i_mem` 1,573     |
+| `17_afifo` build | 12 s                    | 12 s                                                   |
+
+- Icarus gate simulation of both hierarchical netlists completes with the unchanged
+  `rtl` configuration. Waveform bindings inside the submodules are exact: 224 of 224 for
+  the adder, 7,223 of 7,748 for the FIFO before the fix below.
+- The 592 unbound FIFO signals were wires the netlist names bit by bit
+  (`rd_address_w[0]`, `memory_m[9][7]`); the flat build had 594, two of them escaped
+  names without an index. The trace reader joins such wires into one vector and keeps
+  the backslash of an escaped name. Each wire now binds to its bit of that vector:
+  **0 unbound** for `17_afifo` hierarchical (8,183 signals) and flat (7,317),
+  `04_adder_N` (240), `11_fifo` (7,876) and `08_alu` (1,748). The signal list shows
+  that one bit; the waveform row is the joined vector. Names with three or more
+  trailing indices follow the same rule but no design here has one.
+- Post-layout is unchanged and was not rebuilt. IHP SG13G2 and SDF timing runs were not
+  tried with the hierarchical netlist (SDF belongs to Post-layout, which stays flat).
+- Checked through the CLI and service, not in the desktop window.
+
+### Navigation on a large sheet
+
+Same snapshot and setup, 9 October 2026, after culling wires by segment and adding the
+minimap and **Show selection**.
+
+- Page elements for the same window at full size (40 cells, 232 wires): **12,031 before,
+  2,416 after**. Other windows on the sheet measured 900 to 3,500.
+- The minimap appears (48 by 240 px for this sheet); its window rectangle follows pan and
+  zoom, and a click at 80 % of its height moved the window there.
+- Picking `_0300_` in the signal list moved the camera to its wire at full size with the
+  wire highlighted. A click on a cell in the schematic left the camera where it was.
+  **Show selection** after panning away brought the object back inside the window.
+- Export SVG still holds all 2,373 cells and 2,295 wires (10,300 segments).
+- Not run: selection from a waveform trace on this sheet (same code path as the signal
+  list, different origin), and anything in the Tauri window.
+
+## Example testbenches without their own dump
+
+10 October 2026. The 18 bundled testbenches no longer call `$dumpfile` and
+`$dumpvars`: with them, Icarus ignored HDLView's dump request and printed one "VCD
+warning" per DUT scope on every run. All 18 examples build at Elaborated RTL and
+simulate on the native toolchain, each writing HDLView's `trace.vcd` with no
+diagnostics and no "VCD warning" in the logs. Run by hand outside HDLView, these
+testbenches now produce no waveform. A user testbench that dumps its own file is
+still accepted as before, with the same Icarus warnings.
+
 ## Rebuild and interaction speed
 
 Measured 9 October 2026 on the 30-cell counter fixture and the 1,000-node layout
@@ -577,7 +662,7 @@ A 1,074,028,999-byte VCD (one 32-bit bus, approximately 24 million timestamps) p
 
 The same trace converted to a 113 MiB FST opened in **1.77 seconds**, with **408,464 KiB** peak resident memory in the debug CLI (metadata/time-table load; visible signal query cost is separate).
 
-The synthetic 100,000-cell graph test limits the returned view to 2,000 cells. Selection does not request layout, and cursor queries are capped at 200 visible schematic signals. A real Chromium worker laid out a synthetic 1,000-node/999-edge graph in **1.75 seconds**. The initial default layout took 12.30 seconds; views above 400 nodes now use lighter layered placement and crossing heuristics. Cached 200-signal queries over parser-worker IPC measured **3.45 ms median**, **3.84 ms p95** over 50 queries. These are worker measurements, not full Tauri-to-screen latency. [Raw performance results](performance-results.json).
+The synthetic 100,000-cell graph test limits the returned view to the 2,000 cells it asks for; the service default is 5,000. Selection does not request layout, and cursor queries are capped at 200 visible schematic signals. A real Chromium worker laid out a synthetic 1,000-node/999-edge graph in **1.75 seconds**. The initial default layout took 12.30 seconds; views above 400 nodes now use lighter layered placement and crossing heuristics. Cached 200-signal queries over parser-worker IPC measured **3.45 ms median**, **3.84 ms p95** over 50 queries. These are worker measurements, not full Tauri-to-screen latency. [Raw performance results](performance-results.json).
 
 ## Remaining limitations and release gates
 

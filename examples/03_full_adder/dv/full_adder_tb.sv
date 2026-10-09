@@ -20,12 +20,6 @@ module full_adder_tb ();
     .c_o(c_o)
   );
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
-	initial begin
-    $dumpfile("full_adder.vcd");
-    $dumpvars(0, full_adder_tb);
-	end
-
   initial begin
     for (int i = 0; i < `MAX_DATA; i++) begin
       /* verilator lint_off WIDTHTRUNC */

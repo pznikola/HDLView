@@ -69,12 +69,6 @@ task automatic single_write_and_read_fifo();
 
 endtask
 
-// Dump VCD
-initial begin
-  $dumpfile("afifo.vcd");
-	$dumpvars(0, afifo_tb);
-end
-
 // Clock Generation
 always begin
   #(`WR_PERIOD/2.0); 

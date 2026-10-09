@@ -69,7 +69,7 @@ Use **File → Create New Project…** to choose a name, directory, and **SKY130
 
 **File → Add New Files…** adds Verilog/SystemVerilog inputs to **Design Sources** or **Simulation Sources**. Both RTL and gate runs use the same registered testbench files; gate runs compile the exact exported Verilog netlist. Headers remain separate from compilation units. The Sources explorer preserves directories under each group; right-click an imported folder/filelist (or use Shift+F10) to rescan/reimport. Configure the testbench in **Project Settings → Simulation**; registering a simulation file does not invent a configuration.
 
-**Project Settings** groups controls into **General**, **Sources**, **Simulation**, **Physical Design**, and **Editor**. General sets the design top, language standard, and technology. Sources controls compilation order, includes, defines, and design parameters. Physical Design sets the clock period, the clock port, SDC, utilization and density; the standard-cell preset follows technology. The period is always required. Leave the clock port empty for a design without a clock: synthesis and timing then use a virtual clock of that period, so the period is the delay budget from inputs to outputs, and clock-tree synthesis is skipped. List further clock ports under **Additional clock**, each with its own period. Clocks are asynchronous to each other unless **Clocks are related** is ticked, so paths from one clock to another are not timed; synthesis targets the shortest period. A custom SDC file replaces these generated constraints. A design of only a few cells would get a core too small for the power grid, so a Post-layout build first synthesizes, and lowers the core utilization when needed; the build's diagnostics say so. Setting `FP_SIZING`, `DIE_AREA` or `CORE_AREA` in the LibreLane overrides turns that off. IHP SG13G2 builds are checked with IHP's KLayout DRC deck only: Magic's rules for that PDK reject the library's own tie-high cell. Add `"RUN_MAGIC_DRC": true` to the overrides to run Magic DRC as well. Gate-level simulation uses Icarus only: Verilator updates standard-cell flip-flops at once, so a value crosses several flops in one clock edge. Verilator configurations are for Elaborated RTL; on a Mapped gates or Post-layout schematic they are greyed out in the configuration list. For RTL runs under Verilator the testbench must itself give the DUT the project's parameter values; HDLView checks this at time zero because Verilator does not accept an override from outside the testbench.
+**Project Settings** groups controls into **General**, **Sources**, **Simulation**, **Physical Design**, and **Editor**. General sets the design top, language standard, and technology. Sources controls compilation order, includes, defines, and design parameters. Physical Design sets the clock period, the clock port, SDC, utilization and density; the standard-cell preset follows technology. The period is always required. Leave the clock port empty for a design without a clock: synthesis and timing then use a virtual clock of that period, so the period is the delay budget from inputs to outputs, and clock-tree synthesis is skipped. List further clock ports under **Additional clock**, each with its own period. Clocks are asynchronous to each other unless **Clocks are related** is ticked, so paths from one clock to another are not timed; synthesis targets the shortest period. A custom SDC file replaces these generated constraints. **Keep module hierarchy at Mapped gates** is on by default: each module is synthesized on its own and drawn on its own sheet, opened by double-clicking its instance, so a large design is a few small sheets instead of one. Untick it for one flat netlist optimized across module boundaries. Post-layout is always flat, because place and route inserts clock and repair buffers across modules. A design of only a few cells would get a core too small for the power grid, so a Post-layout build first synthesizes, and lowers the core utilization when needed; the build's diagnostics say so. Setting `FP_SIZING`, `DIE_AREA` or `CORE_AREA` in the LibreLane overrides turns that off. IHP SG13G2 builds are checked with IHP's KLayout DRC deck only: Magic's rules for that PDK reject the library's own tie-high cell. Add `"RUN_MAGIC_DRC": true` to the overrides to run Magic DRC as well. Gate-level simulation uses Icarus only: Verilator updates standard-cell flip-flops at once, so a value crosses several flops in one clock edge. Verilator configurations are for Elaborated RTL; on a Mapped gates or Post-layout schematic they are greyed out in the configuration list. For RTL runs under Verilator the testbench must itself give the DUT the project's parameter values; HDLView checks this at time zero because Verilator does not accept an override from outside the testbench.
 
 For the counter example, choose **Simulation → Add Simulation Configuration**, leave **Icarus** selected, enter **Testbench top module** `tb` and **DUT instance path** `tb.dut`, and select `tb.sv`. The path begins with the testbench top and names its counter instance. Simulation duration defaults to 1 µs. **Add Simulation Sources…** imports files without discarding settings edits. Named configurations can be duplicated, renamed or deleted; Advanced exposes simulation defines, literal runtime arguments, gate models and SDF choices. SDF requires Icarus and a matching gate snapshot.
 
@@ -120,14 +120,25 @@ Use **Display** for light/dark themes, **Show compiler nodes**, **Full clock/res
 **Show physical-only cells**, and grid. Light and no grid are the defaults. Clock/reset
 connectors use exact connectivity and known pin roles, never matching names. Physical-only
 cells are hidden only when their library interfaces are recognized; the toolbar reports
-how many. Mapped and post-layout cells are drawn from the function their Liberty library
+how many. When shown, they fill rows below the logic, because they connect to nothing but
+the supplies. Mapped and post-layout cells are drawn from the function their Liberty library
 states: gates with bubbles on inverted inputs, AND-OR and OR-AND cells with their inner
 gates, multiplexers, and flip-flops with the clock, enable and reset pins the library
 describes. Unknown cells retain explicit ports and labeled boxes. These preferences do not
 change compilation or simulation. Selection/theme/cursor changes reuse layout. The grid
 follows pan and zoom, uses coarser spacing at low zoom, and is excluded from export.
 
-**Fit**, zoom buttons, mouse-wheel zoom and background dragging control the camera. Buses
+**Fit**, zoom buttons, mouse-wheel zoom and background dragging control the camera. A
+sheet of more than 400 objects is drawn only around the window, and as plain cell and
+wire outlines when zoomed far out; click a cell in the outline to inspect it, and zoom in
+for pins and names. Such a sheet also gets a minimap in the lower right corner: the
+rectangle is the window, the dot is the selection, and a click or drag moves the window
+there (**Display → Show minimap on large sheets** turns it off). **Show selection** brings
+the selected wire or inspected cell into the window; picking a signal in the signal list
+or a trace in the waveform does that by itself when the object is out of sight. One sheet shows at most 5,000 cells with signal pins; the toolbar
+says how many are outside the view. A flat netlist whose memory became flip-flops gives a
+very tall sheet, one row per flip-flop: HDLView draws it quickly but does not compact
+it. Buses
 stay bundled unless expanded; partial connections show taps/joins and constants stay near
 consumers. **Export SVG** exports the current logical/detail view with its theme and labels,
 without selection overlays. The desktop opens a native Save dialog; the browser downloads
@@ -223,8 +234,8 @@ server. Its light/dark Playwright baselines are reviewed images in
 `tests/symbol-gallery.spec.ts-snapshots/`; review geometry changes before refreshing them.
 `tools/qualify.py --schematics` adds symbol/connectivity checks, the mixed schematic
 fixture and every bundled example to the real tool matrix; add `--mapped` for both PDK libraries.
-`node tools/benchmark-layout.mjs` measures mixed and high-fan-out graphs in the actual
-browser worker after a production build. No reference SVG skins or font assets are bundled.
+`node tools/benchmark-layout.mjs` measures mixed, high-fan-out and memory-shaped graphs
+in the actual browser worker after a production build. No reference SVG skins or font assets are bundled.
 
 ```sh
 cargo test --workspace --exclude hdlview-desktop

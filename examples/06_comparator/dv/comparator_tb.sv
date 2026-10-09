@@ -28,12 +28,6 @@ module comparator_tb ();
     .greater_o(greater_o)
   );
 
-  // Dump *.vcd and check if enough data was send, and if so terminate test
-	initial begin
-    $dumpfile("comparator.vcd");
-    $dumpvars(0, comparator_tb);
-	end
-
   initial begin
     for (int i = 0; i < `MAX_DATA; i++) begin
       /* verilator lint_off WIDTHTRUNC */
