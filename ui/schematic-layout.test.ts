@@ -17,20 +17,38 @@ const pin = (
   label: id,
   direction,
   signal_ids: [`signal:${id}`],
-  display: { name: id, width: bits.length, bits, role, polarity: true },
+  display: {
+    name: id,
+    width: bits.length,
+    bits,
+    role,
+    polarity: true,
+    asynchronous: false,
+  },
 });
 const node = (id: string, symbol: string, ports: Port[]): Node => ({
   id,
   label: id,
   kind: symbol,
-  ports,
+  // A boundary port faces inward: a module input drives the schematic.
+  ports:
+    symbol === "port"
+      ? ports.map((p) => ({
+          ...p,
+          display: {
+            ...p.display,
+            declared_direction: p.direction === "output" ? "input" : "output",
+          },
+        }))
+      : ports,
+  child_scope: null,
+  source: null,
   display: {
     symbol,
     title: symbol,
     annotations: [],
     members: [],
     internal_signal_ids: [],
-    physical_only: false,
   },
 });
 const graph = (nodes: Node[], edges: Graph["edges"]): Graph => ({
@@ -39,6 +57,8 @@ const graph = (nodes: Node[], edges: Graph["edges"]): Graph => ({
   signals: [],
   total_cells: nodes.length,
   truncated: false,
+  hidden_physical_cells: 0,
+  omitted_cells: 0,
 });
 const net = (id: string, sources: string[], targets: string[]) => ({
   id,
@@ -367,7 +387,7 @@ describe("schematic geometry and routing", () => {
           sources: ["bus:y"],
           targets: ["low:a", "all:a", "cat:a"],
           signal_ids: ["bus"],
-          label: "bus /4",
+          label: "bus",
           bits: [2, 3, 4, 5],
         },
       ],
@@ -376,7 +396,6 @@ describe("schematic geometry and routing", () => {
     expect(violations(view, g)).toEqual([]);
     const join = view.render_nodes.find((n) => n.kind === "bus connector");
     expect(join?.ports.map((p) => p.label)).toEqual(["", "[3:2]", "[1:0]"]);
-    expect(view.render_nodes.some((n) => n.kind === "constant")).toBe(false);
     expect(new Set(Object.values(view.edge_map))).toEqual(new Set(["bus"]));
     // One drawn net carries every tap; it narrows where only a slice continues.
     const net = view.wires.find((w) => w.id === "bus");
@@ -473,7 +492,6 @@ describe("schematic geometry and routing", () => {
       "latch",
       "operator",
       "memory",
-      "process",
       "module",
       "unknown",
     ]) {
@@ -521,7 +539,7 @@ describe("schematic geometry and routing", () => {
       );
     }
   });
-  it("aligns compact boundary columns even when every port is disconnected", async () => {
+  it("aligns boundary ports per side even when every port is disconnected", async () => {
     const nodes = [
       node("z", "port", [pin("z:p", "output")]),
       node("a", "port", [pin("a:p", "output")]),
@@ -595,9 +613,5 @@ describe("schematic geometry and routing", () => {
       [],
     );
     expect(net?.signal_ids).toEqual(["n"]);
-    const edge = g.edges[0];
-    if (edge) edge.semantics = "dependency";
-    finishLayout(view, g);
-    expect(view.wires.find((w) => w.edge_id === "net")?.junctions).toEqual([]);
   });
 });

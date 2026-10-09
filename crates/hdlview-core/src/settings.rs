@@ -295,7 +295,7 @@ pub fn validate(path: &Path, p: &ProjectConfig) -> SettingsValidation {
 
 /// Resolve picker results against a draft without publishing roots or touching files.
 pub fn references(config_path: &Path, request: SettingsInputs) -> Result<SettingsReferences> {
-    let mut project = workspace::prepare_saved_config(config_path, &request.project)?;
+    let mut project = request.project.clone();
     let mut references = Vec::new();
     if matches!(
         request.kind,
@@ -457,44 +457,5 @@ mod tests {
         assert!(captured.hashes.contains_key("__roots/external/tb.sv"));
         assert!(output.join("inputs/__roots/external/tb.sv").exists());
         assert!(!output.join("inputs/__roots/external/timing.sdc").exists());
-    }
-    #[test]
-    fn legacy_picker_drafts_migrate_references_without_saving() {
-        let temp = tempfile::tempdir().unwrap();
-        let directory = temp.path().join("project");
-        let external = temp.path().join("external");
-        std::fs::create_dir(&directory).unwrap();
-        std::fs::create_dir(&external).unwrap();
-        let tb = external.join("tb.sv");
-        std::fs::write(&tb, "module tb; endmodule\n").unwrap();
-        let path = directory.join("hdlview.project.json");
-        let p = decode_project(json!({"schema_version":1,"name":"legacy","top":"","sources":[],"simulations":{"run":{"simulator":"icarus","top":"tb","dut_scope":["tb","dut"],"testbench":[tb]}}})).unwrap();
-        atomic_json(&path, &p).unwrap();
-        let bytes = std::fs::read(&path).unwrap();
-        let result = references(
-            &path,
-            SettingsInputs {
-                project: p,
-                kind: SettingsInputKind::IncludeDirectory,
-                paths: vec![external],
-            },
-        )
-        .unwrap();
-        assert_eq!(result.project.schema_version, 3);
-        assert!(matches!(
-            result.project.simulations["run"].testbench[0],
-            FileRef::Rooted { .. }
-        ));
-        assert_eq!(result.project.simulations["run"].dut_scope, ["tb", "dut"]);
-        assert_eq!(std::fs::read(&path).unwrap(), bytes);
-        assert_eq!(
-            resolve_reference(
-                &path,
-                &result.project,
-                &result.project.simulations["run"].testbench[0]
-            )
-            .unwrap(),
-            tb
-        );
     }
 }

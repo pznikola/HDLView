@@ -34,7 +34,7 @@ fn plugin(r: &Runner, name: &str, command: &str) -> Result<Vec<String>> {
             .unwrap_or_else(|| name.into()),
     ])
 }
-pub fn yosys(r: &Runner, script: &str, plugins: Vec<String>, label: &str) -> Result<String> {
+fn yosys(r: &Runner, script: &str, plugins: Vec<String>, label: &str) -> Result<String> {
     let path = r.workspace.join(format!("{label}.ys"));
     fs::write(&path, script)?;
     let mut args = plugins;
@@ -46,7 +46,7 @@ pub fn yosys(r: &Runner, script: &str, plugins: Vec<String>, label: &str) -> Res
     ]);
     r.run("yosys", &args, &r.workspace, label)
 }
-pub fn frontend(r: &Runner, p: &ProjectConfig) -> Result<(String, Vec<String>)> {
+fn frontend(r: &Runner, p: &ProjectConfig) -> Result<(String, Vec<String>)> {
     let inputs = r.workspace.join("inputs");
     let mut script = String::new();
     let plugins = {
@@ -130,8 +130,15 @@ fn compile_directory(
     cancel: CancelToken,
     resume: Option<PathBuf>,
 ) -> Result<DesignSnapshot> {
-    let mut project = load_project(project_path)?;
-    validate_build(&project)?;
+    let mut project = if resume.is_some() {
+        let captured: ProjectConfig = read_json(project_path)?;
+        validate_captured(&captured)?;
+        captured
+    } else {
+        let project = load_project(project_path)?;
+        validate_build(&project)?;
+        project
+    };
     let profile = resolve_profile(profile)?;
     let resuming = resume.is_some();
     let dir = match resume {
@@ -140,11 +147,7 @@ fn compile_directory(
     };
     let origin_file = dir.join("project-origin.json");
     let origin: (Option<PathBuf>, Option<String>) = if resuming {
-        if origin_file.exists() {
-            read_json(&origin_file)?
-        } else {
-            (None, None)
-        }
+        read_json(&origin_file)?
     } else {
         (
             Some(project_path.canonicalize()?),
@@ -203,147 +206,93 @@ fn compile_directory(
     let mut netlist = None;
     let mut sdf = BTreeMap::new();
     let mut physical_run = None;
-    let design = if representation == Representation::Source {
-        fs::write(
-            dir.join("source_graph.py"),
-            include_str!("../../../tools/source_graph.py"),
-        )?;
-        runner.run(
-            "python3",
-            &[
-                dir.join("source_graph.py").to_string_lossy().into(),
-                dir.join("project.json").to_string_lossy().into(),
-                dir.join("inputs").to_string_lossy().into(),
-                dir.join("source.json").to_string_lossy().into(),
-            ],
-            &dir,
-            "source",
-        )?;
-        let result: Value = read_json(&dir.join("source.json"))?;
-        let mut d: Design = serde_json::from_value(result["design"].clone())?;
-        graph::build_scopes(&mut d, &project.top)?;
-        diagnostics.extend(serde_json::from_value::<Vec<Diagnostic>>(
-            result["diagnostics"].clone(),
-        )?);
-        d
-    } else {
-        if !resuming {
-            let (mut script, plugins) = frontend(&runner, &project)?;
-            script.push_str("write_rtlil elaborated.il\nwrite_json elaborated.json\nwrite_verilog -noattr normalized.v\n");
-            let log = yosys(&runner, &script, plugins, "elaborate")?;
-            diagnostics.extend(diagnostics_from_log(&log));
+    if !resuming {
+        let (mut script, plugins) = frontend(&runner, &project)?;
+        script.push_str("write_rtlil elaborated.il\nwrite_json elaborated.json\nwrite_verilog -noattr normalized.v\n");
+        let log = yosys(&runner, &script, plugins, "elaborate")?;
+        diagnostics.extend(diagnostics_from_log(&log));
+    }
+    let design = match representation {
+        Representation::Elaborated => {
+            yosys(&runner, VIEW_CLEANUP, vec![], "view")?;
+            graph::from_yosys_text(
+                &fs::read_to_string(dir.join("elaborated-view.json"))?,
+                &project.top,
+            )?
         }
-        match representation {
-            Representation::Elaborated => {
-                yosys(&runner, VIEW_CLEANUP, vec![], "view")?;
-                graph::from_yosys_text(
-                    &fs::read_to_string(dir.join("elaborated-view.json"))?,
-                    &project.top,
-                )?
-            }
-            Representation::Generic => {
-                let script=format!("read_rtlil elaborated.il\nsynth -top {}\nwrite_verilog -noattr -noexpr -norename netlist.v\nwrite_json generic.json\n",project.top);
-                diagnostics.extend(diagnostics_from_log(&yosys(
-                    &runner,
-                    &script,
-                    vec![],
-                    "synthesize",
-                )?));
-                netlist = Some(dir.join("netlist.v"));
-                // Re-import the exact simulation file with Yosys generic gate definitions.
-                yosys(&runner,"read_verilog -lib +/simcells.v\nread_verilog netlist.v\nhierarchy -check -top ".to_owned().add(&project.top).add("\nwrite_json graph.json\n").as_str(),vec![],"import-generic")?;
-                graph::from_yosys_text(&fs::read_to_string(dir.join("graph.json"))?, &project.top)?
-            }
-            Representation::Mapped | Representation::PostLayout => {
-                let physical =
-                    run_physical(&runner, &project, representation == Representation::Mapped)?;
-                let state = &physical.state;
-                let nl = state
-                    .get("nl")
-                    .and_then(Value::as_str)
-                    .context("LibreLane did not produce an nl artifact")?;
-                let source = PathBuf::from(nl);
-                let finalfile = dir.join("netlist.v");
-                fs::copy(&source, &finalfile)
-                    .with_context(|| format!("Copy LibreLane netlist {nl}"))?;
-                if let Some(values) = state.get("sdf").and_then(Value::as_object) {
-                    for (corner, path) in values {
-                        if let Some(path) = path.as_str() {
-                            let dest = dir.join(format!("{}.sdf", hash(corner)));
-                            fs::copy(path, &dest)?;
-                            sdf.insert(corner.clone(), dest);
-                        }
+        Representation::Mapped | Representation::PostLayout => {
+            let physical =
+                run_physical(&runner, &project, representation == Representation::Mapped)?;
+            let state = &physical.state;
+            let nl = state
+                .get("nl")
+                .and_then(Value::as_str)
+                .context("LibreLane did not produce an nl artifact")?;
+            let source = PathBuf::from(nl);
+            let finalfile = dir.join("netlist.v");
+            fs::copy(&source, &finalfile)
+                .with_context(|| format!("Copy LibreLane netlist {nl}"))?;
+            if let Some(values) = state.get("sdf").and_then(Value::as_object) {
+                for (corner, path) in values {
+                    if let Some(path) = path.as_str() {
+                        let dest = dir.join(format!("{}.sdf", hash(corner)));
+                        fs::copy(path, &dest)?;
+                        sdf.insert(corner.clone(), dest);
                     }
                 }
-                let pdk = project.physical.as_ref().unwrap();
-                let libs = library_files(&runner.profile, pdk)?;
-                let mut script = String::new();
-                for lib in &libs {
-                    script.push_str(&format!("read_liberty -lib {}\n", q(lib)?));
-                }
-                fs::write(
-                    dir.join("library_interfaces.py"),
-                    include_str!("../../../tools/library_interfaces.py"),
-                )?;
-                let mut args = vec![
-                    dir.join("library_interfaces.py").to_string_lossy().into(),
-                    dir.join("library_interfaces.v").to_string_lossy().into(),
-                ];
-                args.extend(
-                    model_files(&runner.profile, pdk)?
-                        .iter()
-                        .map(|p| p.to_string_lossy().into_owned()),
-                );
-                runner.run("python3", &args, &dir, "library-interfaces")?;
-                script.push_str("read_verilog -lib -overwrite library_interfaces.v\n");
-                if let Some(error) = &physical.flow_error {
-                    diagnostics.push(Diagnostic {
-                        severity: "error".into(),
-                        message: format!("Physical flow completed with failed checks: {error}"),
-                        source: None,
-                    });
-                }
-                script.push_str(&format!(
-                    "read_verilog {}\nhierarchy -check -top {}\nwrite_json graph.json\n",
-                    q(&finalfile)?,
-                    project.top
-                ));
-                diagnostics.extend(diagnostics_from_log(&yosys(
-                    &runner,
-                    &script,
-                    vec![],
-                    "import-mapped",
-                )?));
-                netlist = Some(finalfile);
-                physical_run = Some(physical);
-                let mut design = graph::from_yosys_text(
-                    &fs::read_to_string(dir.join("graph.json"))?,
-                    &project.top,
-                )?;
-                // Symbols and pin roles come from the library's own functions. Without
-                // them the schematic is still exact; cells use the verified catalog.
-                match library_functions(&runner, &libs) {
-                    Ok(functions) => {
-                        // Only library cells: a design module may share a cell's name.
-                        for (name, function) in functions {
-                            if let Some(module) =
-                                design.modules.get_mut(&name).filter(|m| m.blackbox)
-                            {
-                                module.function = Some(function);
-                            }
-                        }
-                    }
-                    Err(error) => diagnostics.push(Diagnostic {
-                        severity: "warning".into(),
-                        message: format!(
-                            "Library cell functions unavailable; using the built-in catalog: {error:#}"
-                        ),
-                        source: None,
-                    }),
-                }
-                design
             }
-            _ => unreachable!(),
+            let pdk = project.physical.as_ref().unwrap();
+            let libs = library_files(&runner.profile, pdk)?;
+            let mut script = String::new();
+            for lib in &libs {
+                script.push_str(&format!("read_liberty -lib {}\n", q(lib)?));
+            }
+            fs::write(
+                dir.join("library_interfaces.py"),
+                include_str!("../../../tools/library_interfaces.py"),
+            )?;
+            let mut args = vec![
+                dir.join("library_interfaces.py").to_string_lossy().into(),
+                dir.join("library_interfaces.v").to_string_lossy().into(),
+            ];
+            args.extend(
+                model_files(&runner.profile, pdk)?
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned()),
+            );
+            runner.run("python3", &args, &dir, "library-interfaces")?;
+            script.push_str("read_verilog -lib -overwrite library_interfaces.v\n");
+            if let Some(error) = &physical.flow_error {
+                diagnostics.push(Diagnostic {
+                    severity: "error".into(),
+                    message: format!("Physical flow completed with failed checks: {error}"),
+                    source: None,
+                });
+            }
+            script.push_str(&format!(
+                "read_verilog {}\nhierarchy -check -top {}\nwrite_json graph.json\n",
+                q(&finalfile)?,
+                project.top
+            ));
+            diagnostics.extend(diagnostics_from_log(&yosys(
+                &runner,
+                &script,
+                vec![],
+                "import-mapped",
+            )?));
+            netlist = Some(finalfile);
+            physical_run = Some(physical);
+            let mut design =
+                graph::from_yosys_text(&fs::read_to_string(dir.join("graph.json"))?, &project.top)?;
+            // Symbols and pin roles come from the library's own functions.
+            let mut functions = library_functions(&runner, &libs)?;
+            // Only library cells: a design module may share a cell's name.
+            for (name, module) in design.modules.iter_mut().filter(|(_, m)| m.blackbox) {
+                // Fill and tap cells have no Liberty entry and no signal pins.
+                let function = functions.remove(name).or_else(|| library::physical(module));
+                module.function = function;
+            }
+            design
         }
     };
     let netlist_hash = netlist.as_ref().map(|p| file_hash(p)).transpose()?;
@@ -357,14 +306,10 @@ fn compile_directory(
             file_hash(path)?,
         );
     }
-    if origin_file.exists() {
-        artifact_hashes.insert("project-origin.json".into(), file_hash(&origin_file)?);
-    }
+    artifact_hashes.insert("project-origin.json".into(), file_hash(&origin_file)?);
     let origins_file = dir.join("source-origins.json");
-    if origins_file.exists() {
-        source_origins = read_json(&origins_file)?;
-        artifact_hashes.insert("source-origins.json".into(), file_hash(&origins_file)?);
-    }
+    source_origins = read_json(&origins_file)?;
+    artifact_hashes.insert("source-origins.json".into(), file_hash(&origins_file)?);
     let snapshot = DesignSnapshot {
         project_path: origin.0,
         project_fingerprint: origin.1,
@@ -395,8 +340,6 @@ fn compile_directory(
     }
     Ok(snapshot)
 }
-use std::ops::Add;
-
 pub fn diagnostics_from_log(log: &str) -> Vec<Diagnostic> {
     log.lines()
         .filter(|l| {
@@ -433,11 +376,14 @@ fn library_functions(r: &Runner, libs: &[PathBuf]) -> Result<BTreeMap<String, Ce
     let json: Value = read_json(&r.workspace.join("library-functions.json"))?;
     Ok(library::functions(&graph::modules_from_yosys(&json)?))
 }
-pub fn library_files(profile: &ToolchainProfile, p: &PhysicalConfig) -> Result<Vec<PathBuf>> {
-    let root = profile
+fn pdk_root(profile: &ToolchainProfile) -> PathBuf {
+    profile
         .pdk_root
         .clone()
-        .unwrap_or_else(|| "/foss/pdks".into());
+        .unwrap_or_else(|| "/foss/pdks".into())
+}
+fn library_files(profile: &ToolchainProfile, p: &PhysicalConfig) -> Result<Vec<PathBuf>> {
+    let root = pdk_root(profile);
     let lib=match(p.pdk.as_str(),p.library.as_str()) {
   ("sky130A","sky130_fd_sc_hd")=>root.join("sky130A/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib"),
   ("ihp-sg13g2","sg13g2_stdcell")=>root.join("ihp-sg13g2/libs.ref/sg13g2_stdcell/lib/sg13g2_stdcell_typ_1p20V_25C.lib"),
@@ -446,10 +392,7 @@ pub fn library_files(profile: &ToolchainProfile, p: &PhysicalConfig) -> Result<V
     Ok(vec![lib])
 }
 pub fn model_files(profile: &ToolchainProfile, p: &PhysicalConfig) -> Result<Vec<PathBuf>> {
-    let root = profile
-        .pdk_root
-        .clone()
-        .unwrap_or_else(|| "/foss/pdks".into());
+    let root = pdk_root(profile);
     match p.pdk.as_str() {
         "sky130A" => Ok(vec![
             root.join("sky130A/libs.ref/sky130_fd_sc_hd/verilog/primitives.v"),
@@ -504,12 +447,7 @@ fn run_physical(r: &Runner, p: &ProjectConfig, synthesis_only: bool) -> Result<P
     let mut args = vec![
         "--manual-pdk".into(),
         "--pdk-root".into(),
-        r.profile
-            .pdk_root
-            .clone()
-            .unwrap_or_else(|| "/foss/pdks".into())
-            .to_string_lossy()
-            .into(),
+        pdk_root(&r.profile).to_string_lossy().into(),
         "--pdk".into(),
         cfg.pdk.clone(),
         "--scl".into(),

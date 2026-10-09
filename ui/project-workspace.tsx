@@ -199,9 +199,7 @@ export function useProjectWorkspace(
     }
     if (requestGeneration !== generation.current) return false;
     if (workspace) {
-      const changed =
-        workspace.project.schema_version < 3 ||
-        JSON.stringify(workspace.project) !== savedProject;
+      const changed = JSON.stringify(workspace.project) !== savedProject;
       const value = await projects.save(workspace);
       if (requestGeneration !== generation.current) return false;
       await applyWorkspace(value, true);

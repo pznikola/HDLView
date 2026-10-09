@@ -93,6 +93,8 @@ try {
         signals: [],
         truncated: false,
         total_cells: 1000,
+        hidden_physical_cells: 0,
+        omitted_cells: 0,
       };
       const pin = (id, direction, role = "data") => ({
         id,
@@ -105,6 +107,7 @@ try {
           bits: [id],
           role,
           polarity: true,
+          asynchronous: false,
         },
       });
       for (let i = 0; i < 1000; i++) {
@@ -117,13 +120,14 @@ try {
           id: `n${i}`,
           label: `cell${i}`,
           kind: symbol,
+          child_scope: null,
+          source: null,
           display: {
             symbol,
             title: symbol === "operator" ? "+" : symbol.toUpperCase(),
             annotations: [],
             members: [],
             internal_signal_ids: [],
-            physical_only: false,
           },
           ports: [
             pin(`n${i}:${input}`, "input"),

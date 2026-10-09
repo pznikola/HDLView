@@ -1,5 +1,5 @@
-import type { ElkNode, ElkExtendedEdge, ElkPoint } from "elkjs";
-import type { Graph, Node, Port, Edge } from "./types";
+import type { ElkNode, ElkExtendedEdge, ElkEdgeSection, ElkPoint } from "elkjs";
+import type { Graph, Node, PinDisplay, Port, Edge } from "./types";
 import {
   boundaryDirection,
   pinLabel,
@@ -7,17 +7,16 @@ import {
   symbolGeometry,
 } from "./schematic-symbols";
 
-export interface ControlConnector {
+interface ControlConnector {
   port_id: string;
   edge_id: string;
   label: string;
 }
-export interface RoutedWire {
+interface RoutedWire {
   id: string;
   edge_id: string;
   signal_ids: string[];
   width: number;
-  semantics: Edge["semantics"];
   /** Segments of a bus narrow where only a slice continues. */
   paths: { d: string; width: number }[];
   junctions: ElkPoint[];
@@ -46,9 +45,16 @@ function syntheticDisplay(symbol: string, title: string) {
     annotations: [],
     members: [],
     internal_signal_ids: [],
-    physical_only: false,
   };
 }
+function syntheticPin(width: number): PinDisplay {
+  return { name: "", width, bits: [], role: "data", asynchronous: false };
+}
+const sectionPoints = (section: ElkEdgeSection) => [
+  section.startPoint,
+  ...(section.bendPoints ?? []),
+  section.endPoint,
+];
 
 /**
  * Order nodes so every wire runs forward except the outputs of registers,
@@ -151,21 +157,19 @@ export function prepareLayout(
     const original = {
       ...incoming,
       sources: incoming.sources.filter(
-        (id) => ports.get(id)?.port.display?.role !== "power",
+        (id) => ports.get(id)?.port.display.role !== "power",
       ),
       targets: incoming.targets.filter(
-        (id) => ports.get(id)?.port.display?.role !== "power",
+        (id) => ports.get(id)?.port.display.role !== "power",
       ),
     };
     if (!original.sources.length || !original.targets.length) continue;
     const control =
       !fullControlWiring &&
-      original.semantics !== "dependency" &&
-      original.semantics !== "control_flow" &&
       original.sources.length === 1 &&
       original.bits?.length === 1 &&
       original.targets.every((id) =>
-        ["clock", "reset"].includes(ports.get(id)?.port.display?.role ?? ""),
+        ["clock", "reset"].includes(ports.get(id)?.port.display.role ?? ""),
       );
     if (control) {
       for (const id of new Set([...original.sources, ...original.targets]))
@@ -178,7 +182,7 @@ export function prepareLayout(
                 .find((signal) => original.signal_ids.includes(signal.id))
                 ?.path.at(-1) ||
               "control",
-            20,
+            18,
           ),
         });
       continue;
@@ -199,30 +203,10 @@ export function prepareLayout(
   ) => {
     if (source === target) return;
     const id = `${original.id}:route:${edges.length}`;
-    // Only dependency and control-flow edges reserve room for a name; net
-    // names are drawn where a route already leaves space.
-    const named =
-      original.label &&
-      original.semantics &&
-      original.semantics !== "electrical" &&
-      !Object.values(edgeMap).includes(original.id);
     edgeMap[id] = original.id;
     routeGroups[id] = wire;
     edgeWidths[id] = width;
-    edges.push({
-      id,
-      sources: [source],
-      targets: [target],
-      labels: named
-        ? [
-            {
-              text: shortName(original.label, 28),
-              width: Math.min(204, original.label.length * 7),
-              height: 14,
-            },
-          ]
-        : [],
-    });
+    edges.push({ id, sources: [source], targets: [target] });
   };
   // A pin assembled from several sources gets a visible join. Its inputs list
   // the pin's ranges from the most significant down, like a concatenation.
@@ -236,7 +220,7 @@ export function prepareLayout(
     if (feeds.length < 2 || !original) continue;
     const id = `bus:${port.id}`;
     const width = feeds.reduce((sum, feed) => sum + feed.width, 0);
-    const range = port.display?.range;
+    const range = port.display.range;
     const declared = (position: number) =>
       range
         ? range[0] >= range[1]
@@ -253,7 +237,7 @@ export function prepareLayout(
         label: feed.width > 1 ? `[${high}:${low}]` : `[${low}]`,
         direction: "input",
         signal_ids: port.signal_ids,
-        display: { name: "", width: feed.width, bits: [], role: "data" },
+        display: syntheticPin(feed.width),
         feeds: [feed],
       };
     });
@@ -262,13 +246,15 @@ export function prepareLayout(
       label: "",
       direction: "output",
       signal_ids: port.signal_ids,
-      display: { name: "", width, bits: [], role: "data" },
+      display: syntheticPin(width),
     };
     const join: Node = {
       id,
       label: `${node.label} ${pinLabel(port)}`,
       kind: "bus connector",
       ports: [whole, ...inputs.reverse()],
+      child_scope: null,
+      source: null,
       display: syntheticDisplay("bus_split", ""),
     };
     visible.push(join);
@@ -315,14 +301,18 @@ export function prepareLayout(
             label: "",
             direction: "input",
             signal_ids: route.signal_ids,
+            display: syntheticPin(width),
           },
           {
             id: output,
             label: "",
             direction: "output",
             signal_ids: route.signal_ids,
+            display: syntheticPin(width),
           },
         ],
+        child_scope: null,
+        source: null,
         display: syntheticDisplay("junction", ""),
       };
       visible.push(junction);
@@ -354,7 +344,7 @@ export function prepareLayout(
       CONNECTOR +
         (ports.get(connector.port_id)?.node.kind === "port"
           ? 0
-          : shortName(connector.label, 18).length * 6),
+          : connector.label.length * 6),
     ]),
   );
   const children = visible.map((node): ElkNode => {
@@ -416,7 +406,7 @@ export function prepareLayout(
     }),
     new Set(
       visible.flatMap((node, i) =>
-        ["register", "latch", "memory"].includes(node.display?.symbol ?? "")
+        ["register", "latch", "memory"].includes(node.display.symbol)
           ? [i]
           : [],
       ),
@@ -474,11 +464,7 @@ export function finishLayout(view: LayoutView, graph: Graph): LayoutView {
   );
   const verticals = (view.graph.edges ?? []).flatMap((edge) =>
     (edge.sections ?? []).flatMap((section) => {
-      const points = [
-        section.startPoint,
-        ...(section.bendPoints ?? []),
-        section.endPoint,
-      ];
+      const points = sectionPoints(section);
       return points.flatMap((b, i): [number, number, number][] => {
         const a = points[i - 1];
         return a && a.x === b.x
@@ -505,52 +491,31 @@ export function finishLayout(view: LayoutView, graph: Graph): LayoutView {
     if (!original) return [];
     const drawn = routes.flatMap((r) =>
       (r.sections ?? []).map((section) => ({
-        points: [
-          section.startPoint,
-          ...(section.bendPoints ?? []),
-          section.endPoint,
-        ],
+        points: sectionPoints(section),
         width: view.edge_widths[r.id] ?? 1,
       })),
     );
     const width = Math.max(1, ...drawn.map((route) => route.width));
-    const electrical =
-      !original.semantics || original.semantics === "electrical";
-    const normalized = electrical
-      ? electricalPaths(
-          drawn,
-          terminals,
-          routes.flatMap((r) => r.junctionPoints ?? []),
-        )
-      : {
-          paths: drawn.map((route) => ({
-            d: pathData(route.points),
-            width: route.width,
-          })),
-          junctions: [],
-        };
-    // Dependency and control-flow names were placed by ELK. A net is named on
-    // the straight run leaving its single driver, when that run has room, no
-    // wire crosses the name and the driver does not already show it.
-    const labels: RoutedWire["labels"] = routes.flatMap((r) =>
-      (r.labels ?? []).map((label) => ({
-        x: label.x ?? 0,
-        y: (label.y ?? 0) + 11,
-        text: label.text ?? "",
-      })),
+    const normalized = electricalPaths(
+      drawn,
+      terminals,
+      routes.flatMap((r) => r.junctionPoints ?? []),
     );
+    // A net is named on the straight run leaving its single driver, when that
+    // run has room, no wire crosses the name and the driver does not already
+    // show it.
+    const labels: RoutedWire["labels"] = [];
     const [start, bend] = drawn[0]?.points ?? [];
     const driver = drivers.get(first.sources[0] ?? "");
     const name = original.label;
     if (
-      electrical &&
       id === edgeId &&
       name &&
       start &&
       bend &&
       start.y === bend.y &&
       driver?.kind !== "port" &&
-      driver?.display?.title !== name &&
+      driver?.display.title !== name &&
       drawn.every(
         (route) =>
           route.points[0]?.x === start.x && route.points[0]?.y === start.y,
@@ -574,7 +539,6 @@ export function finishLayout(view: LayoutView, graph: Graph): LayoutView {
         edge_id: edgeId,
         signal_ids: view.wire_signal_ids[id] ?? original.signal_ids,
         width,
-        semantics: original.semantics,
         ...normalized,
         labels,
       },
@@ -584,8 +548,6 @@ export function finishLayout(view: LayoutView, graph: Graph): LayoutView {
 }
 const rounded = (n: number) => Math.round(n * 100000) / 100000;
 const pointKey = (p: ElkPoint) => `${rounded(p.x)},${rounded(p.y)}`;
-const pathData = (points: ElkPoint[]) =>
-  points.map((p, i) => `${i ? "L" : "M"}${p.x},${p.y}`).join(" ");
 type Interval = [number, number];
 type Run = [number, number, number];
 

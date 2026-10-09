@@ -5,8 +5,8 @@ preserving each exercise's `rtl/` and `dv/` directories. Generated files and the
 original Makefile workflow are not included.
 
 Choose **File → Open Existing Project…** and select an exercise's
-`hdlview.project.json`. Select **Source RTL** or **Elaborated RTL**, build the
-schematic, then run the **rtl** simulation configuration. The design top,
+`hdlview.project.json`. Select **Elaborated RTL**, build the schematic, then run the
+**rtl** simulation configuration. The design top,
 testbench top, DUT scope, parameters and defines are already configured.
 
 | Project                                                                                     | Demonstrates                                             |
@@ -41,10 +41,9 @@ unset: configure clocks and physical settings before mapped or post-layout build
 Gate simulation may require adjusting testbench DUT parameter overrides; do not
 assume every exercise testbench is suitable for an exported gate netlist.
 
-Source RTL currently reports opaque generate-instance arrays and memory aggregates
-in some exercises. Use Elaborated RTL for their resolved circuitry. Compiler-only
-signals and unsupported generated hierarchy mappings remain unavailable in the
-waveform; public DUT ports bind normally.
+Mapped gates and Post-layout need those physical settings and the Docker toolchain
+with its PDKs. Compiler-only signals and unsupported generated hierarchy mappings
+remain unavailable in the waveform; public DUT ports bind normally.
 
 The only HDL change is in `15_sync_ff/dv/sync_ff_tb.sv`: its expected-value queue
 starts with zero so the first read checks the reset output instead of popping an

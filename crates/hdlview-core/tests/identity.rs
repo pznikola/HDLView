@@ -1,10 +1,14 @@
-use hdlview_core::{graph, model::*, waveform};
+use hdlview_core::{graph, model::*, schematic, waveform};
 use serde_json::json;
 use std::collections::BTreeMap;
+fn draw(s: &DesignSnapshot, scope: &[&str], split: bool) -> GraphView {
+    let scope: Vec<String> = scope.iter().map(|s| s.to_string()).collect();
+    schematic::view(s, &scope, None, 2000, split, &SchematicOptions::default()).unwrap()
+}
 fn fixture() -> (DesignSnapshot, SimulationRun, WaveInfo) {
     let design=graph::from_yosys(&json!({"modules":{"top":{"cells":{"first":{"type":"leaf"},"second":{"type":"leaf"}},"netnames":{}},"leaf":{"netnames":{"count":{"bits":[2,3,4,5],"offset":4}},"cells":{},"ports":{}}}}),"top").unwrap();
-    let snapshot:DesignSnapshot=serde_json::from_value(json!({"schema_version":1,"id":"snapshot","representation":"elaborated","project":{"name":"fixture","top":"top","sources":[{"path":"top.sv","language":"system_verilog"}]},"profile":{"provider":"native"},"directory":"/tmp/example","design":design,"diagnostics":[],"tool_versions":{},"input_hashes":{},"netlist":null})).unwrap();
-    let run:SimulationRun=serde_json::from_value(json!({"schema_version":1,"id":"run","snapshot_id":"snapshot","representation":"elaborated","trace":"/tmp/trace.vcd","trace_hash":"abc","dut_scope":["tb","dut"],"simulator":"icarus","diagnostics":[],"directory":"/tmp/run","imported":false})).unwrap();
+    let snapshot:DesignSnapshot=serde_json::from_value(json!({"schema_version":2,"id":"snapshot","representation":"elaborated","project":{"schema_version":3,"name":"fixture","top":"top","sources":[{"path":"top.sv","language":"system_verilog"}]},"profile":{"provider":"native"},"directory":"/tmp/example","design":design,"diagnostics":[],"tool_versions":{},"input_hashes":{},"artifact_hashes":{},"source_origins":{},"netlist":null,"sdf":{}})).unwrap();
+    let run:SimulationRun=serde_json::from_value(json!({"schema_version":2,"id":"run","snapshot_id":"snapshot","representation":"elaborated","trace":"/tmp/trace.vcd","trace_hash":"abc","dut_scope":["tb","dut"],"simulator":"icarus","diagnostics":[],"directory":"/tmp/run","imported":false})).unwrap();
     let info = WaveInfo {
         variables: vec![WaveVariable {
             id: 0,
@@ -88,13 +92,12 @@ fn cell_endpoints_are_distinct_from_connected_net() {
         source: None,
         attributes: BTreeMap::new(),
         parameters: BTreeMap::new(),
-        behavior: None,
     }];
     let refs = graph::signal_refs(&s, &["top".into(), "first".into()]).unwrap();
     assert_eq!(refs.len(), 3);
     assert_ne!(refs[1].id, refs[2].id);
     assert_ne!(refs[0].id, refs[1].id);
-    let view = graph::view(&s, &["top".into(), "first".into()], None, 2000).unwrap();
+    let view = draw(&s, &["top", "first"], false);
     let cell = view.nodes.iter().find(|node| node.label == "buf").unwrap();
     assert_eq!(cell.ports[0].signal_ids[0], refs[1].id);
     assert_eq!(cell.ports[1].signal_ids[0], refs[2].id);
@@ -111,10 +114,9 @@ fn bounded_graph_does_not_expand_entire_design() {
             source: None,
             attributes: BTreeMap::new(),
             parameters: BTreeMap::new(),
-            behavior: None,
         })
         .collect();
-    let g = graph::view(&s, &["top".into(), "first".into()], None, 2000).unwrap();
+    let g = draw(&s, &["top", "first"], false);
     assert_eq!(g.total_cells, 100_000);
     assert!(g.truncated);
     assert_eq!(g.nodes.len(), 2000);
@@ -146,8 +148,8 @@ fn compiler_source_locations_are_parsed_without_losing_paths() {
         ("/tmp/a b.sv", "14".into(), "2".into())
     );
     assert_eq!(
-        source_location("/tmp/c.vhd:7:4"),
-        ("/tmp/c.vhd", "7".into(), "4".into())
+        source_location("/tmp/c.sv:7:4"),
+        ("/tmp/c.sv", "7".into(), "4".into())
     );
 }
 
@@ -161,8 +163,7 @@ fn expanded_buses_preserve_declared_indices_and_inouts() {
         direction: "inout".into(),
         bits: m.signals[0].bits.clone(),
     }];
-    let g =
-        graph::view_with_options(&s, &["top".into(), "first".into()], None, 2000, true).unwrap();
+    let g = draw(&s, &["top", "first"], true);
     assert_eq!(
         g.nodes[0]
             .ports
@@ -198,7 +199,7 @@ fn expanded_boundary_bits_follow_declared_range_without_changing_ids() {
             hidden: false,
             source: None,
         }];
-        let view = graph::view_with_options(&snapshot, &["top".into()], None, 2000, true).unwrap();
+        let view = draw(&snapshot, &["top"], true);
         let boundary = view.nodes.iter().find(|n| n.kind == "port").unwrap();
         let names: Vec<_> = boundary.ports.iter().map(|p| p.label.as_str()).collect();
         assert_eq!(

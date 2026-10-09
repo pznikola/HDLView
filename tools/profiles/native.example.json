@@ -2,7 +2,6 @@
   "provider": "native",
   "executables": {
     "yosys": "/path/to/bin/yosys",
-    "yosys-config": "/path/to/bin/yosys-config",
     "iverilog": "/path/to/bin/iverilog",
     "vvp": "/path/to/bin/vvp",
     "verilator": "/path/to/bin/verilator",

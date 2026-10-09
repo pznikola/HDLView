@@ -12,7 +12,7 @@ parser.add_argument("--profile", required=True)
 parser.add_argument("--store", default=".hdlview/qualification")
 parser.add_argument("--mapped", action="store_true")
 parser.add_argument("--physical", action="store_true")
-parser.add_argument("--schematics", action="store_true", help="qualify symbols and captured behavior")
+parser.add_argument("--schematics", action="store_true", help="qualify symbols and the bundled examples")
 args = parser.parse_args()
 store = pathlib.Path(args.store)
 store.mkdir(parents=True, exist_ok=True)
@@ -39,7 +39,7 @@ def run(arguments, label):
 
 
 projects = [(name, pathlib.Path(f"tests/fixtures/{name}/hdlview.project.json"),
-             ["source", "elaborated", "generic"]) for name in (["counter", "verilog", "schematic"] if args.schematics else ["counter", "verilog"])]
+             ["elaborated"]) for name in (["counter", "verilog", "schematic"] if args.schematics else ["counter", "verilog"])]
 if args.mapped or args.physical:
     original = pathlib.Path("tests/fixtures/counter/hdlview.project.json")
     for technology, pdk, library, corner in [
@@ -74,7 +74,7 @@ def view_top(snapshot, label):
     assert all(p in ports for e in view["edges"] for p in e["sources"] + e["targets"]), "dangling display endpoint"
     records[-1].update(
         cells=view["total_cells"],
-        pseudo_nodes=sum(n["kind"] in ("constant", "undriven", "unconnected", "off_view") for n in view["nodes"]),
+        pseudo_nodes=sum(n["kind"] == "off_view" for n in view["nodes"]),
         unknown_symbols=sum(n["display"]["symbol"] == "unknown" for n in view["nodes"]),
         named_signals=sum(not s["hidden"] for m in snapshot["design"]["modules"].values()
                           if not m["blackbox"] for s in m["signals"]),
@@ -92,6 +92,13 @@ def view_top(snapshot, label):
     return view
 
 
+def simulate(snapshot, configuration, label):
+    simulation = run(["simulate", snapshot["directory"] + "/snapshot.json", "--configuration", configuration],
+                     f"{label}/{configuration}")
+    if simulation:
+        run(["wave", simulation["trace"]], f"{label}/{configuration}/parse")
+
+
 for name, project_path, stages in projects:
     for stage in stages:
         snapshot = run(["build", str(project_path), "--representation", stage], f"{name}/{stage}")
@@ -101,37 +108,22 @@ for name, project_path, stages in projects:
             view = view_top(snapshot, f"{name}/{stage}")
             if name == "schematic":
                 kinds = {n["display"]["symbol"] for n in view["nodes"]}
-                if stage == "source":
-                    assert {"process", "function", "task", "assignment"} <= kinds
-                    behavior = [c["behavior"] for c in snapshot["design"]["modules"]["showcase"]["cells"] if c.get("behavior")]
-                    captured = {n["kind"] for b in behavior for n in b["nodes"]}
-                    assert {"case", "loop", "event", "assignment", "function", "task", "return", "mux"} <= captured
-                    assert any(e["label"] == "next" for b in behavior for e in b["edges"])
-                    for b in behavior:
-                        for n in b["nodes"]:
-                            if n["kind"] == "assignment" and n["label"] == "count <=":
-                                assert n["signals"] == ["count"], "assignment bound to a read instead of its target"
-                    assert not any("Opaque source" in d["message"] for d in snapshot["diagnostics"]), snapshot["diagnostics"]
-                elif stage == "elaborated":
+                if stage == "elaborated":
                     assert {"register", "mux", "decoder", "encoder", "memory", "and", "xor", "operator"} <= kinds, kinds
-                else:
-                    assert "register" in kinds
             if stage == "mapped":
-                assert any(n["display"]["symbol"] == "register" for n in view["nodes"]), f"{name}: no catalog register"
+                assert any(n["display"]["symbol"] == "register" for n in view["nodes"]), f"{name}: no library register"
         configurations = ["rtl"]
         if name == "counter" and stage == "elaborated":
             configurations.append("verilator")
         if stage == "post_layout":
             configurations.append("timing")
         for configuration in configurations:
-            simulation = run(["simulate", snapshot["directory"] + "/snapshot.json", "--configuration", configuration],
-                             f"{name}/{stage}/{configuration}")
-            if simulation:
-                run(["wave", simulation["trace"]], f"{name}/{stage}/{configuration}/parse")
+            simulate(snapshot, configuration, f"{name}/{stage}")
 if args.schematics:
     for project_path in sorted(pathlib.Path("examples").glob("*/hdlview.project.json")):
         label = f"examples/{project_path.parent.name}/elaborated"
         snapshot = run(["build", str(project_path), "--representation", "elaborated"], label)
         if snapshot:
             view_top(snapshot, label)
+            simulate(snapshot, "rtl", label)
 raise SystemExit(any(r["exit_code"] for r in records))

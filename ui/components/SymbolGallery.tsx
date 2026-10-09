@@ -101,9 +101,6 @@ const symbols: [string, string, Port[]][] = [
       pin("Y", "output"),
     ],
   ],
-  ["process", "AlwaysFF", [pin("count", "input"), pin("count", "output")]],
-  ["function", "increment", [pin("value", "input"), pin("return", "output")]],
-  ["task", "accumulate", [pin("value", "input")]],
   ["module", "lane", [pin("enable", "input"), pin("count", "output")]],
   ["unknown", "custom_cell", data],
   ...["input", "output", "inout"].map((direction): [string, string, Port[]] => [
@@ -118,6 +115,7 @@ const symbols: [string, string, Port[]][] = [
           bits: [direction],
           role: "data",
           declared_direction: direction,
+          asynchronous: false,
         },
       },
     ],
@@ -143,13 +141,14 @@ export function SymbolGallery() {
             label: title,
             kind: symbol,
             ports: pins.map((p, i) => ({ ...p, id: `${index}:${i}` })),
+            child_scope: null,
+            source: null,
             display: {
               symbol,
               title,
               annotations: [],
               members: [],
               internal_signal_ids: [],
-              physical_only: false,
               compound:
                 symbol === "compound"
                   ? {

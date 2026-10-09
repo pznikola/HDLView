@@ -1,13 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
 pub const PROJECT_SCHEMA: u32 = 3;
-pub const IMAGE: &str =
-    "hpretl/iic-osic-tools@sha256:92961478ad3c4f508efb42d9ccdba12ab262eb42a14926d2bd49862230ba8521";
-fn version() -> u32 {
-    SCHEMA
-}
 fn std_sv() -> String {
     "1800-2017".into()
 }
@@ -27,15 +22,13 @@ pub enum Language {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Representation {
-    Source,
     Elaborated,
-    Generic,
     Mapped,
     PostLayout,
 }
 impl Representation {
     pub fn is_gate(&self) -> bool {
-        matches!(self, Self::Generic | Self::Mapped | Self::PostLayout)
+        matches!(self, Self::Mapped | Self::PostLayout)
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -105,7 +98,6 @@ impl Technology {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportRecord {
-    #[serde(default)]
     pub group: SourceGroup,
     pub kind: String,
     pub location: FileRef,
@@ -134,7 +126,6 @@ pub struct ProjectConfig {
     pub technology: Option<Technology>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub simulation_headers: Vec<FileRef>,
-    #[serde(default = "version")]
     pub schema_version: u32,
     pub name: String,
     pub top: String,
@@ -198,14 +189,6 @@ impl Default for ToolchainProfile {
     }
 }
 impl ToolchainProfile {
-    pub fn docker() -> Self {
-        Self {
-            provider: Provider::Docker,
-            image: Some(IMAGE.into()),
-            pdk_root: Some("/foss/pdks".into()),
-            ..Self::default()
-        }
-    }
     pub fn exe(&self, name: &str) -> String {
         self.executables
             .get(name)
@@ -258,7 +241,6 @@ pub struct PhysicalConfig {
 pub struct Diagnostic {
     pub severity: String,
     pub message: String,
-    #[serde(default)]
     pub source: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -277,74 +259,42 @@ pub struct Port {
 pub struct Signal {
     pub name: String,
     pub bits: Vec<Bit>,
-    #[serde(default)]
     pub offset: i64,
-    #[serde(default)]
     pub upto: bool,
-    #[serde(default)]
     pub signed: bool,
-    #[serde(default)]
     pub hidden: bool,
-    #[serde(default)]
     pub source: Option<String>,
+}
+impl Signal {
+    /// Declared index of the bit at position `i`.
+    pub fn index(&self, i: usize) -> i64 {
+        self.offset
+            + if self.upto {
+                self.bits.len() - 1 - i
+            } else {
+                i
+            } as i64
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cell {
     pub name: String,
     pub kind: String,
     pub ports: Vec<Port>,
-    #[serde(default)]
     pub source: Option<String>,
-    #[serde(default)]
     pub attributes: BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub parameters: BTreeMap<String, serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub behavior: Option<BehaviorGraph>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SourceSpan {
-    pub file: String,
-    pub start: (u64, u64),
-    pub end: (u64, u64),
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BehaviorNode {
-    pub id: String,
-    pub label: String,
-    pub kind: String,
-    #[serde(default)]
-    pub signals: Vec<String>,
-    pub source: Option<String>,
-    pub span: Option<SourceSpan>,
-    pub call: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub width: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signed: Option<bool>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BehaviorEdge {
-    pub source: String,
-    pub target: String,
-    pub label: String,
-    pub semantics: EdgeSemantics,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BehaviorGraph {
-    pub nodes: Vec<BehaviorNode>,
-    pub edges: Vec<BehaviorEdge>,
-}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Module {
     pub name: String,
     pub ports: Vec<Port>,
     pub signals: Vec<Signal>,
     pub cells: Vec<Cell>,
-    #[serde(default)]
     pub blackbox: bool,
-    /// What a library cell computes; absent in snapshots built before it was derived.
+    /// What a library cell computes; absent for design modules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function: Option<CellFunction>,
 }
@@ -363,7 +313,6 @@ pub struct CellPin {
     pub role: PinRole,
     /// `Some(false)` is an inverted input or output, or an active-low control.
     pub polarity: Option<bool>,
-    #[serde(default)]
     pub asynchronous: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -386,11 +335,14 @@ pub struct Design {
     pub modules: BTreeMap<String, Module>,
     pub scopes: Vec<Scope>,
 }
+impl Design {
+    pub fn scope(&self, path: &[String]) -> Option<&Scope> {
+        self.scopes.iter().find(|s| s.path == path)
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesignSnapshot {
-    #[serde(default)]
     pub project_path: Option<PathBuf>,
-    #[serde(default)]
     pub project_fingerprint: Option<String>,
     pub schema_version: u32,
     pub id: String,
@@ -402,21 +354,15 @@ pub struct DesignSnapshot {
     pub diagnostics: Vec<Diagnostic>,
     pub tool_versions: BTreeMap<String, String>,
     pub input_hashes: BTreeMap<String, String>,
-    #[serde(default)]
     pub artifact_hashes: BTreeMap<String, String>,
-    #[serde(default)]
     pub source_origins: BTreeMap<String, PathBuf>,
     pub netlist: Option<PathBuf>,
-    #[serde(default)]
     pub sdf: BTreeMap<String, PathBuf>,
-    #[serde(default)]
     pub physical_run: Option<PhysicalRun>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhysicalRun {
-    #[serde(default)]
     pub status: String,
-    #[serde(default)]
     pub flow_error: Option<String>,
     pub directory: PathBuf,
     pub state: serde_json::Value,
@@ -482,16 +428,10 @@ pub struct ViewNode {
 pub struct NodeDisplay {
     pub symbol: String,
     pub title: String,
-    #[serde(default)]
     pub annotations: Vec<String>,
-    #[serde(default)]
     pub members: Vec<String>,
-    #[serde(default)]
     pub internal_signal_ids: Vec<String>,
     pub detail: Option<String>,
-    #[serde(default)]
-    pub physical_only: bool,
-    pub span: Option<SourceSpan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compound: Option<Compound>,
 }
@@ -509,7 +449,7 @@ pub enum PinRole {
     /// A control tied to the constant that disables it; inspected, not drawn.
     Unused,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PinDisplay {
     pub name: String,
     pub width: usize,
@@ -519,7 +459,6 @@ pub struct PinDisplay {
     pub declared_direction: Option<String>,
     pub range: Option<(i64, i64)>,
     /// A reset, set or load that acts without the clock.
-    #[serde(default)]
     pub asynchronous: bool,
 }
 /// What drives one contiguous run of an input pin.
@@ -554,14 +493,6 @@ pub struct ViewPort {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub feeds: Vec<Feed>,
 }
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum EdgeSemantics {
-    #[default]
-    Electrical,
-    Dependency,
-    ControlFlow,
-}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViewEdge {
     pub id: String,
@@ -569,8 +500,6 @@ pub struct ViewEdge {
     pub targets: Vec<String>,
     pub signal_ids: Vec<String>,
     pub label: String,
-    #[serde(default)]
-    pub semantics: EdgeSemantics,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bits: Vec<Bit>,
 }
@@ -578,7 +507,6 @@ pub struct ViewEdge {
 #[serde(default, deny_unknown_fields)]
 pub struct SchematicOptions {
     pub functional_symbols: bool,
-    pub full_control_wiring: bool,
     pub show_physical_cells: bool,
     pub detail: Option<String>,
 }
@@ -586,7 +514,6 @@ impl Default for SchematicOptions {
     fn default() -> Self {
         Self {
             functional_symbols: true,
-            full_control_wiring: false,
             show_physical_cells: false,
             detail: None,
         }
@@ -608,11 +535,8 @@ pub struct GraphView {
     pub signals: Vec<SignalRef>,
     pub truncated: bool,
     pub total_cells: usize,
-    #[serde(default)]
     pub hidden_physical_cells: usize,
-    #[serde(default)]
     pub omitted_cells: usize,
-    #[serde(default)]
     pub detail: Option<String>,
 }
 

@@ -515,10 +515,6 @@ impl Service {
                 }
                 bail!("Original source is not registered in the current working project")
             }
-            "load_profile" => {
-                let p: ToolchainProfile = read_json(Path::new(string("path")?))?;
-                Ok(serde_json::to_value(p)?)
-            }
             "probe" => {
                 let p: ToolchainProfile = serde_json::from_value(v["profile"].clone())?;
                 let dir = unique_dir(&self.store, "probe")?;
@@ -831,7 +827,7 @@ mod lint_tests {
         service
             .request("open_project", json!({"path":path}))
             .unwrap();
-        let snapshot: DesignSnapshot = serde_json::from_value(json!({"schema_version":1,"id":"captured","representation":"elaborated","project_path":workspace.path,"project_fingerprint":hash(serde_json::to_vec(&workspace.project).unwrap()),"project":workspace.project,"profile":ToolchainProfile::default(),"directory":temp.path().join("artifact"),"design":{"modules":{},"scopes":[]},"diagnostics":[],"tool_versions":{},"input_hashes":{},"netlist":null})).unwrap();
+        let snapshot: DesignSnapshot = serde_json::from_value(json!({"schema_version":2,"id":"captured","representation":"elaborated","project_path":workspace.path,"project_fingerprint":hash(serde_json::to_vec(&workspace.project).unwrap()),"project":workspace.project,"profile":ToolchainProfile::default(),"directory":temp.path().join("artifact"),"design":{"modules":{},"scopes":[]},"diagnostics":[],"tool_versions":{},"input_hashes":{},"artifact_hashes":{},"source_origins":{},"netlist":null,"sdf":{}})).unwrap();
         service
             .state
             .lock()

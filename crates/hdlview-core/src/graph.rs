@@ -151,7 +151,6 @@ pub fn modules_from_yosys(json: &Value) -> Result<BTreeMap<String, Module>> {
                             attributes: serde_json::from_value(c["attributes"].clone())
                                 .unwrap_or_default(),
                             parameters,
-                            behavior: None,
                         })
                     })
                     .collect::<Result<Vec<_>>>()
@@ -201,12 +200,7 @@ pub fn build_scopes(d: &mut Design, top: &str) -> Result<()> {
     Ok(())
 }
 pub fn signal_refs(s: &DesignSnapshot, scope: &[String]) -> Result<Vec<SignalRef>> {
-    let sc = s
-        .design
-        .scopes
-        .iter()
-        .find(|sc| sc.path == scope)
-        .context("Unknown scope")?;
+    let sc = s.design.scope(scope).context("Unknown scope")?;
     let mut refs: Vec<SignalRef> = s.design.modules[&sc.module]
         .signals
         .iter()
@@ -348,23 +342,6 @@ fn feeds(
         .collect()
 }
 
-pub fn view(
-    s: &DesignSnapshot,
-    scope: &[String],
-    focus: Option<&str>,
-    limit: usize,
-) -> Result<GraphView> {
-    view_with_options(s, scope, focus, limit, false)
-}
-pub fn view_with_options(
-    s: &DesignSnapshot,
-    scope: &[String],
-    focus: Option<&str>,
-    limit: usize,
-    split_buses: bool,
-) -> Result<GraphView> {
-    view_for_schematic(s, scope, focus, limit, split_buses, true)
-}
 pub fn view_for_schematic(
     s: &DesignSnapshot,
     scope: &[String],
@@ -373,12 +350,7 @@ pub fn view_for_schematic(
     split_buses: bool,
     show_physical_cells: bool,
 ) -> Result<GraphView> {
-    let sc = s
-        .design
-        .scopes
-        .iter()
-        .find(|sc| sc.path == scope)
-        .context("Unknown scope")?;
+    let sc = s.design.scope(scope).context("Unknown scope")?;
     let m = &s.design.modules[&sc.module];
     let limit = limit.clamp(1, 2000);
     let signals = signal_refs(s, scope)?;
@@ -496,14 +468,7 @@ pub fn view_for_schematic(
                     .enumerate()
                     .map(|(index, bit)| {
                         let declared = declarations
-                            .map(|sig| {
-                                sig.offset
-                                    + if sig.upto {
-                                        sig.bits.len() - 1 - index
-                                    } else {
-                                        index
-                                    } as i64
-                            })
+                            .map(|sig| sig.index(index))
                             .unwrap_or(index as i64);
                         (format!("{}[{declared}]", p.name), std::slice::from_ref(bit))
                     })
@@ -580,8 +545,6 @@ pub fn view_for_schematic(
                         name: p.name.clone(),
                         width: bits.len(),
                         bits: bits.to_vec(),
-                        role: PinRole::Data,
-                        polarity: None,
                         declared_direction: boundary.then(|| p.direction.clone()),
                         range: declarations
                             .filter(|sig| !split_buses && sig.bits.len() > 1)
@@ -594,7 +557,7 @@ pub fn view_for_schematic(
                                     (high, low)
                                 }
                             }),
-                        asynchronous: false,
+                        ..PinDisplay::default()
                     }),
                     feeds: vec![],
                 });
@@ -709,11 +672,7 @@ pub fn view_for_schematic(
                     name: String::new(),
                     width: bits.len(),
                     bits: bits.to_vec(),
-                    role: PinRole::Data,
-                    polarity: None,
-                    declared_direction: None,
-                    range: None,
-                    asynchronous: false,
+                    ..PinDisplay::default()
                 }),
                 feeds: vec![],
             }],
@@ -738,30 +697,6 @@ pub fn view_for_schematic(
                 .iter()
                 .flat_map(|b| bybit.get(b).cloned().unwrap_or_default())
                 .collect();
-            let names: Vec<String> = signals
-                .iter()
-                .filter(|r| ids.contains(&r.id))
-                .map(|r| {
-                    let name = r.path.last().unwrap();
-                    if split_buses && bs.len() == 1 && r.width > 1 {
-                        if let Some(sig) = m.signals.iter().find(|sig| &sig.name == name) {
-                            let positions: Vec<String> = sig
-                                .bits
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, bit)| **bit == bs[0])
-                                .map(|(i, _)| {
-                                    (sig.offset
-                                        + if sig.upto { sig.bits.len() - 1 - i } else { i } as i64)
-                                        .to_string()
-                                })
-                                .collect();
-                            return format!("{name}[{}]", positions.join(","));
-                        }
-                    }
-                    name.clone()
-                })
-                .collect();
             ViewEdge {
                 id: format!("{scope_id}:edge:{i}"),
                 sources: net.sources.clone(),
@@ -771,20 +706,8 @@ pub fn view_for_schematic(
                     .filter(|signal| ids.contains(&signal.id))
                     .map(|signal| signal.id.clone())
                     .collect(),
-                label: format!(
-                    "{}{}",
-                    names.first().cloned().unwrap_or_default(),
-                    if bs.len() > 1 {
-                        format!(" /{}", bs.len())
-                    } else {
-                        String::new()
-                    }
-                ),
-                semantics: if s.representation == Representation::Source {
-                    EdgeSemantics::Dependency
-                } else {
-                    EdgeSemantics::Electrical
-                },
+                // Named by `schematic::view` from the declared signals.
+                label: String::new(),
                 bits: bs.clone(),
             }
         })

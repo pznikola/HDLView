@@ -40,7 +40,7 @@ pub fn save_svg(path: &Path, svg: &str) -> Result<()> {
     result.with_context(|| format!("Cannot save SVG {}", path.display()))
 }
 
-pub fn parameter(cell: &Cell, name: &str) -> Option<u64> {
+fn parameter(cell: &Cell, name: &str) -> Option<u64> {
     let value = cell.parameters.get(name)?;
     value.as_u64().or_else(|| {
         let text = value.as_str()?;
@@ -64,123 +64,16 @@ fn memory_flag(cell: &Cell, pin: &str, suffix: &str) -> Option<bool> {
     }
 }
 
-/// Symbol and title of a library cell. A snapshot that carries the cell's
-/// Liberty-derived function uses it; an older snapshot falls back to exact
-/// library families with verified interfaces, where drive suffixes do not
-/// change logic. Either way every connected signal pin must be a known one.
-fn library<'a>(function: Option<&'a CellFunction>, cell: &'a Cell) -> Option<(&'a str, &'a str)> {
-    if let Some(function) = function {
-        return cell
-            .ports
-            .iter()
-            .all(|p| power(&p.name) || (p.bits.len() == 1 && function.pins.contains_key(&p.name)))
-            .then_some((function.symbol.as_str(), function.title.as_str()));
-    }
-    let kind = cell.kind.strip_prefix('\\').unwrap_or(&cell.kind);
-    let rest = kind
-        .strip_prefix("sky130_fd_sc_hd__")
-        .or_else(|| kind.strip_prefix("sky130_ef_sc_hd__"))
-        .or_else(|| kind.strip_prefix("sg13g2_"))?;
-    let family = rest
-        .rsplit_once('_')
-        .filter(|(_, strength)| strength.parse::<u32>().is_ok())
-        .map_or(rest, |(family, _)| family);
-    let output = if matches!(
-        family,
-        "and2"
-            | "and3"
-            | "and4"
-            | "or2"
-            | "or3"
-            | "or4"
-            | "xor2"
-            | "buf"
-            | "clkbuf"
-            | "mux2"
-            | "a21o"
-            | "a22o"
-            | "o21a"
-            | "o22a"
-    ) {
-        "X"
-    } else {
-        "Y"
-    };
-    let (symbol, required): (&str, Vec<&str>) = match family {
-        "and2" | "nand2" | "or2" | "nor2" | "xor2" | "xnor2" => (
-            match family {
-                "and2" => "and",
-                "nand2" => "nand",
-                "or2" => "or",
-                "nor2" => "nor",
-                "xor2" => "xor",
-                _ => "xnor",
-            },
-            vec!["A", "B", output],
-        ),
-        "and3" | "nand3" | "or3" | "nor3" => (
-            match family {
-                "and3" => "and",
-                "nand3" => "nand",
-                "or3" => "or",
-                _ => "nor",
-            },
-            vec!["A", "B", "C", output],
-        ),
-        "and4" | "nand4" | "or4" | "nor4" => (
-            match family {
-                "and4" => "and",
-                "nand4" => "nand",
-                "or4" => "or",
-                _ => "nor",
-            },
-            vec!["A", "B", "C", "D", output],
-        ),
-        "buf" | "clkbuf" => ("buffer", vec!["A", "X"]),
-        "inv" => ("not", vec!["A", "Y"]),
-        "mux2" => ("mux", vec!["A0", "A1", "S", "X"]),
-        "a21oi" | "a22oi" | "a21o" | "a22o" | "o21ai" | "o22ai" | "o21a" | "o22a" => {
-            let mut pins = vec!["A1", "A2", "B1", output];
-            if family.contains("22") {
-                pins.push("B2");
-            }
-            ("compound", pins)
-        }
-        "dfxtp" | "dfbpq" => ("register", vec!["D", "CLK", "Q"]),
-        "dfrtp" | "dfrbpq" => ("register", vec!["D", "CLK", "RESET_B", "Q"]),
-        "dfstp" => ("register", vec!["D", "CLK", "SET_B", "Q"]),
-        "edfxtp" => ("register", vec!["D", "CLK", "DE", "Q"]),
-        "dlxtp" => ("latch", vec!["D", "GATE", "Q"]),
-        "conb" => ("constant", vec!["HI", "LO"]),
-        "tiehi" => ("constant", vec!["L_HI"]),
-        "tielo" => ("constant", vec!["L_LO"]),
-        // A library cell without any signal pin is physical by its interface.
-        _ if cell.ports.iter().all(|p| power(&p.name)) => ("physical", vec![]),
-        _ => return None,
-    };
-    // Yosys exports only connected pins, so an unused pin is absent, not wrong.
-    if cell
-        .ports
+/// Symbol and title of a library cell, from its Liberty-derived function.
+/// Every connected signal pin must be one the function describes.
+fn library<'a>(function: Option<&'a CellFunction>, cell: &Cell) -> Option<(&'a str, &'a str)> {
+    let function = function?;
+    cell.ports
         .iter()
-        .any(|p| !power(&p.name) && !required.contains(&p.name.as_str()))
-    {
-        return None;
-    }
-    for pin in &cell.ports {
-        if power(&pin.name) {
-            continue;
-        }
-        let out = matches!(
-            pin.name.as_str(),
-            "X" | "Y" | "Q" | "HI" | "LO" | "L_HI" | "L_LO"
-        );
-        if pin.bits.len() != 1 || pin.direction != if out { "output" } else { "input" } {
-            return None;
-        }
-    }
-    Some((symbol, family))
+        .all(|p| power(&p.name) || (p.bits.len() == 1 && function.pins.contains_key(&p.name)))
+        .then_some((function.symbol.as_str(), function.title.as_str()))
 }
-fn power(name: &str) -> bool {
+pub(crate) fn power(name: &str) -> bool {
     matches!(name, "VPWR" | "VGND" | "VPB" | "VNB" | "VDD" | "VSS")
 }
 fn function<'a>(design: &'a Design, cell: &Cell) -> Option<&'a CellFunction> {
@@ -190,116 +83,26 @@ pub fn is_physical(design: &Design, cell: &Cell) -> bool {
     library(function(design, cell), cell).is_some_and(|(symbol, _)| symbol == "physical")
 }
 
-// Fine cells encode polarity in their type names. Check both the encoding and
-// actual interface before assigning sequential semantics.
-pub(crate) fn fine_register(cell: &Cell) -> Option<Vec<(&'static str, PinRole, bool)>> {
-    let encoded = cell
-        .kind
-        .strip_prefix('\\')
-        .unwrap_or(&cell.kind)
-        .strip_prefix("$_")?
-        .strip_suffix('_')?;
-    let (family, code) = encoded.split_once('_')?;
-    let signs = |bytes: &[u8]| bytes.iter().all(|b| matches!(b, b'P' | b'N'));
-    let bytes = code.as_bytes();
-    let mut controls = Vec::new();
-    match family {
-        "DFF" | "DFFE" | "SDFF" | "SDFFE" | "SDFFCE" => {
-            let reset = family.starts_with("SD") || bytes.len() >= 3;
-            let enable = matches!(family, "DFFE" | "SDFFE" | "SDFFCE");
-            let expected = 1 + usize::from(reset) * 2 + usize::from(enable);
-            if bytes.len() != expected || !signs(&bytes[..if reset { 2 } else { 1 }]) {
-                return None;
-            }
-            controls.push(("C", PinRole::Clock, bytes[0] == b'P'));
-            if reset {
-                if !matches!(bytes[2], b'0' | b'1') {
-                    return None;
-                }
-                controls.push(("R", PinRole::Reset, bytes[1] == b'P'));
-            }
-            if enable {
-                let value = bytes[expected - 1];
-                if !matches!(value, b'P' | b'N') {
-                    return None;
-                }
-                controls.push(("E", PinRole::Enable, value == b'P'));
-            }
-        }
-        "DFFSR" | "DFFSRE"
-            if bytes.len() == if family == "DFFSR" { 3 } else { 4 } && signs(bytes) =>
-        {
-            controls.extend([
-                ("C", PinRole::Clock, bytes[0] == b'P'),
-                ("S", PinRole::Set, bytes[1] == b'P'),
-                ("R", PinRole::Reset, bytes[2] == b'P'),
-            ]);
-            if family == "DFFSRE" {
-                controls.push(("E", PinRole::Enable, bytes[3] == b'P'));
-            }
-        }
-        "DLATCH" if bytes.len() == 1 && signs(bytes) => {
-            controls.push(("E", PinRole::Enable, bytes[0] == b'P'));
-        }
-        "DLATCHSR" if bytes.len() == 3 && signs(bytes) => {
-            controls.extend([
-                ("E", PinRole::Enable, bytes[0] == b'P'),
-                ("S", PinRole::Set, bytes[1] == b'P'),
-                ("R", PinRole::Reset, bytes[2] == b'P'),
-            ]);
-        }
-        _ => return None,
-    }
-    let expected: BTreeSet<_> = controls
-        .iter()
-        .map(|(name, _, _)| *name)
-        .chain(["D", "Q"])
-        .collect();
-    if cell
-        .ports
-        .iter()
-        .map(|p| p.name.as_str())
-        .collect::<BTreeSet<_>>()
-        != expected
-        || cell.ports.iter().any(|p| {
-            p.bits.len() != 1 || p.direction != if p.name == "Q" { "output" } else { "input" }
-        })
-    {
-        return None;
-    }
-    Some(controls)
-}
-
-pub fn describe(cell: &Cell, function: Option<&CellFunction>, node: &mut ViewNode) {
+fn describe(cell: &Cell, function: Option<&CellFunction>, node: &mut ViewNode) {
     let kind = cell.kind.strip_prefix('\\').unwrap_or(&cell.kind);
     let lib = library(function, cell);
     let function = function.filter(|_| lib.is_some());
-    let fine = fine_register(cell);
     let (symbol, title) = lib.unwrap_or_else(|| match kind {
-        "$and" | "$_AND_" | "$_ANDNOT_" => ("and", "AND"),
-        "$or" | "$_OR_" | "$_ORNOT_" => ("or", "OR"),
-        "$xor" | "$_XOR_" => ("xor", "XOR"),
-        "$xnor" | "$_XNOR_" => ("xnor", "XNOR"),
-        "$_NAND_" => ("nand", "NAND"),
-        "$_NOR_" => ("nor", "NOR"),
-        "$not" | "$_NOT_" => ("not", "NOT"),
-        "$_BUF_" => ("buffer", "BUF"),
-        "$_AOI3_" => ("compound", "a21oi"),
-        "$_AOI4_" => ("compound", "a22oi"),
-        "$_OAI3_" => ("compound", "o21ai"),
-        "$_OAI4_" => ("compound", "o22ai"),
+        "$and" => ("and", "AND"),
+        "$or" => ("or", "OR"),
+        "$xor" => ("xor", "XOR"),
+        "$xnor" => ("xnor", "XNOR"),
+        "$not" => ("not", "NOT"),
         "$logic_and" => ("and", "&&"),
         "$logic_or" => ("or", "||"),
         "$logic_not" => ("not", "!"),
-        "$mux" | "$_MUX_" | "$bmux" | "$bwmux" => ("mux", "MUX"),
+        "$mux" | "$bmux" | "$bwmux" => ("mux", "MUX"),
         "$pmux" => ("mux", "1HOT MUX"),
         "$demux" => ("demux", "DEMUX"),
-        "$tribuf" | "$_TBUF_" => ("buffer", "TRI"),
+        "$tribuf" => ("buffer", "TRI"),
         "$dff" | "$dffe" | "$adff" | "$adffe" | "$sdff" | "$sdffe" | "$sdffce" | "$aldff"
         | "$aldffe" | "$dffsr" | "$dffsre" => ("register", "DFF"),
-        _ if fine.is_some() && kind.starts_with("$_DLATCH") => ("latch", "LATCH"),
-        _ if fine.is_some() => ("register", "DFF"),
-        "$dlatch" | "$adlatch" | "$dlatchsr" | "$_DLATCH_P_" | "$_DLATCH_N_" => ("latch", "LATCH"),
+        "$dlatch" | "$adlatch" | "$dlatchsr" => ("latch", "LATCH"),
         "$mem_v2" | "$mem" | "$memrd" | "$memrd_v2" | "$memwr" | "$memwr_v2" => ("memory", "MEM"),
         "$add" => ("operator", "+"),
         "$sub" => ("operator", "−"),
@@ -324,12 +127,6 @@ pub fn describe(cell: &Cell, function: Option<&CellFunction>, node: &mut ViewNod
         "$reduce_or" | "$reduce_bool" => ("operator", "|"),
         "$reduce_xor" => ("operator", "^"),
         "$reduce_xnor" => ("operator", "~^"),
-        "AlwaysFF" | "AlwaysComb" | "AlwaysLatch" | "Always" | "Initial" | "Final" => {
-            ("process", kind)
-        }
-        "assign" => ("assignment", "assign"),
-        "function" => ("function", "function"),
-        "task" => ("task", "task"),
         _ if node.child_scope.is_some() => ("module", kind),
         _ => ("unknown", kind),
     });
@@ -337,24 +134,6 @@ pub fn describe(cell: &Cell, function: Option<&CellFunction>, node: &mut ViewNod
     let width = parameter(cell, "WIDTH").or_else(|| parameter(cell, "Y_WIDTH"));
     if let Some(width) = width {
         annotations.push(format!("{width} bit{}", if width == 1 { "" } else { "s" }));
-    }
-    if let Some((family, code)) = kind
-        .strip_prefix("$_")
-        .and_then(|s| s.strip_suffix('_'))
-        .and_then(|s| s.split_once('_'))
-    {
-        if fine.is_some() && code.len() >= 3 && !family.ends_with("SR") && !family.ends_with("SRE")
-        {
-            annotations.push(format!(
-                "{} reset = {}",
-                if family.starts_with("SD") {
-                    "sync"
-                } else {
-                    "async"
-                },
-                &code[2..3]
-            ));
-        }
     }
     if parameter(cell, "A_SIGNED") == Some(1) || parameter(cell, "B_SIGNED") == Some(1) {
         annotations.push("signed operands".into());
@@ -399,12 +178,6 @@ pub fn describe(cell: &Cell, function: Option<&CellFunction>, node: &mut ViewNod
             ));
         }
     }
-    if lib.is_some_and(|(_, family)| matches!(family, "dfrtp" | "dfrbpq")) {
-        annotations.push("async reset = 0".into());
-    }
-    if lib.is_some_and(|(_, family)| family == "dfstp") {
-        annotations.push("async set = 1".into());
-    }
     for p in &mut node.ports {
         let Some(pin) = p.display.as_mut() else {
             continue;
@@ -421,10 +194,10 @@ pub fn describe(cell: &Cell, function: Option<&CellFunction>, node: &mut ViewNod
             PinRole::Power
         } else if matches!(symbol, "register" | "latch") {
             match pin.name.as_str() {
-                "CLK" | "C" => PinRole::Clock,
-                "EN" | "E" | "GATE" | "DE" | "ALOAD" => PinRole::Enable,
-                "ARST" | "SRST" | "R" | "CLR" | "RESET_B" => PinRole::Reset,
-                "SET" | "SET_B" | "S" => PinRole::Set,
+                "CLK" => PinRole::Clock,
+                "EN" | "ALOAD" => PinRole::Enable,
+                "ARST" | "SRST" | "CLR" => PinRole::Reset,
+                "SET" => PinRole::Set,
                 _ => PinRole::Data,
             }
         } else if symbol == "memory" {
@@ -438,7 +211,7 @@ pub fn describe(cell: &Cell, function: Option<&CellFunction>, node: &mut ViewNod
             }
         } else if matches!(symbol, "mux" | "demux") && pin.name == "S" {
             PinRole::Select
-        } else if symbol == "buffer" && matches!(pin.name.as_str(), "EN" | "E") {
+        } else if symbol == "buffer" && pin.name == "EN" {
             PinRole::Enable
         } else {
             PinRole::Data
@@ -462,9 +235,7 @@ pub fn describe(cell: &Cell, function: Option<&CellFunction>, node: &mut ViewNod
         } else {
             parameter(cell, key).map(|v| v != 0)
         };
-        if pin.role == PinRole::Enable
-            && (symbol == "memory" || matches!(kind, "$tribuf" | "$_TBUF_"))
-        {
+        if pin.role == PinRole::Enable && (symbol == "memory" || kind == "$tribuf") {
             pin.polarity = Some(true);
         }
         // A read port without a clock, an always-on read enable and a reset
@@ -486,36 +257,17 @@ pub fn describe(cell: &Cell, function: Option<&CellFunction>, node: &mut ViewNod
         {
             pin.role = PinRole::Unused;
         }
-        if matches!(kind, "$_ANDNOT_" | "$_ORNOT_") && pin.name == "B" {
-            pin.polarity = Some(false);
-        }
-        if lib.is_some() && function.is_none() {
-            match pin.role {
-                PinRole::Clock | PinRole::Enable => pin.polarity = Some(true),
-                PinRole::Reset | PinRole::Set => pin.polarity = Some(false),
-                _ => {}
-            }
-        } else if let Some(controls) = &fine {
-            if let Some((_, role, polarity)) =
-                controls.iter().find(|(name, _, _)| *name == pin.name)
-            {
-                pin.role = role.clone();
-                pin.polarity = Some(*polarity);
-            }
-        }
         // A two-way multiplexer names its inputs by the select value choosing them.
-        if matches!(kind, "$mux" | "$_MUX_") || lib.is_some_and(|(_, family)| family == "mux2") {
+        if kind == "$mux" {
             match pin.name.as_str() {
-                "A" | "A0" => p.label = "0".into(),
-                "B" | "A1" => p.label = "1".into(),
+                "A" => p.label = "0".into(),
+                "B" => p.label = "1".into(),
                 _ => {}
             }
         }
-        // Only `SRST` and the fine `$_SDFF*_` families reset on the clock.
+        // Only `SRST` resets on the clock.
         pin.asynchronous = pin.name == "ALOAD"
-            || (matches!(pin.role, PinRole::Reset | PinRole::Set)
-                && pin.name != "SRST"
-                && !(fine.is_some() && kind.starts_with("$_SD")));
+            || (matches!(pin.role, PinRole::Reset | PinRole::Set) && pin.name != "SRST");
         // A library cell's own description outranks every rule above.
         if let Some(known) = function.and_then(|f| f.pins.get(&pin.name)) {
             if pin.role != PinRole::Power {
@@ -528,25 +280,6 @@ pub fn describe(cell: &Cell, function: Option<&CellFunction>, node: &mut ViewNod
             }
         }
     }
-    // Two-level cells draw their gates: from the library function, or for the
-    // verified AND-OR and OR-AND families by their fixed pin groups.
-    let compound = function.and_then(|f| f.compound.clone()).or_else(|| {
-        let groups: &[&[&str]] = match title {
-            _ if symbol != "compound" => return None,
-            "a21oi" | "a21o" | "o21ai" | "o21a" if lib.is_some() => &[&["A1", "A2"], &["B1"]],
-            _ if lib.is_some() => &[&["A1", "A2"], &["B1", "B2"]],
-            "a21oi" | "o21ai" => &[&["A", "B"], &["C"]],
-            _ => &[&["A", "B"], &["C", "D"]],
-        };
-        Some(Compound {
-            first: if title.starts_with('a') { "and" } else { "or" }.into(),
-            groups: groups
-                .iter()
-                .map(|group| group.iter().map(|pin| pin.to_string()).collect())
-                .collect(),
-            inverted: title.ends_with('i'),
-        })
-    });
     // Compiler cells list pins alphabetically. Draw data first, then clock, enable
     // and resets; a memory lists its write side before its read side. Instances
     // keep their declaration order.
@@ -575,13 +308,7 @@ pub fn describe(cell: &Cell, function: Option<&CellFunction>, node: &mut ViewNod
         symbol: symbol.into(),
         title: title.into(),
         annotations,
-        detail: cell
-            .behavior
-            .as_ref()
-            .filter(|b| !b.nodes.is_empty())
-            .map(|_| node.id.clone()),
-        physical_only: symbol == "physical",
-        compound,
+        compound: function.and_then(|f| f.compound.clone()),
         ..Default::default()
     });
 }
@@ -606,11 +333,7 @@ fn cell_roles(design: &Design, cell: &Cell) -> Roles {
                     name: p.name.clone(),
                     width: p.bits.len(),
                     bits: p.bits.clone(),
-                    role: PinRole::Data,
-                    polarity: None,
-                    declared_direction: None,
-                    range: None,
-                    asynchronous: false,
+                    ..PinDisplay::default()
                 }),
                 feeds: vec![],
             })
@@ -694,7 +417,7 @@ fn driven_name(module: &Module, cell: &Cell) -> Option<String> {
     }
     declared().find_map(|s| {
         let low = s.bits.windows(q.len()).position(|w| w == q.as_slice())?;
-        let index = |i: usize| s.offset + if s.upto { s.bits.len() - 1 - i } else { i } as i64;
+        let index = |i| s.index(i);
         Some(if q.len() == 1 {
             format!("{}[{}]", s.name, index(low))
         } else {
@@ -711,22 +434,8 @@ pub fn view(
     split: bool,
     options: &SchematicOptions,
 ) -> Result<GraphView> {
-    let sc = snapshot
-        .design
-        .scopes
-        .iter()
-        .find(|s| s.path == scope)
-        .context("Unknown scope")?;
+    let sc = snapshot.design.scope(scope).context("Unknown scope")?;
     let module = &snapshot.design.modules[&sc.module];
-    if let Some(detail) = &options.detail {
-        if let Some(cell) = module.cells.iter().find(|c| {
-            let mut path = scope.to_vec();
-            path.push(c.name.clone());
-            identity(&snapshot.id, &path, "cell") == *detail
-        }) {
-            return behavior_view(snapshot, scope, cell, detail, limit);
-        }
-    }
     let mut view = graph::view_for_schematic(
         snapshot,
         scope,
@@ -790,9 +499,6 @@ pub fn view(
         })
         .collect();
     for edge in &mut view.edges {
-        if edge.semantics != EdgeSemantics::Electrical {
-            continue;
-        }
         // A wider net is not labelled with a declaration that names only part of it.
         let named = edge
             .signal_ids
@@ -806,14 +512,7 @@ pub fn view(
                     .iter()
                     .enumerate()
                     .filter(|(_, bit)| edge.bits.contains(bit))
-                    .map(|(i, _)| {
-                        signal.offset
-                            + if signal.upto {
-                                (signal.bits.len() - 1 - i) as i64
-                            } else {
-                                i as i64
-                            }
-                    })
+                    .map(|(i, _)| signal.index(i))
                     .collect();
                 let contiguous = positions
                     .windows(2)
@@ -841,12 +540,12 @@ pub fn view(
     if snapshot.representation == Representation::Elaborated
         && (options.functional_symbols || options.detail.is_some())
     {
-        let groups = groups(&view);
+        let groups = groups(&view, &identity(&snapshot.id, scope, "scope"));
         if let Some(detail) = &options.detail {
             let group = groups
                 .iter()
                 .find(|g| &g.id == detail)
-                .context("Unknown schematic detail; rebuild for source behavior metadata")?;
+                .context("Unknown schematic detail")?;
             let members = &group.display.as_ref().context("Group metadata")?.members;
             focus_group(&mut view, members);
             view.detail = Some(detail.clone());
@@ -854,195 +553,9 @@ pub fn view(
             collapse(&mut view, groups);
         }
     } else if options.detail.is_some() {
-        bail!("This snapshot has no captured detail for the selected object; rebuild to capture source behavior")
+        bail!("Only elaborated schematics have detail views")
     }
     Ok(view)
-}
-
-fn behavior_view(
-    snapshot: &DesignSnapshot,
-    scope: &[String],
-    cell: &Cell,
-    detail: &str,
-    limit: usize,
-) -> Result<GraphView> {
-    let body = cell.behavior.as_ref().context(
-        "This older snapshot has no captured source behavior; rebuild to enable details",
-    )?;
-    let signals = graph::signal_refs(snapshot, scope)?;
-    let ids: BTreeMap<&str, String> = signals
-        .iter()
-        .filter_map(|s| s.path.last().map(|name| (name.as_str(), s.id.clone())))
-        .collect();
-    let limit = limit.clamp(1, 2000);
-    let mut nodes: Vec<ViewNode> = body
-        .nodes
-        .iter()
-        .take(limit)
-        .map(|n| {
-            let id = format!("{detail}:behavior:{}", n.id);
-            let signal_ids = if matches!(n.kind.as_str(), "reference" | "assignment") {
-                n.signals
-                    .iter()
-                    .filter_map(|name| ids.get(name.as_str()).cloned())
-                    .collect::<Vec<_>>()
-            } else {
-                vec![]
-            };
-            let symbol = match n.kind.as_str() {
-                "and" | "or" | "xor" | "not" | "mux" | "operator" | "constant" | "function"
-                | "task" | "assignment" => n.kind.as_str(),
-                "reference" => "connector",
-                "if" | "case" | "loop" | "event" | "block" | "return" | "merge" => "behavior",
-                _ => "unknown",
-            };
-            let target = n
-                .call
-                .as_ref()
-                .and_then(|name| {
-                    snapshot
-                        .design
-                        .scopes
-                        .iter()
-                        .find(|s| s.path == scope)
-                        .and_then(|s| {
-                            snapshot.design.modules[&s.module]
-                                .cells
-                                .iter()
-                                .find(|c| &c.name == name && c.behavior.is_some())
-                        })
-                })
-                .map(|c| {
-                    let mut path = scope.to_vec();
-                    path.push(c.name.clone());
-                    identity(&snapshot.id, &path, "cell")
-                });
-            ViewNode {
-                id: id.clone(),
-                label: n.label.clone(),
-                kind: n.kind.clone(),
-                ports: vec![
-                    ViewPort {
-                        id: format!("{id}:in"),
-                        label: String::new(),
-                        direction: "input".into(),
-                        signal_ids: signal_ids.clone(),
-                        display: None,
-                        feeds: vec![],
-                    },
-                    ViewPort {
-                        id: format!("{id}:out"),
-                        label: String::new(),
-                        direction: "output".into(),
-                        signal_ids,
-                        display: None,
-                        feeds: vec![],
-                    },
-                ],
-                child_scope: None,
-                source: n.source.clone(),
-                display: Some(NodeDisplay {
-                    symbol: symbol.into(),
-                    title: n.label.clone(),
-                    detail: target,
-                    annotations: n
-                        .width
-                        .map(|width| {
-                            format!(
-                                "{width} bits{}",
-                                if n.signed == Some(true) {
-                                    " · signed"
-                                } else {
-                                    ""
-                                }
-                            )
-                        })
-                        .into_iter()
-                        .collect(),
-                    span: n.span.clone(),
-                    ..Default::default()
-                }),
-            }
-        })
-        .collect();
-    let visible: BTreeSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
-    let edges = body
-        .edges
-        .iter()
-        .enumerate()
-        .filter_map(|(i, e)| {
-            let source = format!("{detail}:behavior:{}", e.source);
-            let target = format!("{detail}:behavior:{}", e.target);
-            if !visible.contains(&source) || !visible.contains(&target) {
-                return None;
-            }
-            // Expressions never acquire invented waveform declarations.
-            let signal_ids = if e.semantics == EdgeSemantics::ControlFlow {
-                vec![]
-            } else {
-                nodes
-                    .iter()
-                    .find(|n| n.id == source)
-                    .map(|n| n.ports[1].signal_ids.clone())
-                    .unwrap_or_default()
-            };
-            Some(ViewEdge {
-                id: format!("{detail}:behavior-edge:{i}"),
-                sources: vec![format!("{source}:out")],
-                targets: vec![format!("{target}:in")],
-                signal_ids,
-                label: e.label.clone(),
-                semantics: e.semantics,
-                bits: vec![],
-            })
-        })
-        .collect();
-    // Allocate a distinct input anchor for every expression operand/branch.
-    let mut edges: Vec<ViewEdge> = edges;
-    for node in &mut nodes {
-        let incoming: Vec<_> = edges
-            .iter_mut()
-            .filter(|e| e.targets[0] == format!("{}:in", node.id))
-            .collect();
-        let original = node.ports.remove(0);
-        for (i, edge) in incoming.into_iter().enumerate() {
-            let id = format!("{}:in:{i}", node.id);
-            edge.targets[0] = id.clone();
-            node.ports.push(ViewPort {
-                id,
-                label: edge.label.clone(),
-                signal_ids: edge.signal_ids.clone(),
-                display: Some(PinDisplay {
-                    name: edge.label.clone(),
-                    width: 0,
-                    bits: vec![],
-                    role: if node.kind == "mux" && edge.label == "select" {
-                        PinRole::Select
-                    } else {
-                        PinRole::Data
-                    },
-                    polarity: None,
-                    declared_direction: None,
-                    range: None,
-                    asynchronous: false,
-                }),
-                ..original.clone()
-            });
-        }
-        if node.kind == "return" {
-            node.ports.retain(|p| p.direction != "output");
-        }
-    }
-    Ok(GraphView {
-        nodes,
-        edges,
-        signals,
-        truncated: body.nodes.len() > limit,
-        total_cells: body.nodes.len(),
-        hidden_physical_cells: 0,
-        omitted_cells: body.nodes.len().saturating_sub(limit),
-        detail: Some(detail.into()),
-    })
 }
 
 fn pin<'a>(n: &'a ViewNode, name: &str) -> Option<&'a PinDisplay> {
@@ -1066,14 +579,10 @@ fn constant(bits: &[Bit]) -> Option<u64> {
     Some(value)
 }
 
-fn groups<'a>(view: &'a GraphView) -> Vec<ViewNode> {
+fn groups<'a>(view: &'a GraphView, scope_id: &str) -> Vec<ViewNode> {
     let group_id = |members: &[String]| {
         format!(
-            "{}:group:{}",
-            view.nodes
-                .first()
-                .map(|n| n.id.split(":cell:").next().unwrap_or(&n.id))
-                .unwrap_or("view"),
+            "{scope_id}:group:{}",
             serde_json::to_string(members).expect("string IDs")
         )
     };
@@ -1600,23 +1109,13 @@ fn focus_group(view: &mut GraphView, members: &[String]) {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn svg_publication_keeps_existing_export_on_invalid_input() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("schematic.svg");
-        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>counter</text></svg>";
-        super::save_svg(&path, svg).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), svg);
-        assert!(super::save_svg(&path, "not SVG").is_err());
-        assert!(super::save_svg(&path.with_extension("sv"), svg).is_err());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), svg);
-        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
-    }
     use super::*;
     use serde_json::json;
     fn snapshot(module: Value) -> DesignSnapshot {
-        let design = graph::from_yosys(&json!({"modules":{"top":module}}), "top").unwrap();
-        serde_json::from_value(json!({"schema_version":1,"id":"fixture","representation":"elaborated","project":{"name":"fixture","top":"top","sources":[]},"profile":{"provider":"native"},"directory":"/tmp/fixture","design":design,"diagnostics":[],"tool_versions":{},"input_hashes":{},"netlist":null})).unwrap()
+        snapshot_of(graph::from_yosys(&json!({"modules":{"top":module}}), "top").unwrap())
+    }
+    fn snapshot_of(design: Design) -> DesignSnapshot {
+        serde_json::from_value(json!({"schema_version":2,"id":"fixture","representation":"elaborated","project":{"schema_version":3,"name":"fixture","top":"top","sources":[]},"profile":{"provider":"native"},"directory":"/tmp/fixture","design":design,"diagnostics":[],"tool_versions":{},"input_hashes":{},"artifact_hashes":{},"source_origins":{},"netlist":null,"sdf":{}})).unwrap()
     }
     fn mux(a: u64, b: u64, s: u64, y: u64) -> Value {
         json!({"type":"$mux","parameters":{"WIDTH":"1"},"port_directions":{"A":"input","B":"input","S":"input","Y":"output"},"connections":{"A":[a],"B":[b],"S":[s],"Y":[y]}})
@@ -1628,20 +1127,35 @@ mod tests {
         }
         snapshot(module)
     }
-    #[test]
-    fn parameters_and_legacy_cells_preserve_polarity_without_guessing() {
-        let s = snapshot(
-            json!({"cells":{"ff":{"type":"$adff","parameters":{"CLK_POLARITY":"0","ARST_POLARITY":"0","ARST_VALUE":"0010","WIDTH":"100"},"port_directions":{"D":"input","Q":"output","CLK":"input","ARST":"input"},"connections":{"D":[2,3,4,5],"Q":[6,7,8,9],"CLK":[10],"ARST":[11]}}}}),
-        );
-        let v = view(
-            &s,
+    fn draw(s: &DesignSnapshot) -> GraphView {
+        view(
+            s,
             &["top".into()],
             None,
             2000,
             false,
             &SchematicOptions::default(),
         )
-        .unwrap();
+        .unwrap()
+    }
+    #[test]
+    fn svg_publication_keeps_existing_export_on_invalid_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("schematic.svg");
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>counter</text></svg>";
+        save_svg(&path, svg).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), svg);
+        assert!(save_svg(&path, "not SVG").is_err());
+        assert!(save_svg(&path.with_extension("sv"), svg).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), svg);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+    #[test]
+    fn parameters_preserve_polarity_and_absent_ones_are_not_serialized() {
+        let s = snapshot(
+            json!({"cells":{"ff":{"type":"$adff","parameters":{"CLK_POLARITY":"0","ARST_POLARITY":"0","ARST_VALUE":"0010","WIDTH":"100"},"port_directions":{"D":"input","Q":"output","CLK":"input","ARST":"input"},"connections":{"D":[2,3,4,5],"Q":[6,7,8,9],"CLK":[10],"ARST":[11]}}}}),
+        );
+        let v = draw(&s);
         let ff = v.nodes.iter().find(|n| n.label == "ff").unwrap();
         assert_eq!(pin(ff, "CLK").unwrap().polarity, Some(false));
         assert_eq!(pin(ff, "ARST").unwrap().role, PinRole::Reset);
@@ -1657,7 +1171,6 @@ mod tests {
         .unwrap();
         let bytes = serde_json::to_value(old).unwrap();
         assert!(bytes.get("parameters").is_none());
-        assert!(bytes.get("behavior").is_none());
     }
     #[test]
     fn memory_clock_masks_do_not_invent_uniform_polarity_or_invert_async_inputs() {
@@ -1676,193 +1189,30 @@ mod tests {
                 .insert("RD_CLK_ENABLE".into(), json!(enable));
             cell.parameters
                 .insert("RD_CLK_POLARITY".into(), json!(polarity));
-            let v = view(
-                &s,
-                &["top".into()],
-                None,
-                2000,
-                false,
-                &SchematicOptions::default(),
-            )
-            .unwrap();
+            let v = draw(&s);
             let memory = v.nodes.iter().find(|n| n.label == "memory").unwrap();
             assert_eq!(pin(memory, "RD_CLK").unwrap().role, role);
             assert_eq!(pin(memory, "RD_CLK").unwrap().polarity, expected);
         }
     }
     #[test]
-    fn fine_sequential_cells_decode_controls_and_reject_incompatible_interfaces() {
-        let mut s = snapshot(
-            json!({"cells":{"ff":{"type":"\\$_SDFFE_NN0P_","port_directions":{"D":"input","C":"input","R":"input","E":"input","Q":"output"},"connections":{"D":[2],"C":[3],"R":[4],"E":[5],"Q":[6]}}}}),
-        );
-        let v = view(
-            &s,
-            &["top".into()],
-            None,
-            2000,
-            false,
-            &SchematicOptions::default(),
-        )
-        .unwrap();
-        let ff = v.nodes.iter().find(|n| n.label == "ff").unwrap();
-        assert_eq!(ff.display.as_ref().unwrap().symbol, "register");
-        assert_eq!(pin(ff, "C").unwrap().polarity, Some(false));
-        assert_eq!(pin(ff, "R").unwrap().polarity, Some(false));
-        assert_eq!(pin(ff, "E").unwrap().polarity, Some(true));
-        s.design.modules.get_mut("top").unwrap().cells[0].ports[0].name = "wrong".into();
-        let v = view(
-            &s,
-            &["top".into()],
-            None,
-            2000,
-            false,
-            &SchematicOptions::default(),
-        )
-        .unwrap();
-        assert_eq!(
-            v.nodes
-                .iter()
-                .find(|n| n.label == "ff")
-                .unwrap()
-                .display
-                .as_ref()
-                .unwrap()
-                .symbol,
-            "unknown"
-        );
-    }
-    #[test]
-    fn source_detail_binds_operands_targets_and_control_flow_separately() {
-        let mut s = snapshot(
-            json!({"netnames":{"a":{"bits":[2]},"y":{"bits":[3]}},"cells":{"process":{"type":"AlwaysComb","connections":{}}}}),
-        );
-        s.representation = Representation::Source;
-        s.design.modules.get_mut("top").unwrap().cells[0].behavior = Some(serde_json::from_value(json!({"nodes":[{"id":"read","kind":"reference","label":"a","signals":["a"]},{"id":"write","kind":"assignment","label":"y =","signals":["y"]},{"id":"next","kind":"assignment","label":"y =","signals":["y"]}],"edges":[{"source":"read","target":"write","label":"0","semantics":"dependency"},{"source":"write","target":"next","label":"next","semantics":"control_flow"}]})).unwrap());
-        let id = identity(&s.id, &["top".into(), "process".into()], "cell");
-        let v = view(
-            &s,
-            &["top".into()],
-            None,
-            2000,
-            false,
-            &SchematicOptions {
-                detail: Some(id),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let write = v.nodes.iter().find(|n| n.id.ends_with(":write")).unwrap();
-        assert!(write
-            .ports
-            .iter()
-            .find(|p| p.direction == "input")
-            .unwrap()
-            .signal_ids[0]
-            .ends_with("\"a\"]"));
-        assert!(write
-            .ports
-            .iter()
-            .find(|p| p.direction == "output")
-            .unwrap()
-            .signal_ids[0]
-            .ends_with("\"y\"]"));
-        assert!(v
-            .edges
-            .iter()
-            .find(|e| e.semantics == EdgeSemantics::ControlFlow)
-            .unwrap()
-            .signal_ids
-            .is_empty());
-        assert!(v
-            .nodes
-            .iter()
-            .find(|n| n.id.ends_with(":read"))
-            .unwrap()
-            .ports
-            .iter()
-            .all(|p| p.direction == "output"));
-    }
-    #[test]
     fn rtl_pins_prefer_declared_aliases_while_gate_pins_keep_endpoint_identity() {
         let mut s = snapshot(
-            json!({"netnames":{"$temporary":{"bits":[2],"hide_name":1},"mid":{"bits":[2]}},"cells":{"buf":{"type":"$_BUF_","port_directions":{"A":"input","Y":"output"},"connections":{"A":[2],"Y":[3]}}}}),
+            json!({"netnames":{"$temporary":{"bits":[2],"hide_name":1},"mid":{"bits":[2]}},"cells":{"buf":{"type":"$not","port_directions":{"A":"input","Y":"output"},"connections":{"A":[2],"Y":[3]}}}}),
         );
-        let v = view(
-            &s,
-            &["top".into()],
-            None,
-            2000,
-            false,
-            &SchematicOptions::default(),
-        )
-        .unwrap();
+        let v = draw(&s);
         let buf = v.nodes.iter().find(|n| n.label == "buf").unwrap();
         assert!(buf.ports[0].signal_ids[0].ends_with("\"mid\"]"));
         assert!(buf.ports[0]
             .signal_ids
             .iter()
             .any(|id| id.contains("$temporary")));
-        s.representation = Representation::Generic;
-        let v = view(
-            &s,
-            &["top".into()],
-            None,
-            2000,
-            false,
-            &SchematicOptions::default(),
-        )
-        .unwrap();
+        s.representation = Representation::Mapped;
+        let v = draw(&s);
         assert!(
             v.nodes.iter().find(|n| n.label == "buf").unwrap().ports[0].signal_ids[0]
                 .ends_with("\"buf\",\"A\"]")
         );
-    }
-    #[test]
-    fn library_catalog_requires_exact_pin_interface_and_keeps_delayed_endpoints() {
-        let mut s = snapshot(
-            json!({"netnames":{"n":{"bits":[2]}},"cells":{"buf":{"type":"sg13g2_buf_1","port_directions":{"A":"input","X":"output"},"connections":{"A":[2],"X":[3]}},"fill":{"type":"sg13g2_fill_1","connections":{}},"wrong":{"type":"sg13g2_buf_1","port_directions":{"bogus":"input","X":"output"},"connections":{"bogus":[2],"X":[4]}}}}),
-        );
-        s.representation = Representation::Mapped;
-        let v = view(
-            &s,
-            &["top".into()],
-            None,
-            2000,
-            false,
-            &SchematicOptions::default(),
-        )
-        .unwrap();
-        assert_eq!(v.hidden_physical_cells, 1);
-        let buf = v.nodes.iter().find(|n| n.label == "buf").unwrap();
-        assert_eq!(buf.display.as_ref().unwrap().symbol, "buffer");
-        assert!(buf.ports[0].signal_ids[0].contains("buf"));
-        assert_ne!(buf.ports[0].signal_ids[0], v.signals[0].id);
-        assert_eq!(
-            v.nodes
-                .iter()
-                .find(|n| n.label == "wrong")
-                .unwrap()
-                .display
-                .as_ref()
-                .unwrap()
-                .symbol,
-            "unknown"
-        );
-        assert!(view(
-            &s,
-            &["top".into()],
-            None,
-            2000,
-            false,
-            &SchematicOptions {
-                show_physical_cells: true,
-                ..Default::default()
-            }
-        )
-        .unwrap()
-        .nodes
-        .iter()
-        .any(|n| n.label == "fill"));
     }
     #[test]
     fn mux_group_retains_identity_and_reveals_original_structure() {
@@ -1934,15 +1284,7 @@ mod tests {
         let s = snapshot(
             json!({"ports":{"in":{"direction":"input","bits":[2,3]},"out":{"direction":"output","bits":[10,11,12,13]}},"cells":cells}),
         );
-        let v = view(
-            &s,
-            &["top".into()],
-            None,
-            2000,
-            false,
-            &SchematicOptions::default(),
-        )
-        .unwrap();
+        let v = draw(&s);
         let decoder = v
             .nodes
             .iter()
@@ -1951,18 +1293,10 @@ mod tests {
         assert_eq!(decoder.ports.len(), 5);
         let mut partial = s.clone();
         partial.design.modules.get_mut("top").unwrap().cells.pop();
-        assert!(view(
-            &partial,
-            &["top".into()],
-            None,
-            2000,
-            false,
-            &SchematicOptions::default()
-        )
-        .unwrap()
-        .nodes
-        .iter()
-        .all(|n| n.kind != "functional decoder"));
+        assert!(draw(&partial)
+            .nodes
+            .iter()
+            .all(|n| n.kind != "functional decoder"));
     }
     #[test]
     fn bounded_views_end_a_cut_bus_in_one_connector_and_mark_undriven_pins() {
@@ -1998,15 +1332,7 @@ mod tests {
                 "low":{"type":"$not","port_directions":{"A":"input","Y":"output"},"connections":{"A":[2,3,4,5],"Y":[10,11,12,13]}},
                 "wide":{"type":"$reduce_or","port_directions":{"A":"input","Y":"output"},"connections":{"A":[2,3,4,5,6,7,8,9],"Y":[14]}},
                 "sign":{"type":"$and","port_directions":{"A":"input","B":"input","Y":"output"},"connections":{"A":[9,9,9,9],"B":["1","0","0",20],"Y":[15,16,17,18]}}}}));
-        let v = view(
-            &s,
-            &["top".into()],
-            None,
-            2000,
-            false,
-            &SchematicOptions::default(),
-        )
-        .unwrap();
+        let v = draw(&s);
         // Constants, unread outputs and undriven inputs add no node.
         assert_eq!(v.nodes.len(), 6);
         let port = |cell: &str, pin: &str| {
@@ -2147,16 +1473,8 @@ mod tests {
             "top",
         )
         .unwrap();
-        let s: DesignSnapshot = serde_json::from_value(json!({"schema_version":1,"id":"fixture","representation":"elaborated","project":{"name":"fixture","top":"top","sources":[]},"profile":{"provider":"native"},"directory":"/tmp/fixture","design":design,"diagnostics":[],"tool_versions":{},"input_hashes":{},"netlist":null})).unwrap();
-        let v = view(
-            &s,
-            &["top".into()],
-            None,
-            2000,
-            false,
-            &SchematicOptions::default(),
-        )
-        .unwrap();
+        let s = snapshot_of(design);
+        let v = draw(&s);
         let instance = v.nodes.iter().find(|n| n.label == "u").unwrap();
         let role = |name: &str| {
             let pin = instance
@@ -2177,15 +1495,7 @@ mod tests {
                 "port_directions":{"RD_ADDR":"input","RD_DATA":"output","RD_CLK":"input","RD_EN":"input","RD_ARST":"input","RD_SRST":"input","WR_ADDR":"input","WR_DATA":"input","WR_EN":"input","WR_CLK":"input"},
                 "connections":{"RD_ADDR":[2],"RD_DATA":[3],"RD_CLK":["x"],"RD_EN":["1"],"RD_ARST":["0"],"RD_SRST":["0"],"WR_ADDR":[2],"WR_DATA":[4],"WR_EN":[5],"WR_CLK":[6]}}}}),
         );
-        let v = view(
-            &s,
-            &["top".into()],
-            None,
-            2000,
-            false,
-            &SchematicOptions::default(),
-        )
-        .unwrap();
+        let v = draw(&s);
         let unused: Vec<_> = v.nodes[0]
             .ports
             .iter()
@@ -2196,86 +1506,83 @@ mod tests {
         assert_eq!(unused, vec!["RD_ARST", "RD_CLK", "RD_EN", "RD_SRST"]);
     }
     #[test]
-    fn library_cells_are_drawn_from_their_function_and_older_snapshots_from_the_catalog() {
+    fn library_cells_are_drawn_from_their_function_and_keep_endpoint_identity() {
         let cells = json!({
-            "gate":{"type":"sky130_fd_sc_hd__and2b_2","port_directions":{"A_N":"input","B":"input","X":"output"},"connections":{"A_N":[2],"B":[3],"X":[4]}},
-            "odd":{"type":"sky130_fd_sc_hd__and2b_2","port_directions":{"A_N":"input","Z":"input","X":"output"},"connections":{"A_N":[2],"Z":[3],"X":[5]}},
-            "tie":{"type":"sky130_fd_sc_hd__conb_1","port_directions":{"LO":"output"},"connections":{"LO":[6]}},
-            "cap":{"type":"sky130_ef_sc_hd__decap_12","port_directions":{"VPWR":"inout","VGND":"inout"},"connections":{"VPWR":[7],"VGND":[8]}}});
-        let mut s = snapshot(json!({ "cells": cells }));
+            "gate":{"type":"and2b","port_directions":{"A_N":"input","B":"input","X":"output"},"connections":{"A_N":[2],"B":[3],"X":[4]}},
+            "odd":{"type":"and2b","port_directions":{"A_N":"input","Z":"input","X":"output"},"connections":{"A_N":[2],"Z":[3],"X":[5]}},
+            "bare":{"type":"undescribed","port_directions":{"A":"input"},"connections":{"A":[2]}},
+            "cap":{"type":"decap","port_directions":{"VPWR":"inout","VGND":"inout"},"connections":{"VPWR":[7],"VGND":[8]}}});
+        let mut s = snapshot(json!({"netnames":{"n":{"bits":[2]}},"cells":cells}));
         s.representation = Representation::Mapped;
-        let symbols = |s: &DesignSnapshot| -> BTreeMap<String, String> {
-            view(
-                s,
-                &["top".into()],
-                None,
-                2000,
-                false,
-                &SchematicOptions {
-                    show_physical_cells: true,
-                    ..Default::default()
+        let mut library = |name: &str, function: CellFunction| {
+            s.design.modules.insert(
+                name.into(),
+                Module {
+                    name: name.into(),
+                    ports: vec![],
+                    signals: vec![],
+                    cells: vec![],
+                    blackbox: true,
+                    function: Some(function),
                 },
-            )
-            .unwrap()
-            .nodes
-            .iter()
-            .map(|n| (n.label.clone(), n.display.as_ref().unwrap().symbol.clone()))
-            .collect()
+            );
         };
-        // Without library functions only verified families are named; a pin
-        // left unconnected does not hide a cell, and a pinless cell is physical.
-        let before = symbols(&s);
-        assert_eq!(before["gate"], "unknown");
-        assert_eq!(before["tie"], "constant");
-        assert_eq!(before["cap"], "physical");
         let inverted = CellPin {
             polarity: Some(false),
             ..Default::default()
         };
-        let function = CellFunction {
-            symbol: "and".into(),
-            title: "AND".into(),
-            pins: [
-                ("A_N".to_string(), inverted),
-                ("B".to_string(), CellPin::default()),
-                ("X".to_string(), CellPin::default()),
-            ]
-            .into(),
-            compound: None,
-        };
-        s.design.modules.insert(
-            "sky130_fd_sc_hd__and2b_2".into(),
-            Module {
-                name: "sky130_fd_sc_hd__and2b_2".into(),
-                ports: vec![],
-                signals: vec![],
-                cells: vec![],
-                blackbox: true,
-                function: Some(function),
+        library(
+            "and2b",
+            CellFunction {
+                symbol: "and".into(),
+                title: "AND".into(),
+                pins: [
+                    ("A_N".to_string(), inverted),
+                    ("B".to_string(), CellPin::default()),
+                    ("X".to_string(), CellPin::default()),
+                ]
+                .into(),
+                compound: None,
             },
         );
-        let v = view(
+        library(
+            "decap",
+            CellFunction {
+                symbol: "physical".into(),
+                title: "decap".into(),
+                ..Default::default()
+            },
+        );
+        let v = draw(&s);
+        assert_eq!(v.hidden_physical_cells, 1);
+        let gate = v.nodes.iter().find(|n| n.label == "gate").unwrap();
+        assert_eq!(gate.display.as_ref().unwrap().symbol, "and");
+        // A gate pin is its own endpoint, distinct from the net it connects to.
+        assert!(gate.ports[0].signal_ids[0].contains("gate"));
+        assert_ne!(gate.ports[0].signal_ids[0], v.signals[0].id);
+        let polarity = |name: &str| pin(gate, name).unwrap().polarity;
+        assert_eq!((polarity("A_N"), polarity("B")), (Some(false), None));
+        let shown = view(
             &s,
             &["top".into()],
             None,
             2000,
             false,
-            &SchematicOptions::default(),
+            &SchematicOptions {
+                show_physical_cells: true,
+                ..Default::default()
+            },
         )
         .unwrap();
-        let gate = v.nodes.iter().find(|n| n.label == "gate").unwrap();
-        assert_eq!(gate.display.as_ref().unwrap().symbol, "and");
-        let polarity = |name: &str| {
-            gate.ports
-                .iter()
-                .filter_map(|p| p.display.as_ref())
-                .find(|d| d.name == name)
-                .unwrap()
-                .polarity
+        let symbol = |label: &str| {
+            let node = shown.nodes.iter().find(|n| n.label == label).unwrap();
+            node.display.as_ref().unwrap().symbol.clone()
         };
-        assert_eq!((polarity("A_N"), polarity("B")), (Some(false), None));
-        // A pin the function does not know keeps the cell an explicit unknown.
-        assert_eq!(symbols(&s)["odd"], "unknown");
+        assert_eq!(symbol("cap"), "physical");
+        // A pin the function does not describe, or a cell without a function,
+        // stays an explicit unknown.
+        assert_eq!(symbol("odd"), "unknown");
+        assert_eq!(symbol("bare"), "unknown");
     }
     #[test]
     fn a_grouped_mux_keeps_its_constant_data_input() {
@@ -2291,15 +1598,7 @@ mod tests {
             .unwrap();
         low.ports.iter_mut().find(|p| p.name == "A").unwrap().bits =
             vec![Bit::Constant("0".into())];
-        let v = view(
-            &s,
-            &["top".into()],
-            None,
-            2000,
-            false,
-            &SchematicOptions::default(),
-        )
-        .unwrap();
+        let v = draw(&s);
         let group = v.nodes.iter().find(|n| n.kind == "functional mux").unwrap();
         assert!(group.ports.iter().any(|p| p.feeds
             == [Feed::Constant {

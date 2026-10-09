@@ -4,7 +4,7 @@ Accepted product plan, recorded 6 October 2026. This file is an implementation a
 
 ## 1. Product and architecture
 
-Build a Linux-first desktop application for small and medium ASIC designs targeting SKY130 and IHP SG13G2. Users must be able to generate source RTL, elaborated RTL, and synthesized/post-layout netlist schematics from Verilog or SystemVerilog; run/import simulations; select signals in both directions; and launch LibreLane and inspect its results.
+Build a Linux-first desktop application for small and medium ASIC designs targeting SKY130 and IHP SG13G2. Users must be able to generate elaborated RTL, mapped-gate and post-layout netlist schematics from Verilog or SystemVerilog; run/import simulations; select signals in both directions; and launch LibreLane and inspect its results.
 
 **Binding rule: each simulation session binds one waveform to one immutable schematic snapshot.** The user chooses a representation before creating the session. Switching representations requires another session. Never carry a waveform automatically between RTL, synthesized, and post-layout views. Even within the same stage, missing dumps must stay unavailable, and similarly named signals must never be substituted.
 
@@ -21,7 +21,7 @@ Build a Linux-first desktop application for small and medium ASIC designs target
 
 Do not add a separately hosted application service. Reuse existing HDL parsers, simulators, synthesis, timing, placement/routing, and extraction engines.
 
-Support Verilog/SystemVerilog projects only. Remove VHDL/GHDL support and reject unsupported projects without replacing the current workspace. Icarus and explicitly selected Verilator handle RTL and compatible gate runs. A shared testbench configuration compiles captured RTL or the exact exported Verilog netlist according to the selected snapshot. Icarus is the SDF backend; Verilator is not.
+Support Verilog/SystemVerilog projects only. Reject unsupported projects without replacing the current workspace. Icarus and explicitly selected Verilator handle RTL and compatible gate runs. A shared testbench configuration compiles captured RTL or the exact exported Verilog netlist according to the selected snapshot. Icarus is the SDF backend; Verilator is not.
 
 Physical-design integration configures and launches LibreLane, collects progress/reports/artifacts, and creates a matching post-layout snapshot. Detailed layout viewing stays in external tools.
 
@@ -50,7 +50,7 @@ optional research material and are not required to build or run HDLView.
 
 Pin dependencies and retain licenses/notices. In particular, inspect ELK's EPL terms rather than assuming all dependencies are MIT/Apache. Wellen is BSD-3-Clause. See `docs/DEPENDENCIES.md` and the lockfiles.
 
-The originally supplied image is `hpretl/iic-osic-tools:2025.12`, digest `sha256:92961478ad3c4f508efb42d9ccdba12ab262eb42a14926d2bd49862230ba8521`. Initial research identified Yosys 0.60 with Slang/GHDL plugins, Slang 9.1.204, GHDL 6 development, Icarus 13 development, Verilator 5.042, LibreLane 2.4.10, and both PDKs. Basic frontend, mapping, and synthetic SDF feasibility did not establish full flow qualification.
+The originally supplied image is `hpretl/iic-osic-tools:2025.12`, digest `sha256:92961478ad3c4f508efb42d9ccdba12ab262eb42a14926d2bd49862230ba8521`. Initial research identified Yosys 0.60 with the Slang plugin, Slang 9.1.204, Icarus 13 development, Verilator 5.042, LibreLane 2.4.10, and both PDKs. Basic frontend, mapping, and synthetic SDF feasibility did not establish full flow qualification.
 
 **Implementation finding:** the original image's IHP PDK and LibreLane generations differ. `tools/Dockerfile` now specifies the derived compatibility stack. Read the qualification ledger before changing versions. Preserve tool-specific environments, including vvp library search paths and the correct OpenROAD/OpenSTA generation for the chosen LibreLane version.
 
@@ -79,9 +79,9 @@ Normal controls cover project name/location, design top/standard/technology, ord
 
 Rust validates field locations separately from workflow readiness, resolves picker inputs without publishing drafts, and rejects invalid settings through update/save/execution paths. Empty projects remain valid. Show Configure shortcuts for missing setup, including lint ownership, and require rebuilding before using project settings different from a snapshot's recorded fingerprint. Applying settings never compiles or transfers a waveform. Verify no-JSON setup, imports during editing, Apply/OK/Cancel, external inputs, configuration management, SDF restrictions, persistence, keyboard/narrow-window behavior, and native/Docker counter execution.
 
-Project schema **3** is independent of snapshot/run schemas. Load schema 1/2 Verilog/SystemVerilog documents without writes; migrate on explicit save. Merge simulation then gate-simulation sources/headers in first-occurrence order, deduplicate resolved identities, and register configuration testbenches without changing their ordered lists. Keep only design/simulation import groups, preserving distinct working-directory records; remove project family, VHDL libraries, gate-source arrays, and simulation stages. VHDL/GHDL configurations are unsupported. Preserve technology, roots, physical settings, and named simulations. File references are project-relative strings or `{root, path}` objects. Roots may be outside the configuration directory, preferably recorded relatively; paths beneath roots cannot escape them. Apply references to sources, headers, includes, assets, testbenches, models, SDF, and SDC. Legacy SV artifacts use the same read-only conversion boundary, preserve original fingerprints, and can conservatively show Rebuild required after migration.
+Project schema **3** is the only project format and is independent of the snapshot/run schema (2). Any other schema version, an unknown field, or a snapshot or run of another schema is rejected with a plain error; there are no migrations. Loading registers configuration testbenches as simulation sources, deduplicates resolved identities, and merges duplicate import records, without writing. Keep only design/simulation import groups, preserving distinct working-directory records. File references are project-relative strings or `{root, path}` objects. Roots may be outside the configuration directory, preferably recorded relatively; paths beneath roots cannot escape them. Apply references to sources, headers, includes, assets, testbenches, models, SDF, and SDC. The `__roots` namespace is reserved for captured copies of external inputs: only a captured project may name it.
 
-Capture resolves roots into separate immutable input namespaces, preserves hierarchy, produces compiler-facing relative paths, and records original-source mappings. External working directories never enter tool containers: Docker compiles read-only captured inputs. Open validates JSON before prompting about current unsaved changes and activating the new project. Restore each project's last valid schematic and matching waveform automatically from machine-local checkpoints keyed by canonical configuration path. Restore default tabs/layout/scope/cursor/zoom/rows. Validate provenance, captured fingerprints, and snapshot/run binding. Missing or corrupt artifacts produce warnings while preserving available sources/schematic; changed working inputs show Rebuild required. Never compile/simulate during opening, and do not associate the old global session with an arbitrary project.
+Capture resolves roots into separate immutable input namespaces, preserves hierarchy, produces compiler-facing relative paths, and records original-source mappings. External working directories never enter tool containers: Docker compiles read-only captured inputs. Open validates JSON before prompting about current unsaved changes and activating the new project. Restore each project's last valid schematic and matching waveform automatically from machine-local checkpoints keyed by canonical configuration path. Restore default tabs/layout/scope/cursor/zoom/rows. Validate provenance, captured fingerprints, and snapshot/run binding. Missing or corrupt artifacts produce warnings while preserving available sources/schematic; changed working inputs show Rebuild required. Never compile/simulate during opening, and never associate one project's session with another.
 
 Save Project saves edited documents, configuration, and artifact references. Close prompts Save/Discard/Cancel when dirty; failed saves prevent closure. Flush checkpoints before successful transitions, release parser resources, and retain original files/artifacts.
 
@@ -90,7 +90,7 @@ Imports must implement:
 - Multiple-file selection; recursive folder discovery of `.v`/`.sv`/`.vh`/`.svh`. Headers are not standalone compilation units and register their containing include directories.
 - Separate root labels and preserved directories for duplicate basenames. Deterministic relative-path folder order; filelists retain listed order. Provide move-up/down controls rather than claiming alphabetical order resolves package dependencies. Remove source-panel import/rescan buttons; use File → Add New Files and folder/filelist context actions.
 - Skip `.git`, `node_modules`, `target`, `.hdlview`, `dist`, and other generated caches. Do not follow directory symlinks. Report skips in review; explicit selection may add excluded files or select the intended directory.
-- Review exclusions and explicit design/header/simulation roles. Accept only Verilog/SystemVerilog. Enforce picker and Rust checks; explicit unsupported files/filelists fail transactionally, while folders skip VHDL and report exclusions. Never infer testbenches from names.
+- Review exclusions and explicit design/header/simulation roles. Accept only Verilog/SystemVerilog. Enforce picker and Rust checks; explicit unsupported files/filelists fail transactionally, while folder scans skip files that are not HDL. Never infer testbenches from names.
 - Explicit **Rescan Folder** and **Reimport Filelist** previews. Folder rescans preserve assigned order; filelist reimports apply the reviewed list order. Preserve roles, and preview additions/missing files. Removing an entry never deletes its original file.
 
 Common `.f`/`.flist` syntax includes ordered and quoted paths, comments, nested `-f`/`-F`, `+incdir+`, and `+define+`. Interpret the selected list with `-F` semantics: contents relative to that list's directory. Nested `-f` contents resolve relative to the import working directory, configurable before parsing and in review, defaulting to the selected list's directory. Substitute import-environment variables without shell execution. Undefined variables, list cycles, missing paths, unsupported switches, and conflicting defines are located import errors. Failed imports cannot partially modify a project. Persist expanded configuration plus original import references; do not reread lists implicitly at build time.
@@ -107,7 +107,7 @@ Move to Trash previews exact original paths and calls host `/usr/bin/gio trash -
 
 Rust owns typed create, preview, and apply operations, mutation serialization, candidate validation, stale project/disk rejection, and exclusive publication. Reuse cancellable jobs for inspection and application; once a disk mutation commits, publish its actual result rather than pretending cancellation undid it. Keep optional import exclusions in schema 3, omitted when empty, and reuse folder records for empty directories. File changes dirty project membership, invalidate lint, and preserve immutable snapshots/waveforms. Save Project persists configuration separately; transition prompts explain that Discard does not undo completed disk operations. Do not rewrite old artifact fingerprints or guess a relocated working-source mapping.
 
-Qualification covers creation/cancellation, files/headers/folders/external roots, names/collisions/permissions, rename/reference/history preservation, persistent exclusions, real isolated Trash/failures/blockers, keyboard/focus behavior, legacy loading, native/Docker builds, lint invalidation, immutable sources/bindings, and packaged Linux create/save/close/reopen. No drag/drop, multiple selection, permanent deletion, watchers, templates, or filesystem undo are included.
+Qualification covers creation/cancellation, files/headers/folders/external roots, names/collisions/permissions, rename/reference/history preservation, persistent exclusions, real isolated Trash/failures/blockers, keyboard/focus behavior, native/Docker builds, lint invalidation, immutable sources/bindings, and packaged Linux create/save/close/reopen. No drag/drop, multiple selection, permanent deletion, watchers, templates, or filesystem undo are included.
 
 Use Tauri's official dialog plugin with scoped picker permissions; filesystem operations and parsing stay in Rust core. Expose typed project/settings, preview/application, rescan, document-read, and revision-checked-save service operations. Reuse cancellable jobs for scans and imports.
 
@@ -119,13 +119,7 @@ Cache only when actual input contents, settings, compiler/plugin identities, and
 
 ## 4. Representations
 
-### Source RTL
-
-Build behavioral/dependency graphs for definitions, instance occurrences, processes, concurrent assignments, operators, and named reads/writes. Preserve source locations, parameters/generics, symbolic generates, and expandable process details. This view explains source behavior; it is not a physical gate claim.
-
-Use isolated pinned `pyslang` syntax/semantic APIs for SV/Verilog. Do not reconstruct source behavior from synthesis. Unsupported syntax/type/connectivity must become an explicit diagnostic or opaque node. Never infer invented connectivity from text regexes.
-
-Source and elaborated sessions may simulate their corresponding HDL sources, but compiler-only temporaries without simulator declarations remain unavailable.
+There are three representations: elaborated RTL, mapped gates and post-layout gates. RTL simulation compiles the captured HDL sources of an elaborated snapshot; compiler-only temporaries without simulator declarations remain unavailable.
 
 ### Elaborated RTL
 
@@ -158,11 +152,11 @@ opt_clean
 write_json
 ```
 
-This cleanup may remove compiler-generated cells and wires only. Every declared signal keeps its name and width, registers are never replaced by constants, enable inference adds no logic, comparators keep their declared operand widths, and no cells are merged or shared. A snapshot built before this cleanup shows the uncleaned netlist until it is rebuilt.
+This cleanup may remove compiler-generated cells and wires only. Every declared signal keeps its name and width, registers are never replaced by constants, enable inference adds no logic, comparators keep their declared operand widths, and no cells are merged or shared.
 
-### Generic, mapped, and post-layout gates
+### Mapped and post-layout gates
 
-Provide PDK-independent generic synthesis. Use pinned LibreLane synthesis configuration for production PDK mapping, including combinational and sequential mapping, exclusions, and technology mappings. A bare `abc -liberty` feasibility test is not the production PDK flow.
+Gate views always come from a PDK flow; there is no technology-independent gate stage. Use pinned LibreLane synthesis configuration for production PDK mapping, including combinational and sequential mapping, exclusions, and technology mappings. A bare `abc -liberty` feasibility test is not the production PDK flow.
 
 Defaults are `sky130A/sky130_fd_sc_hd` and `ihp-sg13g2/sg13g2_stdcell`. Record the selected corner.
 
@@ -213,37 +207,27 @@ Lay out only the current module or bounded neighborhood; automatically limit lar
 ### Professional schematic presentation
 
 Keep the custom React/SVG renderer and pinned ELK worker. Rust owns symbol classification,
-pin roles, grouping, connectivity and captured behavior; TypeScript owns original SVG
+pin roles, grouping and connectivity; TypeScript owns original SVG
 geometry, colors, text dimensions, camera and interaction. Geometry definitions supply
 both drawing paths and fixed layout anchors. Retain raw compiler parameters for widths,
-signedness, clock/reset polarity/values and memory dimensions. New artifact metadata is
-optional; project schema remains 3 and old artifacts are never rewritten.
+signedness, clock/reset polarity/values and memory dimensions.
 
 Provide curved AND/OR/XOR and inverted gates, buffers/inverters/tri-state enables,
 trapezoid mux/demux/decoder/encoder symbols, clocked D/Q registers/latches, arithmetic,
 comparison/shift/reduction operators, memories, directional input/output/inout ports,
-source process/function/task symbols, hierarchy blocks, constants and bus taps/joins.
+hierarchy blocks, constants and bus taps/joins.
 Unknown types and incompatible library interfaces remain explicit labeled boxes.
 Distinguish binary, bitwise and one-hot mux semantics, including undefined multiple
 one-hot selection. Show sequential polarity and synchronous/asynchronous reset details;
-missing legacy metadata is unavailable, not inferred from signal names.
-
-Capture structured Slang expressions/statements, assignments, blocking/nonblocking
-semantics, case/if/loop sequencing, event controls, calls, formal arguments, returns and
-source spans. Open a process/function/task in a focused behavioral view with Back and
-parent camera restoration. Source edges distinguish dependency from procedural control;
-these views are explanations of HDL, not physical gates. Unsupported constructs remain
-opaque with diagnostics. Expression temporaries and formal arguments have no invented
-waveform declarations. Richer source details require rebuilding older snapshots.
+nothing is inferred from signal names.
 
 Conservatively recognize complete uniform binary mux trees, full comparison-bank decoders
 and constant-code priority encoders in elaborated RTL. Keep original widths, constants,
 selects, defaults and priority, and reject conflicting drivers or externally consumed
 intermediate outputs. Groups reference original nodes/pins and open their original
 structure. Compiler-node display disables grouping. Mapped and post-layout cells remain
-individual exact instances from the exported simulation netlist. A small SKY130/IHP
-catalog validates actual pin names/directions/widths before using a symbol; expose drive
-variants and power details in inspection. Hide only positively identified fillers, taps
+individual exact instances from the exported simulation netlist, drawn from their
+Liberty-derived functions (§12); expose drive variants and power details in inspection. Hide only positively identified fillers, taps
 and decoupling cells, with explicit counts and reveal controls.
 
 Use left-to-right orthogonal layout, directional boundary constraints, fixed data/control
@@ -263,11 +247,11 @@ and outside compilation fingerprints. Selection, theme and cursor changes do not
 Cache by snapshot-scoped graph/metadata, semantic view options and geometry version.
 Pins retain their original identities, including separate delayed gate endpoints. Waveform
 selection reveals an internal grouped signal through its detail view; clicking a symbol
-inspects its object/pins. Export standalone SVG with chosen theme/styles, required labels
-and behavioral legend, excluding interaction/selection overlays.
+inspects its object/pins. Export standalone SVG with chosen theme/styles and required
+labels, excluding interaction/selection overlays.
 
 Qualification includes counter and mixed ALU/decoder/encoder/memory/hierarchy fixtures,
-both PDKs, source details, old snapshots, all glyph families, bus constants/slices,
+both PDKs, group details, all glyph families, bus constants/slices,
 feedback/inouts/multiple drivers, grouped cross-probing, themes and export. Use semantic
 and routing tests, a reviewed symbol gallery, real native/Docker browser workflows and a
 packaged Linux schematic/export smoke. Measure mixed/high-fan-out 1,000-node layouts and
@@ -292,7 +276,7 @@ Targets remain targets until measured; report raw evidence and counterexamples.
 | Run                       | Backend                                          |
 | ------------------------- | ------------------------------------------------ |
 | Verilog/SystemVerilog RTL | Icarus or explicitly selected Verilator          |
-| Zero-delay Verilog gates  | Icarus; Verilator only after model qualification |
+| Zero-delay mapped gates   | Icarus; Verilator only after model qualification |
 | SDF-annotated gates       | Icarus only                                      |
 
 Keep synthesis and testbench sources separate. Configure testbench top, DUT instance path, parameters, runtime arguments, stop time, dump scope, and expected trace. Instrument only generated run files; never edit user HDL. Testbenches must be simulator-compatible; do not promise automatic translation. Shared testbenches should use named ports and public DUT interfaces because export can reorder declarations and remove internal RTL hierarchy. Ordinary configurations apply to either stage; SDF is gate-only. Explicit model files are compiled only for gates. Waveforms remain bound to one immutable snapshot/representation.
@@ -329,7 +313,7 @@ Completion means a user can create or open a project, import RTL without editing
 | 0. Dependencies    | Pin image/tools/libraries; reproduce both PDK mapping tests, frontend hierarchy, model compilation, supported SDF features |
 | 1. Core            | Project/schema, immutable capture, native/Docker jobs, cancellation, diagnostics, CLI on a small design                    |
 | 2. Linking         | Hierarchical Verilog build/simulation, repeated instances and buses, bidirectional selection                               |
-| 3. Representations | Source and elaborated views for Verilog/SystemVerilog, specializations, explicit unsupported constructs                    |
+| 3. Representations | Elaborated views for Verilog/SystemVerilog, specializations, explicit unsupported constructs                               |
 | 4. RTL simulation  | Icarus/Verilator jobs and imported VCD/FST all share binding/session rules                                                 |
 | 5. Gates           | Both PDKs map and simulate exact netlists; stage restrictions and library models verified                                  |
 | 6. Physical        | Each PDK completes a small full flow; final netlist/SDF/layout/reports imported with checker outcomes preserved            |
@@ -350,7 +334,7 @@ Exercise paths with spaces, missing plugins/Docker/environment/PDK files, invali
 
 Use Rust tests, frontend tests, browser interaction tests, and packaged Linux smoke tests. Include real Docker toolchain qualification for releases. Update `docs/QUALIFICATION.md` with evidence, limitations, and failed checks rather than marking broad milestones complete based on one counter example.
 
-Project-lifecycle acceptance additionally covers cancelled drafts without writes, both technology presets, grouped imports through all methods, backend language-policy bypass attempts, shared testbench reuse, schema-1/2 migration and unsupported VHDL rejection, menu/context keyboard behavior, and independent automatic restoration of two projects. Verify missing/corrupt/stale/mismatched artifacts, saved-original conflicts and failed transitions, job cancellation, and packaged Linux menu/native-picker/reopening behavior. No full UI-layout restoration, recent-project menu, extra top-level menus, or unsaved-buffer recovery is included in this amendment.
+Project-lifecycle acceptance additionally covers cancelled drafts without writes, both technology presets, grouped imports through all methods, backend language-policy bypass attempts, shared testbench reuse, rejection of other project schemas and unsupported files, menu/context keyboard behavior, and independent automatic restoration of two projects. Verify missing/corrupt/stale/mismatched artifacts, saved-original conflicts and failed transitions, job cancellation, and packaged Linux menu/native-picker/reopening behavior. No full UI-layout restoration, recent-project menu, extra top-level menus, or unsaved-buffer recovery is included in this amendment.
 
 ## 10. Live editor linting amendment
 
@@ -526,12 +510,11 @@ bubbles and the fewest bubbles preferred; buffers, inverters and tri-state drive
 two- and four-way multiplexers; AND-OR and OR-AND cells of any grouping with their
 internal gates drawn; registers and latches whose clock, enable, reset and set are the
 library pins that reach the storage element directly or through one inverter. The
-result is stored per library module as an optional function. A cell the decoder cannot
-describe exactly, or an instance with a pin the function does not know, stays an
-explicit labelled box. Snapshots without functions keep using the verified catalog,
-which now accepts a connected subset of a cell's pins and treats a library cell
-without signal pins as physical. If the library cannot be read the build still
-succeeds with a warning and the catalog.
+result is stored per library module as its function, and is the only source of gate
+symbols and pin roles: there is no table of cell names. A library cell with supply pins
+only, such as a fill or tap cell absent from Liberty, is physical by its interface. A
+cell the decoder cannot describe exactly, or an instance with a pin the function does
+not know, stays an explicit labelled box. A build whose library cannot be read fails.
 
 Qualification adds relational layout checks over hand-written graphs (no overlap, no
 wire through a foreign symbol, aligned columns, registers right of their input logic),
@@ -558,3 +541,16 @@ asserted.
 - [Slang diagnostics and command-line options](https://sv-lang.com/command-line-ref.html)
 - [Verible lint rules, configurations, and waivers](https://github.com/chipsalliance/verible/blob/master/verible/verilog/tools/lint/README.md)
 - [CodeMirror diagnostic effects](https://codemirror.net/docs/ref/#lint)
+
+## 13. Representation and format reduction (2026-10-09)
+
+Owner decisions that supersede earlier text wherever they conflict:
+
+- The Source RTL (behaviour/dependency) and Generic gates (technology-independent
+  synthesis) representations are removed. The stages are Elaborated RTL, Mapped gates and
+  Post-layout. Gate-level simulation therefore always needs a PDK flow.
+- No compatibility paths. Project schema 3 and snapshot/run schema 2 are the only
+  formats; earlier projects, snapshots and runs are rejected and must be recreated or
+  rebuilt. Fields that every writer produces are required when reading.
+- Gate symbols come only from Liberty-derived functions (§12).
+- A Docker toolchain profile must name its image; there is no built-in default image.

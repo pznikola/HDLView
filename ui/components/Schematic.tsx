@@ -1,19 +1,58 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Graph, Node } from "../types";
 import type { LayoutResponse } from "../layout.worker";
-import type { ConnectionTarget } from "../selection";
+import { pinSelected, pinTarget, type ConnectionTarget } from "../selection";
 import { CONNECTOR, type LayoutView } from "../schematic-layout";
 import type { SchematicPreferences } from "../schematic-display";
 import {
   GEOMETRY_VERSION,
   boundaryDirection,
-  shortName,
+  pinTitle,
   symbolGeometry,
 } from "../schematic-symbols";
 import { SchematicSymbol, schematicStyle } from "./SchematicSymbol";
 import { saveSchematicSvg } from "../api";
 
 type Camera = { x: number; y: number; scale: number };
+const MIN_SCALE = 0.05,
+  MAX_SCALE = 5;
+const EXPORT_MARGIN = 20;
+
+/** The drawn schematic as a standalone SVG: whole drawing, no interaction state. */
+function standaloneSvg(
+  canvas: SVGSVGElement,
+  layout: LayoutView,
+  theme: SchematicPreferences["theme"],
+): string {
+  const clone = canvas.cloneNode(true) as SVGSVGElement;
+  const width = String((layout.graph.width ?? 1000) + 2 * EXPORT_MARGIN),
+    height = String((layout.graph.height ?? 600) + 2 * EXPORT_MARGIN);
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  const style = clone.querySelector("style");
+  if (style) style.textContent = schematicStyle(theme, false);
+  clone.classList.remove("zoomed-out");
+  clone.setAttribute(
+    "viewBox",
+    `${-EXPORT_MARGIN} ${-EXPORT_MARGIN} ${width} ${height}`,
+  );
+  clone.setAttribute("width", width);
+  clone.setAttribute("height", height);
+  clone.querySelector("[data-world]")?.setAttribute("transform", "");
+  for (const node of clone.querySelectorAll(
+    ".selected,.object-selected,.context",
+  ))
+    node.classList.remove("selected", "object-selected", "context");
+  for (const node of clone.querySelectorAll(
+    ".edge-hit,.pin-hit,.expand,title,[data-grid],#schematic-grid",
+  ))
+    node.remove();
+  const background = clone.querySelector(".canvas-background");
+  background?.setAttribute("x", String(-EXPORT_MARGIN));
+  background?.setAttribute("y", String(-EXPORT_MARGIN));
+  background?.setAttribute("width", width);
+  background?.setAttribute("height", height);
+  return clone.outerHTML;
+}
 export function Schematic({
   graph,
   splitBuses,
@@ -69,7 +108,7 @@ export function Schematic({
       x: 32,
       y: 74,
       scale: Math.max(
-        0.05,
+        MIN_SCALE,
         Math.min(
           1.3,
           (bounds.width - 64) / (view.graph.width || 1),
@@ -180,58 +219,6 @@ export function Schematic({
     24 *
     4 **
       Math.max(0, Math.ceil(Math.log(8 / (24 * camera.scale)) / Math.log(4)));
-  async function exportSvg() {
-    if (!ref.current || !layout) return;
-    const clone = ref.current.cloneNode(true) as SVGSVGElement;
-    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    const style = clone.querySelector("style");
-    if (style) style.textContent = schematicStyle(preferences.theme, false);
-    clone.classList.remove("zoomed-out");
-    clone.setAttribute(
-      "viewBox",
-      `-20 -20 ${(layout.graph.width ?? 1000) + 40} ${(layout.graph.height ?? 600) + 40}`,
-    );
-    clone.setAttribute("width", String((layout.graph.width ?? 1000) + 40));
-    clone.setAttribute("height", String((layout.graph.height ?? 600) + 40));
-    clone.querySelector("[data-world]")?.setAttribute("transform", "");
-    for (const node of clone.querySelectorAll(
-      ".selected,.object-selected,.context",
-    ))
-      node.classList.remove("selected", "object-selected", "context");
-    for (const node of clone.querySelectorAll(
-      ".edge-hit,.pin-hit,.expand,title,[data-grid],#schematic-grid",
-    ))
-      node.remove();
-    const background = clone.querySelector(".canvas-background");
-    background?.setAttribute("x", "-20");
-    background?.setAttribute("y", "-20");
-    background?.setAttribute(
-      "width",
-      String((layout.graph.width ?? 1000) + 40),
-    );
-    background?.setAttribute(
-      "height",
-      String((layout.graph.height ?? 600) + 40),
-    );
-    if (
-      graph.edges.some(
-        (edge) =>
-          edge.semantics === "dependency" || edge.semantics === "control_flow",
-      )
-    ) {
-      const legend = document.createElementNS(
-        "http://www.w3.org/2000/svg",
-        "text",
-      );
-      legend.setAttribute("x", "0");
-      legend.setAttribute("y", String((layout.graph.height ?? 600) + 12));
-      legend.setAttribute("class", "wire-label");
-      legend.textContent =
-        "Dashed: source dependency · Dotted: procedural control";
-      clone.append(legend);
-    }
-    await saveSchematicSvg(clone.outerHTML);
-  }
   return (
     <div className="schematic" data-theme={preferences.theme}>
       <div className="canvas-tools">
@@ -239,7 +226,10 @@ export function Schematic({
         <button
           aria-label="Zoom schematic in"
           onClick={() =>
-            setCamera((c) => ({ ...c, scale: Math.min(c.scale * 1.3, 5) }))
+            setCamera((c) => ({
+              ...c,
+              scale: Math.min(c.scale * 1.3, MAX_SCALE),
+            }))
           }
         >
           ＋
@@ -247,15 +237,21 @@ export function Schematic({
         <button
           aria-label="Zoom schematic out"
           onClick={() =>
-            setCamera((c) => ({ ...c, scale: Math.max(c.scale / 1.3, 0.05) }))
+            setCamera((c) => ({
+              ...c,
+              scale: Math.max(c.scale / 1.3, MIN_SCALE),
+            }))
           }
         >
           −
         </button>
         <button
-          onClick={() =>
-            void exportSvg().catch((error) => onError(String(error)))
-          }
+          onClick={() => {
+            if (ref.current && layout)
+              void saveSchematicSvg(
+                standaloneSvg(ref.current, layout, preferences.theme),
+              ).catch((error) => onError(String(error)));
+          }}
           disabled={!layout}
         >
           Export SVG
@@ -349,7 +345,7 @@ export function Schematic({
         </div>
         <span>
           {graph.total_cells} objects
-          {graph.truncated ? ` · ${graph.omitted_cells ?? 0} outside view` : ""}
+          {graph.truncated ? ` · ${graph.omitted_cells} outside view` : ""}
           {graph.hidden_physical_cells
             ? ` · ${graph.hidden_physical_cells} physical cells hidden`
             : ""}
@@ -373,11 +369,6 @@ export function Schematic({
           </button>
         </div>
       )}
-      {graph.edges.some((e) => e.semantics && e.semantics !== "electrical") && (
-        <div className="schematic-legend">
-          Dashed: source dependency · Dotted: procedural control
-        </div>
-      )}
       <svg
         ref={ref}
         aria-label="Schematic"
@@ -389,8 +380,8 @@ export function Schematic({
             y = e.clientY - rect.top;
           setCamera((c) => {
             const scale = Math.max(
-              0.05,
-              Math.min(5, c.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)),
+              MIN_SCALE,
+              Math.min(MAX_SCALE, c.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)),
             );
             return {
               x: x - ((x - c.x) * scale) / c.scale,
@@ -424,25 +415,6 @@ export function Schematic({
         }}
       >
         <style>{schematicStyle(preferences.theme)}</style>
-        <defs>
-          {(["dependency", "control_flow"] as const).map((semantics) => (
-            <marker
-              key={semantics}
-              id={`arrow-${semantics}`}
-              markerWidth="6"
-              markerHeight="6"
-              refX="6"
-              refY="3"
-              orient="auto"
-              markerUnits="userSpaceOnUse"
-            >
-              <path
-                d="M0,0 L6,3 L0,6 Z"
-                fill={semantics === "control_flow" ? "#8d65ae" : "var(--muted)"}
-              />
-            </marker>
-          ))}
-        </defs>
         <rect
           className="canvas-background"
           width="100%"
@@ -519,12 +491,7 @@ export function Schematic({
                     <path d={path.d} className="edge-hit" />
                     <path
                       d={path.d}
-                      className={`edge ${path.width > 1 ? "bus" : ""} ${wire.semantics ?? "electrical"} ${active ? "selected" : ""} ${context ? "context" : ""}`}
-                      markerEnd={
-                        wire.semantics && wire.semantics !== "electrical"
-                          ? `url(#arrow-${wire.semantics})`
-                          : undefined
-                      }
+                      className={`edge ${path.width > 1 ? "bus" : ""} ${active ? "selected" : ""} ${context ? "context" : ""}`}
                     />
                   </g>
                 ))}
@@ -550,7 +517,7 @@ export function Schematic({
             if (!node || node.kind === "net junction") return null;
             const geometry = symbolGeometry(node);
             const open = () => {
-              if (node.display?.detail) onDetail(node.display.detail);
+              if (node.display.detail) onDetail(node.display.detail);
               else if (node.child_scope) onScope(node.child_scope);
             };
             return (
@@ -575,7 +542,7 @@ export function Schematic({
                   }
                   if (
                     e.key === " " &&
-                    (node.display?.detail || node.child_scope)
+                    (node.display.detail || node.child_scope)
                   ) {
                     e.preventDefault();
                     open();
@@ -583,10 +550,9 @@ export function Schematic({
                 }}
               >
                 <title>
-                  {node.label}\n{node.kind}
-                  {node.display?.annotations.length
-                    ? "\n" + node.display.annotations.join("\n")
-                    : ""}
+                  {[node.label, node.kind, ...node.display.annotations].join(
+                    "\n",
+                  )}
                 </title>
                 <SchematicSymbol
                   node={node}
@@ -595,7 +561,7 @@ export function Schematic({
                   scale={camera.scale}
                   onSignal={onSignal}
                 />
-                {(node.display?.detail || node.child_scope) && (
+                {(node.display.detail || node.child_scope) && (
                   <g
                     role="button"
                     tabIndex={0}
@@ -645,36 +611,30 @@ export function Schematic({
                   ? -CONNECTOR
                   : 0;
             const dy =
-              anchor.side === "SOUTH" ? 14 : anchor.side === "NORTH" ? -14 : 0;
-            const active = target
-              ? target.kind === "pin" && target.portId === port.id
-              : port.signal_ids.includes(selected ?? "");
+              anchor.side === "SOUTH"
+                ? CONNECTOR
+                : anchor.side === "NORTH"
+                  ? -CONNECTOR
+                  : 0;
+            const active = pinSelected(port, selected, target);
+            const activate = () =>
+              onSignal(port.signal_ids, pinTarget(node, port));
             return (
               <g
                 key={`${connector.edge_id}:${connector.port_id}`}
                 role="button"
                 tabIndex={0}
                 aria-label={`${connector.label} control connection`}
-                onClick={() =>
-                  onSignal(port.signal_ids, {
-                    kind: "pin",
-                    nodeId: node.id,
-                    portId: port.id,
-                  })
-                }
+                onClick={activate}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    onSignal(port.signal_ids, {
-                      kind: "pin",
-                      nodeId: node.id,
-                      portId: port.id,
-                    });
+                    activate();
                   }
                 }}
               >
                 <title>
-                  {`Pin ${port.display?.name ?? port.label} · ${node.label} · ${port.display?.width ?? 1} bits · ${connector.label} connector`}
+                  {`${pinTitle(node, port)} · ${connector.label} connector`}
                 </title>
                 <path
                   className={`control-connector ${active ? "selected" : ""}`}
@@ -687,7 +647,7 @@ export function Schematic({
                     textAnchor={dx < 0 ? "end" : "start"}
                     className="wire-label"
                   >
-                    {shortName(connector.label, 18)}
+                    {connector.label}
                   </text>
                 )}
               </g>

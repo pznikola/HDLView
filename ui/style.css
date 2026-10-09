@@ -102,15 +102,6 @@ header {
   letter-spacing: 1.7px;
   margin-left: 10px;
 }
-.project-open {
-  display: flex;
-  gap: 6px;
-  flex: 1;
-}
-.project-open input {
-  flex: 1;
-  min-width: 180px;
-}
 .workflow {
   height: 54px;
   display: flex;
@@ -310,54 +301,8 @@ header {
   top: 20px;
   color: #8fe0ce;
 }
-.edge {
-  fill: none;
-  stroke: #638397;
-  stroke-width: 1.3;
-}
-.edge.selected {
-  stroke: #a0f2d6;
-  stroke-width: 3;
-}
 .edge-hit {
-  fill: none;
-  stroke: transparent;
-  stroke-width: 12;
   cursor: pointer;
-}
-.wire-label {
-  fill: #95abb9;
-  font:
-    10px ui-monospace,
-    monospace;
-}
-.nodebox {
-  fill: #1c303e;
-  stroke: #547688;
-  stroke-width: 1.1;
-  rx: 7;
-}
-.node-name {
-  fill: #e4edf2;
-  font-size: 12px;
-  font-weight: 600;
-}
-.node-kind {
-  fill: #77b5b7;
-  font:
-    10px ui-monospace,
-    monospace;
-}
-.port {
-  fill: #6a9eac;
-}
-.port.selected {
-  fill: #a0f2d6;
-  stroke: #a0f2d6;
-}
-.port-name {
-  fill: #aac1cd;
-  font-size: 9px;
 }
 .expand {
   fill: #90ddcb;
@@ -1142,19 +1087,6 @@ header .brand {
   font-size: 12px;
   padding: 2px;
 }
-.lint-settings {
-  border: 1px solid #344553;
-  padding: 10px;
-}
-.lint-settings label {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-}
-.lint-settings input {
-  width: auto;
-}
 .editor-problems {
   padding: 8px 14px;
 }
@@ -1348,18 +1280,6 @@ header .brand {
 .schematic-display-menu select {
   margin-left: auto;
   width: 95px;
-}
-.schematic-legend {
-  position: absolute;
-  bottom: 8px;
-  left: 14px;
-  font-size: 10px;
-  color: #7f8e9e;
-  pointer-events: none;
-  z-index: 1;
-  background: #172630dd;
-  padding: 4px 7px;
-  border-radius: 3px;
 }
 .schematic[data-theme="light"] .schematic-legend {
   color: #556e80;

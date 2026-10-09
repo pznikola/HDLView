@@ -1,11 +1,10 @@
-import type { ConnectionTarget } from "../selection";
+import { pinSelected, pinTarget, type ConnectionTarget } from "../selection";
 import type { Node } from "../types";
-import { symbolGeometry } from "../schematic-symbols";
+import { pinTitle, symbolGeometry } from "../schematic-symbols";
 export function SchematicSymbol({
   node,
   selected,
   onSignal,
-  secondary = true,
   target,
   scale = 1,
 }: {
@@ -14,7 +13,6 @@ export function SchematicSymbol({
   onSignal?: (ids: string[], target: ConnectionTarget) => void;
   target?: ConnectionTarget;
   scale?: number;
-  secondary?: boolean;
 }) {
   const geometry = symbolGeometry(node);
   return (
@@ -26,31 +24,23 @@ export function SchematicSymbol({
           className={`${path.className ?? "symbol-detail"} ${path.fill ? "symbol-fill" : "symbol-line"}`}
         />
       ))}
-      {geometry.texts
-        .filter((text) => secondary || !text.secondary)
-        .map((text, index) => (
-          <text
-            key={index}
-            x={text.x}
-            y={text.y}
-            textAnchor={text.anchor}
-            className={text.secondary ? "symbol-secondary" : "symbol-title"}
-          >
-            {text.text}
-          </text>
-        ))}
+      {geometry.texts.map((text, index) => (
+        <text
+          key={index}
+          x={text.x}
+          y={text.y}
+          textAnchor={text.anchor}
+          className={text.secondary ? "symbol-secondary" : "symbol-title"}
+        >
+          {text.text}
+        </text>
+      ))}
       {geometry.pins.map((pin) => {
         const port = node.ports.find((p) => p.id === pin.id);
         if (!port) return null;
-        const active = target
-          ? target.kind === "pin" && target.portId === port.id
-          : port.signal_ids.includes(selected ?? "");
+        const active = pinSelected(port, selected, target);
         const activate = () =>
-          onSignal?.(port.signal_ids, {
-            kind: "pin",
-            nodeId: node.id,
-            portId: port.id,
-          });
+          onSignal?.(port.signal_ids, pinTarget(node, port));
         const hitSize = Math.max(4, 8 / scale);
         return (
           <g
@@ -59,7 +49,7 @@ export function SchematicSymbol({
             data-pin={pin.id}
             role={onSignal ? "button" : undefined}
             tabIndex={onSignal ? 0 : undefined}
-            aria-label={port.label || port.display?.name || "connection"}
+            aria-label={port.label || port.display.name || "connection"}
             onClick={(event) => {
               event.stopPropagation();
               if (
@@ -76,7 +66,7 @@ export function SchematicSymbol({
               }
             }}
           >
-            <title>{`Pin ${port.display?.name ?? port.label} · ${node.label} · ${port.display?.width ?? 1} bits`}</title>
+            <title>{pinTitle(node, port)}</title>
             <path
               d={pin.lead}
               className={`symbol-line ${pin.bus ? "bus" : ""}`}
@@ -150,5 +140,5 @@ export function schematicStyle(theme: "light" | "dark", interactive = true) {
   const paper = theme === "light" ? "#fcfdff" : "#172630";
   const muted = theme === "light" ? "#556e80" : "#9eb9c8";
   const interaction = `.schematic-canvas .symbol-pin:hover .pin-terminal,.schematic-canvas .symbol-pin:focus-visible .pin-terminal{fill:var(--accent);stroke:var(--accent)}.schematic-canvas .wire:hover .edge,.schematic-canvas .wire:focus-visible .edge{stroke:var(--accent)}.schematic-canvas g[role=button]{cursor:pointer}.schematic-canvas g:focus-visible{outline:none}.schematic-canvas g:focus-visible>.nodebox,.schematic-canvas .symbol-pin:focus-visible .symbol-line{stroke:var(--accent);stroke-width:3}`;
-  return `.schematic-canvas{background:${paper};--paper:${paper};--ink:${ink};--muted:${muted};--accent:${theme === "light" ? "#087e83" : "#66decf"}}.schematic-canvas .canvas-background{fill:var(--paper)}.schematic-canvas text{font:12px ui-monospace,monospace;fill:var(--ink)}.schematic-canvas .symbol-fill{fill:var(--paper)}.schematic-canvas .nodebox,.schematic-canvas .symbol-detail,.schematic-canvas .symbol-line{stroke:var(--ink);stroke-width:1.5;stroke-linejoin:round}.schematic-canvas .symbol-line{fill:none}.schematic-canvas .symbol-line.bus,.schematic-canvas .join{stroke-width:2.5}.schematic-canvas .join{fill:none;stroke:var(--ink)}.schematic-canvas .nodebox{rx:0}.schematic-canvas .inversion{fill:var(--paper);stroke:var(--ink);stroke-width:1.5}.schematic-canvas .pin-hit{fill:transparent;stroke:none}.schematic-canvas .symbol-title{font-weight:600}.schematic-canvas .symbol-secondary,.schematic-canvas .port-name,.schematic-canvas .pin-note,.schematic-canvas .wire-label{font-size:10px;fill:var(--muted)}.schematic-canvas .edge{fill:none;stroke:var(--ink);stroke-width:1.5}.schematic-canvas .edge.bus{stroke-width:2.5}.schematic-canvas .edge.dependency{stroke-dasharray:5 3;stroke:var(--muted)}.schematic-canvas .edge.control_flow{stroke-dasharray:2 3;stroke:#8d65ae}.schematic-canvas .edge-hit{fill:none;stroke:transparent;stroke-width:8;vector-effect:non-scaling-stroke;pointer-events:stroke}.schematic-canvas .junction{fill:var(--ink)}.schematic-canvas .selected .junction{fill:var(--accent)}.schematic-canvas .pin-terminal{fill:var(--paper);stroke:var(--ink);stroke-width:1}.schematic-canvas .selected .pin-terminal{fill:var(--accent);stroke:var(--accent)}.schematic-canvas .edge.context{stroke:var(--accent);opacity:.5}.schematic-canvas .selected .symbol-line,.schematic-canvas .edge.selected,.schematic-canvas .control-connector.selected{stroke:var(--accent);stroke-width:3}.schematic-canvas .object-selected .nodebox{stroke:var(--accent);stroke-width:2.5}.schematic-canvas .wire-label{paint-order:stroke;stroke:var(--paper);stroke-width:4;stroke-linejoin:round}.schematic-canvas.zoomed-out .symbol-secondary,.schematic-canvas.zoomed-out .wire-label{display:none}.schematic-canvas .control-connector{fill:none;stroke:var(--muted);stroke-width:1.5}${interactive ? interaction : ""}`;
+  return `.schematic-canvas{background:${paper};--paper:${paper};--ink:${ink};--muted:${muted};--accent:${theme === "light" ? "#087e83" : "#66decf"}}.schematic-canvas .canvas-background{fill:var(--paper)}.schematic-canvas text{font:12px ui-monospace,monospace;fill:var(--ink)}.schematic-canvas .symbol-fill{fill:var(--paper)}.schematic-canvas .nodebox,.schematic-canvas .symbol-detail,.schematic-canvas .symbol-line{stroke:var(--ink);stroke-width:1.5;stroke-linejoin:round}.schematic-canvas .symbol-line{fill:none}.schematic-canvas .symbol-line.bus,.schematic-canvas .join{stroke-width:2.5}.schematic-canvas .join{fill:none;stroke:var(--ink)}.schematic-canvas .inversion{fill:var(--paper);stroke:var(--ink);stroke-width:1.5}.schematic-canvas .pin-hit{fill:transparent;stroke:none}.schematic-canvas .symbol-title{font-weight:600}.schematic-canvas .symbol-secondary,.schematic-canvas .port-name,.schematic-canvas .pin-note,.schematic-canvas .wire-label{font-size:10px;fill:var(--muted)}.schematic-canvas .edge{fill:none;stroke:var(--ink);stroke-width:1.5}.schematic-canvas .edge.bus{stroke-width:2.5}.schematic-canvas .edge-hit{fill:none;stroke:transparent;stroke-width:8;vector-effect:non-scaling-stroke;pointer-events:stroke}.schematic-canvas .junction{fill:var(--ink)}.schematic-canvas .selected .junction{fill:var(--accent)}.schematic-canvas .pin-terminal{fill:var(--paper);stroke:var(--ink);stroke-width:1}.schematic-canvas .selected .pin-terminal{fill:var(--accent);stroke:var(--accent)}.schematic-canvas .edge.context{stroke:var(--accent);opacity:.5}.schematic-canvas .selected .symbol-line,.schematic-canvas .edge.selected,.schematic-canvas .control-connector.selected{stroke:var(--accent);stroke-width:3}.schematic-canvas .object-selected .nodebox{stroke:var(--accent);stroke-width:2.5}.schematic-canvas .wire-label{paint-order:stroke;stroke:var(--paper);stroke-width:4;stroke-linejoin:round}.schematic-canvas.zoomed-out .symbol-secondary,.schematic-canvas.zoomed-out .wire-label{display:none}.schematic-canvas .control-connector{fill:none;stroke:var(--muted);stroke-width:1.5}${interactive ? interaction : ""}`;
 }

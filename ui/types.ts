@@ -1,9 +1,4 @@
-export type Representation =
-  | "source"
-  | "elaborated"
-  | "generic"
-  | "mapped"
-  | "post_layout";
+export type Representation = "elaborated" | "mapped" | "post_layout";
 export interface Profile {
   provider: "native" | "docker";
   image?: string | null;
@@ -108,7 +103,7 @@ export interface Snapshot {
 export interface Diagnostic {
   severity: string;
   message: string;
-  source?: string;
+  source: string | null;
 }
 export interface Run {
   id: string;
@@ -131,12 +126,7 @@ export interface Signal {
   width: number;
   offset: number;
   upto: boolean;
-  source?: string;
-}
-export interface SourceSpan {
-  file: string;
-  start: [number, number];
-  end: [number, number];
+  source: string | null;
 }
 export interface PinDisplay {
   name: string;
@@ -154,7 +144,7 @@ export interface PinDisplay {
   polarity?: boolean | null;
   declared_direction?: string | null;
   range?: [number, number] | null;
-  asynchronous?: boolean;
+  asynchronous: boolean;
 }
 /** What drives one contiguous run of an input pin, least significant run first. */
 export type Feed =
@@ -168,18 +158,15 @@ export interface NodeDisplay {
   members: string[];
   internal_signal_ids: string[];
   detail?: string | null;
-  physical_only: boolean;
-  span?: SourceSpan | null;
   /** Gates of a two-level cell: `first` over each pin group, then the other. */
   compound?: {
-    first: "and" | "or";
+    first: string;
     groups: string[][];
     inverted: boolean;
   } | null;
 }
 export interface SchematicOptions {
   functional_symbols: boolean;
-  full_control_wiring: boolean;
   show_physical_cells: boolean;
   detail?: string | null;
 }
@@ -188,7 +175,7 @@ export interface Port {
   label: string;
   direction: string;
   signal_ids: string[];
-  display?: PinDisplay | null;
+  display: PinDisplay;
   feeds?: Feed[];
 }
 export interface Node {
@@ -196,9 +183,9 @@ export interface Node {
   label: string;
   kind: string;
   ports: Port[];
-  child_scope?: string[];
-  source?: string;
-  display?: NodeDisplay | null;
+  child_scope: string[] | null;
+  source: string | null;
+  display: NodeDisplay;
 }
 export interface Edge {
   id: string;
@@ -206,7 +193,6 @@ export interface Edge {
   targets: string[];
   signal_ids: string[];
   label: string;
-  semantics?: "electrical" | "dependency" | "control_flow";
   bits?: (number | string)[];
 }
 export interface Graph {
@@ -215,8 +201,8 @@ export interface Graph {
   signals: Signal[];
   truncated: boolean;
   total_cells: number;
-  hidden_physical_cells?: number;
-  omitted_cells?: number;
+  hidden_physical_cells: number;
+  omitted_cells: number;
   detail?: string | null;
 }
 export interface Variable {
@@ -255,7 +241,7 @@ export type FileRole =
   | "simulation_header"
   | "remove";
 export interface ImportRecord {
-  group?: SourceGroup;
+  group: SourceGroup;
   kind: "folder" | "filelist";
   location: FileRef;
   working_directory?: string | null;

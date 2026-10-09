@@ -15,8 +15,6 @@ struct Cli {
     store: PathBuf,
     #[arg(long, global = true)]
     profile: Option<PathBuf>,
-    #[arg(long, global = true)]
-    docker: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -33,7 +31,7 @@ enum Commands {
     },
     Simulate {
         snapshot: PathBuf,
-        #[arg(long, default_value = "rtl")]
+        #[arg(long)]
         configuration: String,
     },
     Wave {
@@ -61,8 +59,6 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let profile = if let Some(path) = cli.profile {
         read_json(&path)?
-    } else if cli.docker {
-        ToolchainProfile::docker()
     } else {
         ToolchainProfile::default()
     };

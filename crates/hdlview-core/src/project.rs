@@ -55,89 +55,9 @@ pub fn load_project(path: &Path) -> Result<ProjectConfig> {
     deduplicate_simulation_files(path, &mut project)?;
     Ok(project)
 }
-/// Normalize supported legacy documents before decoding the current contracts.
-/// This conversion never writes the configuration or captured artifact.
-pub fn decode_project(mut value: serde_json::Value) -> Result<ProjectConfig> {
-    let document = value
-        .as_object_mut()
-        .context("Project must be a JSON object")?;
-    let version = document
-        .get("schema_version")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(1);
-    if ![1, 2, u64::from(PROJECT_SCHEMA)].contains(&version) {
-        bail!("Unsupported project schema {version}")
-    }
-    if document.get("project_language").and_then(|v| v.as_str()) == Some("vhdl") {
-        bail!("project_language: VHDL projects are no longer supported")
-    }
-    if let Some(sources) = document.get_mut("sources").and_then(|v| v.as_array_mut()) {
-        for (index, source) in sources.iter_mut().enumerate() {
-            if source.get("language").and_then(|v| v.as_str()) == Some("vhdl") {
-                bail!("sources[{index}].language: VHDL is no longer supported")
-            }
-            if version < 3 {
-                if let Some(source) = source.as_object_mut() {
-                    source.remove("library");
-                }
-            }
-        }
-    }
-    if let Some(simulations) = document
-        .get_mut("simulations")
-        .and_then(|v| v.as_object_mut())
-    {
-        for (name, simulation) in simulations {
-            if simulation.get("simulator").and_then(|v| v.as_str()) == Some("ghdl") {
-                bail!("simulations.{name}.simulator: GHDL is no longer supported")
-            }
-            if version < 3 {
-                if let Some(simulation) = simulation.as_object_mut() {
-                    simulation.remove("stage");
-                }
-            }
-        }
-    }
-    if version < 3 {
-        document.remove("project_language");
-        for (old, new) in [
-            ("gate_simulation_sources", "simulation_sources"),
-            ("gate_simulation_headers", "simulation_headers"),
-        ] {
-            if let Some(files) = document.remove(old) {
-                let files = files
-                    .as_array()
-                    .with_context(|| format!("{old} must be an array"))?;
-                let target = document
-                    .entry(new)
-                    .or_insert_with(|| serde_json::json!([]))
-                    .as_array_mut()
-                    .with_context(|| format!("{new} must be an array"))?;
-                target.extend(files.iter().cloned());
-            }
-        }
-        if let Some(imports) = document.get_mut("imports").and_then(|v| v.as_array_mut()) {
-            for import in imports {
-                if matches!(
-                    import.get("group").and_then(|v| v.as_str()),
-                    Some("rtl_simulation" | "gate_simulation")
-                ) {
-                    import["group"] = serde_json::json!("simulation");
-                }
-            }
-        }
-    }
+/// Decode a project document and normalize its membership lists.
+pub fn decode_project(value: serde_json::Value) -> Result<ProjectConfig> {
     let mut project: ProjectConfig = serde_json::from_value(value)?;
-    if project.technology.is_none() {
-        project.technology = project
-            .physical
-            .as_ref()
-            .and_then(|p| match p.pdk.as_str() {
-                "sky130A" => Some(Technology::Sky130),
-                "ihp-sg13g2" => Some(Technology::IhpSg13g2),
-                _ => None,
-            });
-    }
     for config in project.simulations.values() {
         project
             .simulation_sources
@@ -231,10 +151,17 @@ pub fn validate_hdl(file: &FileRef, header: bool) -> Result<()> {
     Ok(())
 }
 pub fn validate_project(p: &ProjectConfig) -> Result<()> {
+    validate(p, false)
+}
+/// A captured project names its copied external inputs under `__roots`.
+pub fn validate_captured(p: &ProjectConfig) -> Result<()> {
+    validate(p, true)
+}
+fn validate(p: &ProjectConfig, captured: bool) -> Result<()> {
     if let Some(issue) = crate::settings::field_errors(p).first() {
         bail!("{}: {}", issue.field, issue.message)
     }
-    if ![1, 2, PROJECT_SCHEMA].contains(&p.schema_version) {
+    if p.schema_version != PROJECT_SCHEMA {
         bail!("Unsupported project schema {}", p.schema_version)
     }
     for root in p.source_roots.keys() {
@@ -251,7 +178,7 @@ pub fn validate_project(p: &ProjectConfig) -> Result<()> {
                 s.path.path().display()
             )
         }
-        validate_reference(p, &s.path)?;
+        check_reference(p, captured, &s.path)?;
     }
     for reference in p
         .headers
@@ -261,13 +188,7 @@ pub fn validate_project(p: &ProjectConfig) -> Result<()> {
         .chain(&p.simulation_sources)
         .chain(&p.simulation_headers)
     {
-        if p.schema_version == 1
-            && reference.path().is_absolute()
-            && p.simulation_sources.contains(reference)
-        {
-            continue;
-        }
-        validate_reference(p, reference)?;
+        check_reference(p, captured, reference)?;
     }
     for (files, header) in [
         (&p.headers, true),
@@ -287,12 +208,12 @@ pub fn validate_project(p: &ProjectConfig) -> Result<()> {
         if !["folder", "filelist"].contains(&import.kind.as_str()) {
             bail!("Unsupported import kind")
         }
-        validate_reference(p, &import.location)?;
+        check_reference(p, captured, &import.location)?;
         for reference in &import.files {
-            validate_reference(p, reference)?;
+            check_reference(p, captured, reference)?;
         }
         for exclusion in &import.exclusions {
-            validate_reference(p, &exclusion.path)?;
+            check_reference(p, captured, &exclusion.path)?;
         }
     }
     for (name, simulation) in &p.simulations {
@@ -306,14 +227,11 @@ pub fn validate_project(p: &ProjectConfig) -> Result<()> {
             .chain(&simulation.models)
             .chain(&simulation.sdf)
         {
-            if p.schema_version == 1 && reference.path().is_absolute() {
-                continue;
-            }
-            validate_reference(p, reference)?;
+            check_reference(p, captured, reference)?;
         }
     }
     if let Some(sdc) = p.physical.as_ref().and_then(|p| p.sdc.as_ref()) {
-        validate_reference(p, sdc)?;
+        check_reference(p, captured, sdc)?;
     }
     Ok(())
 }
@@ -326,12 +244,15 @@ pub fn validate_build(p: &ProjectConfig) -> Result<()> {
     Ok(())
 }
 pub fn validate_reference(project: &ProjectConfig, reference: &FileRef) -> Result<()> {
+    check_reference(project, false, reference)
+}
+fn check_reference(project: &ProjectConfig, captured: bool, reference: &FileRef) -> Result<()> {
     relative(reference.path())?;
     if let FileRef::Rooted { root, .. } = reference {
-        if project.schema_version < 2 || !project.source_roots.contains_key(root) {
+        if !project.source_roots.contains_key(root) {
             bail!("Unknown source root {root}")
         }
-    } else if project.schema_version >= 2 && reference.path().starts_with("__roots") {
+    } else if !captured && reference.path().starts_with("__roots") {
         bail!("__roots is reserved for captured external inputs")
     }
     Ok(())
@@ -474,10 +395,6 @@ fn capture_inputs(
     let mut hashes = BTreeMap::new();
     let mut origins = BTreeMap::new();
     let mut copy = |reference: &FileRef| -> Result<FileRef> {
-        // Legacy absolute model locations belong to the tool installation.
-        if p.schema_version == 1 && reference.path().is_absolute() {
-            return Ok(reference.clone());
-        }
         let src = resolve_reference(&project_path, p, reference)?;
         let logical = reference.logical();
         let source_root = match reference {
@@ -594,7 +511,6 @@ fn capture_inputs(
     normalized.source_roots.clear();
     normalized.imports.clear();
     // The captured configuration uses only local paths, including reserved namespaces.
-    normalized.schema_version = 1;
     atomic_json(&directory.join("project.json"), &normalized)?;
     atomic_json(&directory.join("input-hashes.json"), &hashes)?;
     atomic_json(&directory.join("source-origins.json"), &origins)?;
@@ -605,14 +521,11 @@ fn capture_inputs(
     })
 }
 pub fn read_snapshot(path: &Path) -> Result<DesignSnapshot> {
-    let mut value: serde_json::Value = read_json(path)?;
-    let project =
-        decode_project(value["project"].take()).context("Snapshot project is unsupported")?;
-    value["project"] = serde_json::to_value(project)?;
-    let s: DesignSnapshot = serde_json::from_value(value)?;
-    if s.schema_version != SCHEMA {
-        bail!("Unsupported snapshot schema")
+    let value: serde_json::Value = read_json(path)?;
+    if value["schema_version"] != SCHEMA {
+        bail!("Unsupported snapshot schema; rebuild the design")
     }
+    let s: DesignSnapshot = serde_json::from_value(value)?;
     let actual = path.canonicalize()?.parent().unwrap().to_path_buf();
     if s.directory != actual {
         bail!("Snapshot was moved; reopen it at its original artifact directory")
@@ -628,12 +541,10 @@ pub fn read_snapshot(path: &Path) -> Result<DesignSnapshot> {
             bail!("Snapshot artifact changed: {name}")
         }
     }
-    if s.artifact_hashes.contains_key("project-origin.json") {
-        let origin: (Option<PathBuf>, Option<String>) =
-            read_json(&s.directory.join("project-origin.json"))?;
-        if origin != (s.project_path.clone(), s.project_fingerprint.clone()) {
-            bail!("Snapshot project provenance changed")
-        }
+    let origin: (Option<PathBuf>, Option<String>) =
+        read_json(&s.directory.join("project-origin.json"))?;
+    if origin != (s.project_path.clone(), s.project_fingerprint.clone()) {
+        bail!("Snapshot project provenance changed")
     }
     Ok(s)
 }
@@ -661,32 +572,25 @@ pub fn source_location(raw: &str) -> (&str, String, String) {
 mod tests {
     use super::*;
     #[test]
-    fn legacy_membership_merges_by_file_identity_and_saves_only_on_request() {
+    fn membership_merges_by_file_identity_and_opening_never_writes() {
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("hdlview.project.json");
         fs::create_dir(d.path().join("rtl")).unwrap();
-        for name in [
-            "rtl/tb.sv",
-            "rtl/other.sv",
-            "rtl/defs.svh",
-            "extra.sv",
-            "z.sv",
-        ] {
+        for name in ["rtl/tb.sv", "rtl/other.sv", "extra.sv", "z.sv"] {
             fs::write(d.path().join(name), "").unwrap();
         }
         let original = serde_json::json!({
-            "schema_version":2,"name":"legacy","top":"top","sources":[],"project_language":"system_verilog",
-            "source_roots":{"rtl":"rtl"},"simulation_sources":["rtl/tb.sv"],
-            "gate_simulation_sources":[{"root":"rtl","path":"tb.sv"},"rtl/other.sv"],
-            "simulation_headers":["rtl/defs.svh"],"gate_simulation_headers":[{"root":"rtl","path":"defs.svh"}],
+            "schema_version":3,"name":"membership","top":"top","sources":[],
+            "source_roots":{"rtl":"rtl"},
+            "simulation_sources":["rtl/tb.sv",{"root":"rtl","path":"tb.sv"},"rtl/other.sv"],
             "imports":[
-                {"kind":"filelist","location":"list.f","group":"rtl_simulation","files":["rtl/tb.sv"]},
-                {"kind":"filelist","location":"list.f","group":"gate_simulation","files":["rtl/other.sv"]},
-                {"kind":"filelist","location":"list.f","group":"gate_simulation","working_directory":"different","files":["extra.sv"]}
+                {"kind":"filelist","location":"list.f","group":"simulation","files":["rtl/tb.sv"]},
+                {"kind":"filelist","location":"list.f","group":"simulation","files":["rtl/other.sv"]},
+                {"kind":"filelist","location":"list.f","group":"simulation","working_directory":"different","files":["extra.sv"]}
             ],
             "simulations":{
-                "z":{"stage":"gate","simulator":"icarus","top":"tb","dut_scope":["tb","dut"],"testbench":["z.sv"]},
-                "a":{"stage":"rtl","simulator":"icarus","top":"tb","dut_scope":["tb","dut"],"testbench":["extra.sv","rtl/tb.sv"]}
+                "z":{"simulator":"icarus","top":"tb","dut_scope":["tb","dut"],"testbench":["z.sv"]},
+                "a":{"simulator":"icarus","top":"tb","dut_scope":["tb","dut"],"testbench":["extra.sv","rtl/tb.sv"]}
             }
         });
         atomic_json(&path, &original).unwrap();
@@ -697,87 +601,46 @@ mod tests {
             working.project.simulation_sources,
             ["rtl/tb.sv", "rtl/other.sv", "extra.sv", "z.sv"].map(FileRef::from)
         );
-        assert_eq!(
-            working.project.simulation_headers,
-            vec![FileRef::from("rtl/defs.svh")]
-        );
-        assert_eq!(
-            working.project.simulations["a"].testbench,
-            vec![FileRef::from("extra.sv"), FileRef::from("rtl/tb.sv")]
-        );
         assert_eq!(working.project.imports.len(), 2);
         assert_eq!(working.project.imports[0].files.len(), 2);
-        assert!(working
-            .project
-            .imports
-            .iter()
-            .all(|r| r.group == SourceGroup::Simulation));
-        let saved = crate::workspace::save(&working, &working.revision).unwrap();
-        let written: serde_json::Value = read_json(&path).unwrap();
-        assert_eq!(written["schema_version"], PROJECT_SCHEMA);
-        for field in [
-            "project_language",
-            "gate_simulation_sources",
-            "gate_simulation_headers",
-        ] {
-            assert!(written.get(field).is_none());
-        }
-        assert!(written["simulations"]["a"].get("stage").is_none());
-        assert_eq!(
-            saved.project.simulation_sources,
-            working.project.simulation_sources
-        );
     }
     #[test]
-    fn unsupported_projects_and_stale_schema_three_fields_are_located_errors() {
-        let base = serde_json::json!({"schema_version":2,"name":"legacy","top":"","sources":[]});
-        let mut family = base.clone();
-        family["project_language"] = "vhdl".into();
-        assert!(decode_project(family)
-            .unwrap_err()
-            .to_string()
-            .contains("project_language"));
-        let mut source = base.clone();
-        source["sources"] = serde_json::json!([{"path":"top.vhd","language":"vhdl"}]);
-        assert!(decode_project(source)
-            .unwrap_err()
-            .to_string()
-            .contains("sources[0].language"));
-        let mut simulator = base.clone();
-        simulator["simulations"] = serde_json::json!({"rtl":{"simulator":"ghdl","top":"tb","testbench":[],"dut_scope":["tb","dut"]}});
-        assert!(decode_project(simulator)
-            .unwrap_err()
-            .to_string()
-            .contains("simulations.rtl.simulator"));
-        let mut tb = base;
+    fn other_schemas_unknown_fields_and_unsupported_files_are_errors() {
+        let base = serde_json::json!({"schema_version":3,"name":"p","top":"","sources":[]});
+        let mut tb = base.clone();
         tb["simulations"] = serde_json::json!({"rtl":{"simulator":"icarus","top":"tb","testbench":["tb.vhd"],"dut_scope":["tb","dut"]}});
         let error = validate_project(&decode_project(tb).unwrap()).unwrap_err();
         assert!(format!("{error:#}").contains("tb.vhd"));
-        let stale = serde_json::json!({"schema_version":3,"name":"new","top":"","sources":[],"gate_simulation_sources":[]});
-        assert!(decode_project(stale)
+        let mut unknown = base.clone();
+        unknown["unknown_field"] = serde_json::json!([]);
+        assert!(decode_project(unknown)
             .unwrap_err()
             .to_string()
-            .contains("gate_simulation_sources"));
+            .contains("unknown_field"));
+        let mut older = base.clone();
+        older["schema_version"] = 2.into();
+        assert!(validate_project(&decode_project(older).unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("Unsupported project schema 2"));
+        let mut unversioned = base;
+        unversioned
+            .as_object_mut()
+            .unwrap()
+            .remove("schema_version");
+        assert!(decode_project(unversioned)
+            .unwrap_err()
+            .to_string()
+            .contains("schema_version"));
     }
     #[test]
-    fn schema_one_absolute_testbench_references_migrate_to_registered_roots() {
-        let d = tempfile::tempdir().unwrap();
-        let external = tempfile::tempdir().unwrap();
-        let tb = external.path().join("tb.sv");
-        fs::write(&tb, "module tb; endmodule").unwrap();
-        let path = d.path().join("hdlview.project.json");
-        atomic_json(&path, &serde_json::json!({"schema_version":1,"name":"old","top":"","sources":[],"simulations":{"run":{"simulator":"icarus","top":"tb","dut_scope":["tb","dut"],"testbench":[tb]}}})).unwrap();
-        let working = crate::workspace::open(&path).unwrap();
-        let saved = crate::workspace::save(&working, &working.revision).unwrap();
-        assert_eq!(saved.project.schema_version, 3);
-        assert_eq!(
-            saved.project.simulation_sources,
-            saved.project.simulations["run"].testbench
-        );
-        assert_eq!(
-            resolve_reference(&path, &saved.project, &saved.project.simulation_sources[0]).unwrap(),
-            tb
-        );
+    fn only_a_captured_project_may_name_the_reserved_input_namespace() {
+        let project = decode_project(serde_json::json!({
+            "schema_version":3,"name":"p","top":"","sources":[],"simulation_sources":["__roots/external/tb.sv"]
+        }))
+        .unwrap();
+        assert!(validate_project(&project).is_err());
+        assert!(validate_captured(&project).is_ok());
     }
     #[test]
     fn reject_escape() {

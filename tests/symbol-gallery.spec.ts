@@ -4,7 +4,7 @@ for (const theme of ["light", "dark"])
     await page.goto("/?symbol-gallery");
     if (theme === "dark")
       await page.getByRole("button", { name: "Theme: light" }).click();
-    await expect(page.locator(".symbol-gallery svg")).toHaveCount(30);
+    await expect(page.locator(".symbol-gallery svg")).toHaveCount(27);
     await expect(page.locator(".symbol-gallery-grid")).toHaveScreenshot(
       `symbols-${theme}.png`,
       { animations: "disabled" },

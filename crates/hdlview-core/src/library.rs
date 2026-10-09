@@ -1,7 +1,7 @@
 //! What each library cell computes, decoded from the gate networks Yosys
 //! builds when it reads a Liberty file. Nothing here looks at a cell's name.
-use crate::{model::*, schematic::fine_register};
-use std::collections::BTreeMap;
+use crate::{model::*, schematic::power};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Functions of the library cells among `modules`; a cell this decoder cannot
 /// describe exactly is left out and stays an explicit unknown box.
@@ -10,6 +10,99 @@ pub fn functions(modules: &BTreeMap<String, Module>) -> BTreeMap<String, CellFun
         .iter()
         .filter_map(|(name, module)| Some((name.clone(), function(module)?)))
         .collect()
+}
+
+// Fine cells encode polarity in their type names. Check both the encoding and
+// actual interface before assigning sequential semantics.
+fn fine_register(cell: &Cell) -> Option<Vec<(&'static str, PinRole, bool)>> {
+    let encoded = cell
+        .kind
+        .strip_prefix('\\')
+        .unwrap_or(&cell.kind)
+        .strip_prefix("$_")?
+        .strip_suffix('_')?;
+    let (family, code) = encoded.split_once('_')?;
+    let signs = |bytes: &[u8]| bytes.iter().all(|b| matches!(b, b'P' | b'N'));
+    let bytes = code.as_bytes();
+    let mut controls = Vec::new();
+    match family {
+        "DFF" | "DFFE" | "SDFF" | "SDFFE" | "SDFFCE" => {
+            let reset = family.starts_with("SD") || bytes.len() >= 3;
+            let enable = matches!(family, "DFFE" | "SDFFE" | "SDFFCE");
+            let expected = 1 + usize::from(reset) * 2 + usize::from(enable);
+            if bytes.len() != expected || !signs(&bytes[..if reset { 2 } else { 1 }]) {
+                return None;
+            }
+            controls.push(("C", PinRole::Clock, bytes[0] == b'P'));
+            if reset {
+                if !matches!(bytes[2], b'0' | b'1') {
+                    return None;
+                }
+                controls.push(("R", PinRole::Reset, bytes[1] == b'P'));
+            }
+            if enable {
+                let value = bytes[expected - 1];
+                if !matches!(value, b'P' | b'N') {
+                    return None;
+                }
+                controls.push(("E", PinRole::Enable, value == b'P'));
+            }
+        }
+        "DFFSR" | "DFFSRE"
+            if bytes.len() == if family == "DFFSR" { 3 } else { 4 } && signs(bytes) =>
+        {
+            controls.extend([
+                ("C", PinRole::Clock, bytes[0] == b'P'),
+                ("S", PinRole::Set, bytes[1] == b'P'),
+                ("R", PinRole::Reset, bytes[2] == b'P'),
+            ]);
+            if family == "DFFSRE" {
+                controls.push(("E", PinRole::Enable, bytes[3] == b'P'));
+            }
+        }
+        "DLATCH" if bytes.len() == 1 && signs(bytes) => {
+            controls.push(("E", PinRole::Enable, bytes[0] == b'P'));
+        }
+        "DLATCHSR" if bytes.len() == 3 && signs(bytes) => {
+            controls.extend([
+                ("E", PinRole::Enable, bytes[0] == b'P'),
+                ("S", PinRole::Set, bytes[1] == b'P'),
+                ("R", PinRole::Reset, bytes[2] == b'P'),
+            ]);
+        }
+        _ => return None,
+    }
+    let expected: BTreeSet<_> = controls
+        .iter()
+        .map(|(name, _, _)| *name)
+        .chain(["D", "Q"])
+        .collect();
+    if cell
+        .ports
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect::<BTreeSet<_>>()
+        != expected
+        || cell.ports.iter().any(|p| {
+            p.bits.len() != 1 || p.direction != if p.name == "Q" { "output" } else { "input" }
+        })
+    {
+        return None;
+    }
+    Some(controls)
+}
+
+/// A cell with supply pins only, such as a fill, tap or decoupling cell.
+pub fn physical(module: &Module) -> Option<CellFunction> {
+    module
+        .ports
+        .iter()
+        .all(|p| power(&p.name))
+        .then(|| CellFunction {
+            symbol: "physical".into(),
+            title: module.name.clone(),
+            ..Default::default()
+        })
 }
 
 struct Network<'a> {
@@ -125,12 +218,8 @@ fn function(module: &Module) -> Option<CellFunction> {
         .iter()
         .filter(|p| p.direction == "output")
         .collect();
-    if module.ports.is_empty() {
-        return Some(CellFunction {
-            symbol: "physical".into(),
-            title: module.name.clone(),
-            ..Default::default()
-        });
+    if let Some(function) = physical(module) {
+        return Some(function);
     }
     let network = Network::new(module);
     let mut pins: BTreeMap<String, CellPin> = module
@@ -490,6 +579,42 @@ mod tests {
         )
         .unwrap();
         functions(&modules).remove("cell")
+    }
+
+    #[test]
+    fn fine_registers_decode_controls_and_reject_incompatible_interfaces() {
+        let modules = graph::modules_from_yosys(&json!({"modules": {"cell": {"ports": {}, "netnames": {}, "cells": {
+            "ff": cell("$_SDFFE_NN0P_", &[("D", 2), ("C", 3), ("R", 4), ("E", 5), ("Q", 6)]),
+            "odd": cell("$_SDFFE_NN0P_", &[("D", 2), ("C", 3), ("wrong", 4), ("E", 5), ("Q", 6)]),
+        }}}}))
+        .unwrap();
+        let cells = &modules["cell"].cells;
+        let ff = cells.iter().find(|c| c.name == "ff").unwrap();
+        assert_eq!(
+            fine_register(ff).unwrap(),
+            [
+                ("C", PinRole::Clock, false),
+                ("R", PinRole::Reset, false),
+                ("E", PinRole::Enable, true)
+            ]
+        );
+        assert!(fine_register(cells.iter().find(|c| c.name == "odd").unwrap()).is_none());
+    }
+
+    #[test]
+    fn a_cell_with_supply_pins_only_is_physical() {
+        let module = |ports: Value| {
+            graph::modules_from_yosys(
+                &json!({"modules": {"fill": {"ports": ports, "cells": {}, "netnames": {}}}}),
+            )
+            .unwrap()
+            .remove("fill")
+            .unwrap()
+        };
+        let supply = json!({"VPWR": {"direction": "inout", "bits": [2]}, "VGND": {"direction": "inout", "bits": [3]}});
+        assert_eq!(physical(&module(supply)).unwrap().symbol, "physical");
+        assert_eq!(physical(&module(json!({}))).unwrap().symbol, "physical");
+        assert!(physical(&module(json!({"A": {"direction": "input", "bits": [2]}}))).is_none());
     }
 
     #[test]

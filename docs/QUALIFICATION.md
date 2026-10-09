@@ -2,11 +2,40 @@
 
 This file records exercised workflows separately from proposed release targets. Version 0.1.0 is an engineering preview; it is not a claim of complete HDL-language coverage or signoff-quality timing simulation.
 
+## Representation and format reduction
+
+Measured 9 October 2026 after removing the Source RTL and Generic gates representations,
+project schemas 1 and 2, the snapshot schema before 2, and the hand-written cell table.
+Later sections are dated records of earlier runs; where they mention those removed
+features, they describe the application as it was then.
+
+- **84 Rust tests** and **45 frontend tests** pass, with formatting, Clippy
+  (`-D warnings`), ESLint, Prettier and TypeScript clean. New tests cover rejection of
+  other project and snapshot schemas, the reserved captured-input namespace, and
+  supply-only library cells.
+- `tools/qualify.py --schematics` on the native toolchain: **86 of 86 cases pass**. It
+  builds, views and simulates the three fixtures and all 18 bundled examples at
+  Elaborated RTL: 0 pseudo-nodes, 0 unknown symbols, 474 declared signals intact.
+- The same with `--mapped` on the Docker image: **94 of 94 cases pass**, including mapped
+  builds and zero-delay gate simulation for SKY130 and IHP SG13G2, with 0 unknown
+  symbols (29 and 40 visible cells). Library functions now come only from Liberty: 422
+  of 446 SKY130 library modules and 80 of 84 IHP modules carry one, and the 18 SKY130
+  fill, tap and `sky130_ef_` cells absent from Liberty are physical by their
+  supply-only interface.
+- One full SKY130 post-layout build of the counter on the Docker image completed
+  (266 cells, 213 fill, decap and tap cells hidden, 53 visible, 0 unknown), unchanged
+  from the previous run, and its SDF-annotated timing simulation ran. IHP post-layout
+  was not rebuilt.
+- The 1,000-node layout benchmark takes 1.7 to 1.9 s with the same bend and crossing
+  counts as before.
+- All **17 browser tests** pass on the native toolchain. The symbol gallery has 27
+  reviewed symbols; the three behavioural ones were removed.
+
 ## Quartus-style schematic qualification
 
 Measured 9 October 2026 with `tools/qualify.py --schematics`, which now also builds and
 views the top scope of every bundled exercise at Elaborated RTL and records cell,
-pseudo-node (constant, undriven, unconnected, off-view), unknown-symbol and declared-signal
+pseudo-node (off-view connector), unknown-symbol and declared-signal
 counts. It asserts that every declared signal of the raw elaborated netlist keeps its
 name and width in the drawn netlist.
 
@@ -33,8 +62,7 @@ exercises have further cells in child scopes. `08_alu` barely changes because it
 multiplexers are not folded by this step.
 
 **Net model, layout and symbols.** Geometry version 5. After the net model, the same
-sweep reports **0 pseudo-nodes** in every view (74 cases across source, elaborated and
-generic stages, all passing on the native toolchain) with 474 declared signals intact.
+sweep reports **0 pseudo-nodes** in every view, with 474 declared signals intact.
 Exported Elaborated RTL schematics of the top scope, built and laid out in the real
 browser worker and measured as SVG width × height including a 20-unit margin:
 
@@ -93,7 +121,7 @@ The four SKY130 cells that were boxes (`a31o`, `a41o`, `and2b`) are now AND-OR c
 with their inner gates and an AND with one bubble; flip-flops are titled `fast[0]` to
 `slow[3]`, and the IHP `dfrbpq` shows `RESET_B` as an active-low asynchronous reset
 below the symbol. 75 Rust tests cover the decoder on gate networks copied from the real
-libraries, its refusal to name a function it cannot match, and the catalog fallback.
+libraries and its refusal to name a function it cannot match.
 
 Limits: boundary ports are no longer in declaration order, and a port whose only net is
 drawn as a control connector is placed by model order alone. Placing registers after
@@ -136,10 +164,8 @@ The counter, Verilog range and schematic showcase fixtures moved to
   retained fixtures. Frontend ESLint, formatting, TypeScript and **40 unit tests**
   pass. Python tooling syntax and final source/fixture hash checks also pass.
 
-Source views explicitly report opaque generate-instance arrays in exercises
-04, 05, 07 and 08, and memory aggregates in 11, 16 and 17. Elaborated views
-resolve their circuit structure. The existing generated-hierarchy binding
-limitation described below remains; no name guessing is introduced.
+The existing generated-hierarchy binding limitation described below remains; no name
+guessing is introduced.
 This qualification does not claim gate/physical compatibility for every exercise,
 and no physical flows were rerun. Local reports are
 `.hdlview/examples/{native,docker}-results.json` and `.hdlview/examples/bindings.json`.
@@ -395,7 +421,7 @@ performed. Evidence: `.hdlview/desktop-compat-smoke-results.json` and
 
 ## Verilog/SystemVerilog-only qualification
 
-The current project contract is schema 3. Schema-1/2 Verilog/SystemVerilog projects load through an in-memory migration, preserving their files until explicit Save Project. VHDL configurations and GHDL simulators are rejected; source imports accept `.v`/`.sv` and `.vh`/`.svh`. The application supports VCD/FST and explicitly rejects GHW, including renamed GHW files.
+The project contract is schema 3; source imports accept `.v`/`.sv` and `.vh`/`.svh`. The application supports VCD/FST and rejects other waveform formats, including renamed files.
 
 - **39 Rust tests** pass, with workspace formatting and Clippy (`-D warnings`). Coverage includes legacy-source merging, canonical identity deduplication, preserved configuration-specific testbench order, transactional import failure, immutable legacy artifact restoration, revision checks, and SDF restrictions before job launch.
 - **20 frontend tests** pass, including ordinary configuration availability across representations and SDF eligibility against the actual loaded snapshot. Frontend lint, TypeScript, and production build pass.
@@ -411,21 +437,11 @@ The rebuilt Debian application also passed a native create/save/close/reopen smo
 
 The waveform-height amendment passed all seven native browser workflows, followed by a focused regression checking dragging in both directions. The tests cover pointer capture outside the divider, keyboard limits, visible-row growth, preserved cursor/selection, unchanged schematic view/layout work, minimum-window sizing, and default sizing after reopening. Frontend lint, formatting, TypeScript/production build, and 20 unit tests pass. This frontend change did not rerun physical flows or package qualification.
 
-## Earlier qualification evidence
-
-The following results predate removal of VHDL and the split simulation groups. They remain historical evidence, not current VHDL support claims.
-
-The earlier Docker matrix exercised 36 results including VHDL/GHW and a successful retry after fixing Verilator's writable cache directory. [Historical raw results](qualification-results.json) retain the initial failure. Both SKY130 and IHP completed all 80 LibreLane Classic stages and produced final netlists, SDFs, GDS, timing data, and reports. SKY130 had no deferred checker errors. **IHP reported eight Magic DRC violations**, while KLayout DRC reported zero and LVS/setup/hold checks passed; its physical run was marked `failed_checks`.
-
-Zero-delay and SDF-annotated simulation of those final netlists passed named-port testbenches. Measured first-output delay was 1.187 ns for SKY130 and 0.407 ns for IHP. [Historical SDF measurements](sdf-delay-results.json). Icarus reported unsupported `TIMINGCHECK`, and IHP additionally unsupported conditional `COND` delays. Passing the testbench does not establish full timing verification or annotation coverage.
-
-Earlier Debian-package smoke tests exercised the actual GTK picker, CodeMirror editing, Ctrl+S, close Save/Cancel prompts, automatic schematic/waveform restoration, and changed-input rebuild warnings under an isolated Xvfb display. The release targets Ubuntu 22.04-compatible glibc and requires WebKitGTK 4.1. Startup used `WEBKIT_DISABLE_DMABUF_RENDERER=1`; nonfatal EGL warnings persist on this host. These tests do not qualify every Linux distribution or native picker interaction.
-
 ## Toolchain qualification findings
 
 The base `hpretl/iic-osic-tools:2025.12` image is pinned by digest in `tools/Dockerfile`. It contains mismatched generations of some flow tools. The derived image pins:
 
-- pyslang 10.0.0 (the earlier 9.1.0 and added GHDL Python dependencies are no longer configured);
+- pyslang 10.0.0;
 - LibreLane 3.0.0, invoked as `/usr/local/bin/librelane`;
 - Magic 8.3.684, commit `4f53bb3091d1e4a9b2009a58f157a8a4331d4c84`;
 - the base image's newer OpenROAD/OpenSTA executables, not the older `openroad-librelane` wrapper environment.
@@ -446,10 +462,10 @@ The synthetic 100,000-cell graph test limits the returned view to 2,000 cells. S
 
 ## Remaining limitations and release gates
 
-- Source views show unsupported generate constructs as opaque/unavailable. Source dependencies are not electrical gate connectivity.
+- Gate-level views and gate simulation need a PDK flow (the Docker toolchain); there is no technology-independent gate stage.
 - RTL DUT overrides are generated as `defparam` assignments in an isolated harness. Gate simulation uses the already-specialized netlist; hierarchy probes and explicit parameter overrides inside a shared testbench may require user adjustments after synthesis.
 - Waveform binding supports exact declared paths/ranges and explicit same-range manual mappings. General compiler-renamed aliases and arbitrary slice remapping are not yet inferred. Missing signals remain unavailable.
-- Bus rows can expand to 256 individual bits. The schematic retains bus connectivity and pin identities; schematic buses can expand into individual routes, with a 20,000-pin-bit limit per view. The schematic catalog intentionally covers a verified subset; unsupported interfaces retain labeled boxes.
+- Bus rows can expand to 256 individual bits. The schematic retains bus connectivity and pin identities; schematic buses can expand into individual routes, with a 20,000-pin-bit limit per view. Library cells the Liberty decoder cannot describe retain labeled boxes.
 - Snapshot content is immutable by checked fingerprints, but artifact directories are not a relocatable archive format. Working inputs may use project-relative or registered-root references; captured inputs are local to the snapshot. Recursive imports skip directory symlinks, and VHDL inputs are rejected.
 - Docker builds with image-contained PDKs use a content-addressed cache keyed by captured inputs, configuration, immutable image, tool versions, and application binary. Native installations and externally mounted PDKs conservatively rebuild. Layouts and visible waveform signals are cached; a disk-backed waveform index is not implemented.
 - A native profile must include compatible model files, Python bindings, plugins, and PDKs. Native/Docker parity has been checked on small workflows, not exhaustively across all language/library features.

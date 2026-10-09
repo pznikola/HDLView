@@ -20,7 +20,6 @@
 | `editor_lint.rs`                 | Working-source context validation, temporary overlays, engine results, normalized UTF-16 ranges      |
 | `tools/editor_lint.py`           | Pinned pyslang diagnostic extraction, original macro/include locations and related notes             |
 | `ui/editor-lint.ts`              | Debounce, latest-request coordination, contexts and project-local lint preferences                   |
-| `tools/source_graph.py`          | Isolated Slang source helper                                                                         |
 | `tools/library_interfaces.py`    | Slang-derived blackbox interfaces from simulation models                                             |
 | `tools/collect_physical.py`      | Strict JSON conversion of non-finite physical metrics                                                |
 | `ui/components/Schematic.tsx`    | SVG renderer and view-scoped layout cache                                                            |
@@ -59,7 +58,7 @@ The local JSON-lines CLI request has shape `{"action":"view","args":{"snapshot_i
 
 Build/import/simulation actions return job records. Poll `job`, cancel with `cancel`, and inspect retained `logs`. `wave_info`, `bindings`, `wave_window`, and `wave_values` query an open run. Timestamps cross the frontend boundary as decimal strings. The waveform subprocess is the same executable invoked with a private worker flag; it exits before desktop initialization and never requires a display.
 
-Project schema 3 is separate from artifact schema 1. Rooted references resolve against registered directories, cannot escape them, and are normalized into `inputs/__roots/ROOT/…` during capture. The snapshot retains original-source mappings but compilers see only captured local paths. Version-1/2 Verilog/SystemVerilog projects migrate only on explicit save; empty projects validate independently from build readiness.
+Project schema 3 is separate from artifact schema 2. Rooted references resolve against registered directories, cannot escape them, and are normalized into `inputs/__roots/ROOT/…` during capture. The snapshot retains original-source mappings but compilers see only captured local paths. Only these schema versions are read; empty projects validate independently from build readiness.
 
 `preview_import` returns a cancellable job and a review token. `apply_import` checks the project's configuration fingerprint before applying selected roles to its working configuration; saving is explicit. Expanded lists remain stable until explicit reimport. `read_document` and `save_document` accept registered references and HDL headers beneath configured includes or compilation-unit directories, still enforcing source-root boundaries. Saves compare content revisions and preserve BOM/newlines. The desktop grants dialog-open and window-destroy permissions without frontend filesystem access; window destruction follows the dirty-state prompt. Snapshot source navigation reads captured text; working-file navigation resolves the saved original mapping separately.
 
@@ -87,11 +86,11 @@ outside project schema and compilation fingerprints.
 
 Views above 400 nodes use ELK layered layout with its documented [longest-path layering](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-layering-strategy.html) and minimal crossing thoroughness to bound interactive work; smaller views use network-simplex layering. Both use [Brandes–Köpf node placement](https://eclipse.dev/elk/reference/options/org-eclipse-elk-layered-nodePlacement-strategy.html). Layout workers are cancellable; selection never causes layout.
 
-Project schema 3 records technology, shared simulation membership/headers, and design/simulation import records. `decode_project` is the compatibility boundary for legacy working configurations and embedded snapshot projects: it removes stage restrictions, merges former simulation groups, preserves testbench order, and rejects unsupported VHDL/GHDL configurations. Resolved aliases are deduplicated on working-project load/update/save. Serialization writes only current contracts. Older artifact bytes and provenance hashes are not rewritten. The selected snapshot chooses captured RTL or the exact generated netlist for an ordinary simulation configuration; SDF requires a gate snapshot and Icarus. Models are compiled only for gates. Snapshot/run identity and representation checks remain mandatory.
+Project schema 3 records technology, shared simulation membership/headers, and design/simulation import records. `decode_project` reads only that schema: it registers configuration testbenches as simulation sources and merges duplicate import records, and unknown fields are errors. Resolved aliases are deduplicated on working-project load/update/save. A captured project is validated separately (`validate_captured`), because only it may name the reserved `__roots` input namespace. The selected snapshot chooses captured RTL or the exact generated netlist for an ordinary simulation configuration; SDF requires a gate snapshot and Icarus. Models are compiled only for gates. Snapshot/run identity and representation checks remain mandatory.
 
 Creation drafts have an independent service key and actual target configuration path. Existing preview/application operations work on either key, but draft imports do not replace the active project. Final creation validates and atomically publishes the completed configuration; a new-file hard link prevents clobbering a configuration created concurrently. Closing releases the single visible parser/session and leaves artifacts on disk.
 
-`lifecycle.rs` stores versioned machine-local checkpoints under the service cache's `project-state/`, keyed by the canonical configuration path. Each checkpoint references a snapshot and optional run; snapshots retain fingerprinted project provenance. Opening validates provenance/artifacts/binding and compares original input hashes/current configuration before returning a schematic, optional waveform path, stale flag, and warnings. Heavy waveform reopening uses the existing cancellable job. The old global session is not migrated automatically. React resets presentation defaults and guards stale responses across project activation.
+`lifecycle.rs` stores versioned machine-local checkpoints under the service cache's `project-state/`, keyed by the canonical configuration path. Each checkpoint references a snapshot and optional run; snapshots retain fingerprinted project provenance. Opening validates provenance/artifacts/binding and compares original input hashes/current configuration before returning a schematic, optional waveform path, stale flag, and warnings. Heavy waveform reopening uses the existing cancellable job. React resets presentation defaults and guards stale responses across project activation.
 
 ## Schematic presentation
 
@@ -103,19 +102,11 @@ are not rewritten, so synthesis and LibreLane inputs are unchanged. Its log is r
 but is not scanned for diagnostics, because it quotes user signal names.
 
 `schematic.rs` classifies compiler/library cells, controls physical-cell visibility,
-recognizes bounded elaborated groups and constructs captured behavioral detail views.
+and recognizes bounded elaborated groups, which open as focused detail views.
 A register or latch is titled with the declared net or slice that names every Q bit.
 `graph.rs` retains raw parameters and ordered connectivity. Declared RTL aliases precede
 hidden compiler names; gate pins retain their independent endpoint as the first identity.
-New optional cell behavior/parameter fields leave old artifact bytes and hashes intact.
-Absent metadata never becomes a guessed reset or synthesized source explanation.
-
-`source_graph.py` captures Slang statements/expressions, spans, call targets and formal
-signatures alongside process summaries. Detail edges distinguish data dependencies and
-sequencing. Assignment outputs bind written declarations; operand inputs bind upstream
-references, and control-flow edges never acquire waveform values. Formals/temporaries
-remain unbound. Capture and focused views are bounded; unsupported AST constructs emit
-opaque nodes and diagnostics.
+Absent metadata never becomes a guessed reset.
 
 `graph.rs` forms one net per driver set and gives every input pin its `feeds`: runs of
 nets with the slice they take, constant literals and undriven runs. It emits no constant
@@ -131,9 +122,10 @@ A mapped or post-layout build runs one more Yosys step, `library-functions`, whi
 the mapped Liberty file as logic. `library.rs` evaluates each cell's gate network into a
 truth table of at most six inputs and names it: a gate with bubbles, a multiplexer, an
 AND-OR or OR-AND compound with its pin groups, or a register or latch whose control
-pins are traced to the storage element. The function is stored on the library `Module`
-and `schematic.rs` prefers it over the name-based catalog, which remains for older
-snapshots. A cell is never classified from its name when a function is present.
+pins are traced to the storage element. A library cell with supply pins only is
+physical by its interface. The function is stored on the library `Module` and is the
+only source of gate symbols and pin roles: a cell is never classified from its name,
+and a library that cannot be read fails the build.
 
 `schematic-symbols.ts` supplies original SVG paths, estimated text bounds and fixed pin
 anchors to both `SchematicSymbol.tsx` and `schematic-layout.ts`. A pin's anchor is the
@@ -154,10 +146,9 @@ declared range order.
 The worker normalizes electrical routes by exact original net, unions shared orthogonal
 trunks, draws each stretch at the widest route covering it, and derives round junctions
 from connected branches. ELK junction hints are validated against these routes.
-Terminals, bends, procedural edges and unrelated crossings have no connection dot.
-Renderer and ELK share anchors on all four sides. Only dependency and control-flow edges
-reserve label space; a net name is added after routing where its driver's first run has
-room. The presentation selection distinguishes pins from wires;
+Terminals, bends and unrelated crossings have no connection dot.
+Renderer and ELK share anchors on all four sides. No edge reserves label space; a net
+name is added after routing where its driver's first run has room. The presentation selection distinguishes pins from wires;
 a pin retains its endpoint identity while a wire selects its entire visible exact slice.
 
 `Schematic.tsx` caches layouts and parent cameras by graph metadata/options and geometry
@@ -181,7 +172,6 @@ waveform range/radix/cursor and scroll positions. Hidden waveforms pause window
 queries. Schematic collapse does not unmount the renderer or reset its camera.
 Selecting objects never changes the selected sidebar view. Sizing and panel
 selection are independent of graph identity and compilation fingerprints.
-Source dependency/control routes include arrowheads; electrical wires remain undirected.
 The desktop SVG command selects a destination through the official dialog plugin off the
 main thread; the independent core publishes the completed file atomically. Browser export
 uses a download without filesystem IPC.

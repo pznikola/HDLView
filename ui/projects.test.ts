@@ -15,9 +15,7 @@ const shared: SimulationConfig = {
 describe("shared simulation configurations", () => {
   it("allows ordinary configurations across RTL and gate representations", () => {
     for (const representation of [
-      "source",
       "elaborated",
-      "generic",
       "mapped",
       "post_layout",
     ] as const)
@@ -32,7 +30,7 @@ describe("shared simulation configurations", () => {
         sdf: { typ: "delay.sdf" },
       }),
     ).toBe(false);
-    expect(canSimulate(config, { representation: "generic", sdf: {} })).toBe(
+    expect(canSimulate(config, { representation: "mapped", sdf: {} })).toBe(
       false,
     );
     const snapshot = {

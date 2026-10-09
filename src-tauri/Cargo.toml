@@ -9,7 +9,6 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "=2.12.1", features = [] }
 hdlview-core = { path = "../crates/hdlview-core" }
-serde.workspace = true
 serde_json.workspace = true
 tauri-plugin-dialog = "=2.8.1"
 

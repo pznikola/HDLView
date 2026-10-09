@@ -2,7 +2,7 @@
 
 Linux desktop HDL schematic and waveform explorer, with a Rust core and headless CLI.
 
-- Source/dataflow, elaborated RTL, generic gates, PDK-mapped gates, and post-layout views with hardware symbols.
+- Elaborated RTL, PDK-mapped gate, and post-layout views with hardware symbols.
 - Verilog/SystemVerilog projects, using existing open-source compilers.
 - File-menu project creation/opening, grouped RTL/simulation imports, editable source tabs, and automatic project artifact restoration.
 - Live syntax, semantic, and style diagnostics for unsaved design and simulation buffers.
@@ -89,19 +89,16 @@ Use **Sources**, **Design**, and **Inspector** to choose the left sidebar view. 
 
 **File → Open Existing Project…** selects JSON using the native picker and automatically reopens that project's last valid schematic and matching waveform. There is no separate Restore Session command. Restoration is local to this machine and the configuration's canonical path; tabs, pane sizes, scope, waveform cursor/zoom, and row selection start with defaults. Missing/corrupted artifacts produce warnings; changed working inputs retain the old immutable schematic with a rebuild indication. Opening never compiles or simulates automatically. **Close Project** leaves sources and artifacts on disk.
 
-Registered external roots appear as `@root/path`; include settings accept project-relative paths or that notation. Folder rescans preserve manual compilation order; filelist reimports apply reviewed order and retain source/header roles. Version-1 and version-2 Verilog/SystemVerilog configurations load without automatic rewriting. Their RTL/gate source lists merge in memory, preserving order and configuration-specific testbench lists. Explicit Save Project writes schema 3 without language-family, source-library, gate-source, or simulation-stage fields. Existing VHDL projects are unsupported and opening one leaves the current workspace intact. Legacy valid SV artifacts remain immutable and may show Rebuild required after migration.
+Registered external roots appear as `@root/path`; include settings accept project-relative paths or that notation. Folder rescans preserve manual compilation order; filelist reimports apply reviewed order and retain source/header roles. Project files use schema 3 only; a file of another schema version or with unknown fields is rejected, and opening it leaves the current workspace intact. Schematics and waveforms built by an earlier HDLView version are not read: rebuild the design.
 
-For a native installation, adapt [native.example.json](tools/profiles/native.example.json) in the Toolchain editor. Set plugin paths and relevant environment variables as well as executables. The Python environment must contain `pyslang==10.0.0` (needed to honor Verilog-2005 source-view settings). Standard-cell interface extraction also uses `pyslang`.
+For a native installation, adapt [native.example.json](tools/profiles/native.example.json) in the Toolchain editor. Set plugin paths and relevant environment variables as well as executables. The Python environment must contain `pyslang==10.0.0`, which live editor diagnostics and standard-cell interface extraction use. A Docker profile must name its image.
 
 ## Schematic workspace
 
 The schematic uses gate, mux, register, arithmetic, memory and directional-port symbols.
-Open a module with its expansion button or double-click it. For a new Source RTL build,
-processes, functions and tasks open captured behavioral details; **Back to parent schematic**
-restores the previous camera. Dashed edges mean source dependencies and dotted edges mean
-procedural control. Unsupported constructs remain labeled and diagnosed; source behavior
-is not a physical gate diagram. Function arguments and expression temporaries without
-simulator declarations remain unavailable.
+Open a module with its expansion button or double-click it; **Back to parent schematic**
+restores the previous camera. The stages are **Elaborated RTL**, **Mapped gates** and
+**Post-layout**; the two gate stages need physical settings and the PDK toolchain.
 
 Elaborated RTL can compact complete mux trees, decoders and priority encoders. Open those
 symbols to inspect original compiler nodes. Selecting a dumped internal signal in Waveforms
@@ -126,8 +123,7 @@ cells are hidden only when their library interfaces are recognized; the toolbar 
 how many. Mapped and post-layout cells are drawn from the function their Liberty library
 states: gates with bubbles on inverted inputs, AND-OR and OR-AND cells with their inner
 gates, multiplexers, and flip-flops with the clock, enable and reset pins the library
-describes. Rebuild a mapped or post-layout snapshot made by an earlier version to get
-these symbols. Unknown cells retain explicit ports and labeled boxes. These preferences do not
+describes. Unknown cells retain explicit ports and labeled boxes. These preferences do not
 change compilation or simulation. Selection/theme/cursor changes reuse layout. The grid
 follows pan and zoom, uses coarser spacing at low zoom, and is excluded from export.
 
@@ -137,8 +133,7 @@ consumers. **Export SVG** exports the current logical/detail view with its theme
 without selection overlays. The desktop opens a native Save dialog; the browser downloads
 the SVG. Try `examples/08_alu/hdlview.project.json` for arithmetic and logic, or
 `examples/16_mem/hdlview.project.json` for memory. The internal schematic gallery
-fixture is `tests/fixtures/schematic/hdlview.project.json`. Older artifacts remain readable;
-source details missing from old snapshots require an explicit rebuild.
+fixture is `tests/fixtures/schematic/hdlview.project.json`.
 
 HDLView generates waveform instrumentation without editing the testbench. If a testbench
 uses its own `$dumpfile`, HDLView accepts the sole VCD/FST in that new run directory with
@@ -205,7 +200,7 @@ target/debug/hdlview view /absolute/artifact/directory/snapshot.json --scope add
 target/debug/hdlview wave /absolute/path/trace.vcd
 ```
 
-Representations: `source`, `elaborated`, `generic`, `mapped`, `post_layout`.
+Representations: `elaborated`, `mapped`, `post_layout`. `--profile` selects the toolchain; without it the native tools on `PATH` are used.
 
 The counter regression fixture includes physical constraints and an SDF configuration
 for the following timing workflow. The public exercises need physical settings configured first.
@@ -226,8 +221,8 @@ Use **named port connections in gate testbenches**: physical tools may reorder d
 The original SVG glyph gallery is available at `/?symbol-gallery` on the frontend dev
 server. Its light/dark Playwright baselines are reviewed images in
 `tests/symbol-gallery.spec.ts-snapshots/`; review geometry changes before refreshing them.
-`tools/qualify.py --schematics` adds captured-behavior/symbol/connectivity checks and the
-mixed schematic fixture to the real tool matrix; add `--mapped` for both PDK libraries.
+`tools/qualify.py --schematics` adds symbol/connectivity checks, the mixed schematic
+fixture and every bundled example to the real tool matrix; add `--mapped` for both PDK libraries.
 `node tools/benchmark-layout.mjs` measures mixed and high-fan-out graphs in the actual
 browser worker after a production build. No reference SVG skins or font assets are bundled.
 

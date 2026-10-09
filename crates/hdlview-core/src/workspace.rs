@@ -147,6 +147,7 @@ pub fn publish_draft(
     }
     open(&workspace.path)
 }
+#[cfg(test)]
 pub fn create(path: &Path, name: String, overwrite: bool) -> Result<WorkspaceProject> {
     let parent = path
         .parent()
@@ -180,46 +181,11 @@ pub fn save(project: &WorkspaceProject, expected: &str) -> Result<WorkspaceProje
     if file_hash(&project.path)? != expected {
         bail!("Project configuration changed outside HDLView; reopen it before saving")
     }
-    let mut config = prepare_saved_config(&project.path, &project.project)?;
+    let mut config = project.project.clone();
     validate_project(&config)?;
     deduplicate_simulation_files(&project.path, &mut config)?;
     atomic_json(&project.path, &config)?;
     open(&project.path)
-}
-pub(crate) fn prepare_saved_config(path: &Path, project: &ProjectConfig) -> Result<ProjectConfig> {
-    let mut config = project.clone();
-    config.schema_version = PROJECT_SCHEMA;
-    let mut migrated = BTreeMap::new();
-    for file in project_files(&config) {
-        if file.path().is_absolute() {
-            migrated.insert(
-                file.clone(),
-                register(file.path(), path, &mut config, false)?,
-            );
-        }
-    }
-    for file in config
-        .simulation_sources
-        .iter_mut()
-        .chain(&mut config.simulation_headers)
-    {
-        if let Some(reference) = migrated.get(file) {
-            *file = reference.clone();
-        }
-    }
-    for simulation in config.simulations.values_mut() {
-        for file in simulation
-            .testbench
-            .iter_mut()
-            .chain(&mut simulation.models)
-            .chain(&mut simulation.sdf)
-        {
-            if let Some(reference) = migrated.get(file) {
-                *file = reference.clone();
-            }
-        }
-    }
-    Ok(config)
 }
 pub(crate) fn relative_directory(base: &Path, path: &Path) -> PathBuf {
     let a: Vec<_> = base.components().collect();
@@ -351,12 +317,6 @@ fn scan(
             scan(&path, files, warnings, cancel)?;
         } else if kind.is_file() && language(&path).is_some() {
             files.push(path);
-        } else if kind.is_file()
-            && path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("vhd") || e.eq_ignore_ascii_case("vhdl"))
-        {
-            warnings.push(format!("Excluded unsupported VHDL file {}", path.display()));
         }
     }
     Ok(())
@@ -598,7 +558,6 @@ pub fn preview(
     cancel: &CancelToken,
 ) -> Result<ImportPreview> {
     let mut project = workspace.project.clone();
-    project.schema_version = PROJECT_SCHEMA;
     let previous = request
         .record_index
         .map(|i| {
@@ -1128,19 +1087,12 @@ mod tests {
             .collect()
     }
     #[test]
-    fn empty_project_and_explicit_legacy_migration() {
+    fn an_empty_project_is_valid_but_cannot_be_built() {
         let d = tempfile::tempdir().unwrap();
-        let path = d.path().join("hdlview.project.json");
-        fs::write(&path,r#"{"schema_version":1,"name":"Legacy","top":"top","sources":[{"path":"top.v","language":"verilog"}]}"#).unwrap();
-        let legacy = open(&path).unwrap();
-        assert_eq!(legacy.project.schema_version, 1);
-        let saved = save(&legacy, &legacy.revision).unwrap();
-        assert_eq!(saved.project.schema_version, PROJECT_SCHEMA);
-        let other = tempfile::tempdir().unwrap();
-        let empty = empty(other.path());
+        let empty = empty(d.path());
         assert!(validate_project(&empty.project).is_ok());
         assert!(validate_build(&empty.project).is_err());
-        assert!(create(&path, "Overwrite".into(), false).is_err());
+        assert!(create(&empty.path, "Overwrite".into(), false).is_err());
     }
     #[test]
     fn folder_roots_headers_and_immutable_capture() {
@@ -1638,7 +1590,6 @@ mod lifecycle_tests {
             };
             let scanned = preview(&workspace, &request, &CancelToken::default()).unwrap();
             assert_eq!(scanned.entries.len(), 2);
-            assert!(scanned.warnings.iter().any(|w| w.contains("design.vhd")));
             let choices: Vec<_> = scanned
                 .entries
                 .iter()

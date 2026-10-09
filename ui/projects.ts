@@ -187,7 +187,7 @@ export function canSimulate(
   if (!config.sdf && !config.use_snapshot_sdf) return true;
   if (
     !snapshot ||
-    !["generic", "mapped", "post_layout"].includes(snapshot.representation) ||
+    !["mapped", "post_layout"].includes(snapshot.representation) ||
     config.simulator !== "icarus"
   )
     return false;

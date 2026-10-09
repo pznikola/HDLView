@@ -50,9 +50,7 @@ const defaultProfile: Profile = {
   timeout_seconds: 3600,
 };
 const representations: { id: Representation; label: string }[] = [
-  { id: "source", label: "Source RTL" },
   { id: "elaborated", label: "Elaborated RTL" },
-  { id: "generic", label: "Generic gates" },
   { id: "mapped", label: "Mapped gates" },
   { id: "post_layout", label: "Post-layout" },
 ];
@@ -489,9 +487,9 @@ function App() {
       ) as string[];
       setFocus(undefined);
       const hidden = graph?.nodes.find((node) =>
-        node.display?.internal_signal_ids.includes(match.signal_id),
+        node.display.internal_signal_ids.includes(match.signal_id),
       );
-      if (hidden?.display?.detail) openDetail(hidden.display.detail);
+      if (hidden?.display.detail) openDetail(hidden.display.detail);
       const parent = segments.slice(0, -1);
       setScope(
         snapshot.design.scopes
@@ -737,9 +735,9 @@ function App() {
                 <div className="panel-heading">INSPECTOR</div>
                 {inspectedPin && (
                   <p className="pin-inspection">
-                    Pin {inspectedPin.display?.name ?? inspectedPin.label} ·{" "}
+                    Pin {inspectedPin.display.name || inspectedPin.label} ·{" "}
                     {pinOwner?.label} ·{" "}
-                    {inspectedPin.display?.declared_direction ??
+                    {inspectedPin.display.declared_direction ??
                       inspectedPin.direction}
                   </p>
                 )}
@@ -794,21 +792,19 @@ function App() {
                   <>
                     <h3>{inspect.label}</h3>
                     <p>{inspect.kind}</p>
-                    {inspect.display?.annotations.map((annotation) => (
+                    {inspect.display.annotations.map((annotation) => (
                       <p className="hint" key={annotation}>
                         {annotation}
                       </p>
                     ))}
-                    {inspect.display?.detail && (
+                    {inspect.display.detail && (
                       <button
-                        onClick={() =>
-                          openDetail(inspect.display?.detail ?? "")
-                        }
+                        onClick={() => openDetail(inspect.display.detail ?? "")}
                       >
                         Inspect original structure
                       </button>
                     )}
-                    {inspect.display?.members.length ? (
+                    {inspect.display.members.length ? (
                       <details>
                         <summary>Grouped compiler nodes</summary>
                         <ul>
@@ -819,13 +815,18 @@ function App() {
                       </details>
                     ) : null}
                     {inspect.child_scope && (
-                      <button onClick={() => setScope(inspect.child_scope!)}>
+                      <button
+                        onClick={() => {
+                          if (inspect.child_scope)
+                            setScope(inspect.child_scope);
+                        }}
+                      >
                         Enter instance
                       </button>
                     )}
                     <div className="pin-list">
                       {inspect.ports
-                        .filter((p) => p.display?.role !== "power")
+                        .filter((p) => p.display.role !== "power")
                         .map((p) => (
                           <button
                             key={p.id}
@@ -841,12 +842,12 @@ function App() {
                           </button>
                         ))}
                     </div>
-                    {inspect.ports.some((p) => p.display?.role === "power") && (
+                    {inspect.ports.some((p) => p.display.role === "power") && (
                       <details>
                         <summary>Power connections</summary>
                         <div className="pin-list">
                           {inspect.ports
-                            .filter((p) => p.display?.role === "power")
+                            .filter((p) => p.display.role === "power")
                             .map((p) => (
                               <button
                                 key={p.id}
@@ -874,7 +875,7 @@ function App() {
                       </button>
                     )}
                     <details>
-                      <summary>Process / cell details</summary>
+                      <summary>Cell details</summary>
                       <pre>
                         {JSON.stringify(
                           snapshot?.design.modules[
@@ -1479,7 +1480,7 @@ function App() {
                     setSelection((previous) =>
                       nextSelection(previous, {
                         origin: "schematic",
-                        scope: node.child_scope,
+                        scope: node.child_scope ?? undefined,
                       }),
                     );
                   }}

@@ -1,9 +1,11 @@
 import type { SchematicOptions } from "./types";
 export interface SchematicPreferences extends Omit<SchematicOptions, "detail"> {
+  /** Layout only: wire clocks and resets instead of drawing connectors. */
+  full_control_wiring: boolean;
   theme: "light" | "dark";
   grid: boolean;
 }
-export const defaultSchematicPreferences: SchematicPreferences = {
+const defaultSchematicPreferences: SchematicPreferences = {
   theme: "light",
   grid: false,
   functional_symbols: true,

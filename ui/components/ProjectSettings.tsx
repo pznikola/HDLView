@@ -1074,8 +1074,7 @@ export function ProjectSettings({
                 <>
                   <p className="hint">
                     Required for mapped and physical builds. Select technology
-                    in General; RTL and generic builds do not need clock
-                    settings.
+                    in General; RTL builds do not need clock settings.
                   </p>
                   <dl className="settings-library">
                     <dt>PDK</dt>

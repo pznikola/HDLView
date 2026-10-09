@@ -122,7 +122,6 @@ pub fn restore(store: &Path, workspace: &WorkspaceProject) -> RestoredProject {
     };
     result.stale = fingerprint.is_none()
         || snapshot.project_fingerprint != fingerprint
-        || snapshot.source_origins.is_empty()
         || snapshot.source_origins.iter().any(|(name, original)| {
             file_hash(original).ok().as_ref() != snapshot.input_hashes.get(name)
         });
@@ -162,8 +161,14 @@ mod tests {
             "schema_version": SCHEMA, "id": name, "representation": "elaborated", "project": captured.project,
             "project_path": workspace.path, "project_fingerprint": hash(serde_json::to_vec(&workspace.project).unwrap()),
             "profile": ToolchainProfile::default(), "directory": artifact, "design": {"modules":{},"scopes":[]},
-            "diagnostics": [], "tool_versions": {}, "input_hashes":captured.hashes, "source_origins":captured.origins, "netlist":null
+            "diagnostics": [], "tool_versions": {}, "input_hashes":captured.hashes, "artifact_hashes":{},
+            "source_origins":captured.origins, "netlist":null, "sdf":{}
         })).unwrap();
+        atomic_json(
+            &artifact.join("project-origin.json"),
+            &(&snapshot.project_path, &snapshot.project_fingerprint),
+        )
+        .unwrap();
         let snapshot_path = artifact.join("snapshot.json");
         atomic_json(&snapshot_path, &snapshot).unwrap();
         let trace = artifact.join("trace.vcd");
@@ -201,40 +206,27 @@ mod tests {
         assert!(read_snapshot(&sa).is_ok());
     }
     #[test]
-    fn legacy_sv_snapshot_conversion_preserves_artifact_bytes_and_bound_run() {
+    fn a_snapshot_of_another_schema_is_rejected_and_restores_as_a_warning() {
         let d = tempfile::tempdir().unwrap();
-        let (workspace, snapshot_path, run_path) = fixture(d.path(), "legacy");
-        let mut value: serde_json::Value = read_json(&snapshot_path).unwrap();
-        value["project"]["project_language"] = "system_verilog".into();
-        value["project"]["sources"][0]["library"] = serde_json::Value::Null;
-        value["project"]["gate_simulation_sources"] = serde_json::json!(["top.v"]);
-        let project_path = snapshot_path.parent().unwrap().join("project.json");
-        atomic_json(&project_path, &value["project"]).unwrap();
-        value["artifact_hashes"]["project.json"] = file_hash(&project_path).unwrap().into();
-        atomic_json(&snapshot_path, &value).unwrap();
-        let original = fs::read(&snapshot_path).unwrap();
-        let captured = fs::read(&project_path).unwrap();
+        let (workspace, snapshot_path, run_path) = fixture(d.path(), "old");
         let store = d.path().join("store");
         save(&store, &workspace, &snapshot_path, Some(&run_path)).unwrap();
+        let mut value: serde_json::Value = read_json(&snapshot_path).unwrap();
+        value["schema_version"] = (SCHEMA - 1).into();
+        atomic_json(&snapshot_path, &value).unwrap();
+        assert!(read_snapshot(&snapshot_path)
+            .unwrap_err()
+            .to_string()
+            .contains("Unsupported snapshot schema"));
         let state = restore(&store, &workspace);
-        assert!(state.warnings.is_empty());
-        assert_eq!(state.run_path, Some(run_path));
-        assert_eq!(
-            state.snapshot.unwrap().project.simulation_sources,
-            vec![FileRef::from("top.v")]
-        );
-        assert_eq!(fs::read(&snapshot_path).unwrap(), original);
-        assert_eq!(fs::read(&project_path).unwrap(), captured);
-        fs::write(project_path, "damaged").unwrap();
-        assert!(restore(&store, &workspace).snapshot.is_none());
+        assert!(state.snapshot.is_none());
+        assert_eq!(state.warnings.len(), 1);
     }
     #[test]
     fn damaged_missing_and_mismatched_artifacts_recover_without_wrong_binding() {
         let d = tempfile::tempdir().unwrap();
         let store = d.path().join("cache");
         let (a, snapshot, run) = fixture(d.path(), "a");
-        fs::create_dir_all(&store).unwrap();
-        fs::write(store.join("last-session.json"), "{}").unwrap();
         assert!(restore(&store, &a).snapshot.is_none());
         save(&store, &a, &snapshot, Some(&run)).unwrap();
         fs::write(run.parent().unwrap().join("trace.vcd"), "corrupted").unwrap();

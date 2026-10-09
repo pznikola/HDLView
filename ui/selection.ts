@@ -1,6 +1,22 @@
 export type ConnectionTarget =
   | { kind: "pin"; nodeId: string; portId: string }
   | { kind: "wire"; edgeId: string; wireId: string };
+/** A pin is highlighted as the explicit target, or else by the selected signal. */
+export function pinSelected(
+  port: { id: string; signal_ids: string[] },
+  selected: string | undefined,
+  target: ConnectionTarget | undefined,
+): boolean {
+  return target
+    ? target.kind === "pin" && target.portId === port.id
+    : port.signal_ids.includes(selected ?? "");
+}
+export function pinTarget(
+  node: { id: string },
+  port: { id: string },
+): ConnectionTarget {
+  return { kind: "pin", nodeId: node.id, portId: port.id };
+}
 export interface Selection {
   origin: "schematic" | "waveform" | "hierarchy";
   sequence: number;

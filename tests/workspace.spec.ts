@@ -742,17 +742,17 @@ test("empty project creation and ordered SystemVerilog filelist import", async (
   );
 });
 
-test("open legacy JSON, migrate on explicit save, and preserve the workspace when opening fails or is cancelled", async ({
+test("open a project and preserve the workspace when opening fails or is cancelled", async ({
   page,
 }) => {
-  const directory = mkdtempSync(join(tmpdir(), "hdlview legacy "));
+  const directory = mkdtempSync(join(tmpdir(), "hdlview open "));
   const config = join(directory, "hdlview.project.json");
   writeFileSync(join(directory, "top.v"), "module top; endmodule\n");
   writeFileSync(
     config,
     JSON.stringify({
-      schema_version: 1,
-      name: "Legacy project",
+      schema_version: 3,
+      name: "First project",
       top: "top",
       sources: [{ path: "top.v", language: "verilog" }],
     }),
@@ -776,51 +776,43 @@ test("open legacy JSON, migrate on explicit save, and preserve the workspace whe
   );
   await page.goto("/");
   await fileCommand(page, "Open Existing Project…");
-  await expect(page.locator(".project-title")).toContainText("Legacy project");
-  expect(JSON.parse(readFileSync(config, "utf8")).schema_version).toBe(1);
+  await expect(page.locator(".project-title")).toContainText("First project");
   await page.locator('.source-file[title="top.v"]').click();
   await expect(page.locator(".cm-content")).toContainText("module top");
-  await finishImport(page);
-  await fileCommand(page, "Save Project");
-  await expect
-    .poll(() => JSON.parse(readFileSync(config, "utf8")).schema_version)
-    .toBe(3);
-  const unsupported = join(directory, "vhdl.json");
+  const unsupported = join(directory, "older.json");
   const unsupportedText = JSON.stringify({
     schema_version: 2,
     name: "Unsupported",
     top: "",
-    project_language: "vhdl",
     sources: [],
   });
   writeFileSync(unsupported, unsupportedText);
   chosen = [unsupported];
   await fileCommand(page, "Open Existing Project…");
   await expect(page.locator(".error-banner")).toContainText(
-    "VHDL projects are no longer supported",
+    "Unsupported project schema 2",
   );
-  await expect(page.locator(".project-title")).toContainText("Legacy project");
+  await expect(page.locator(".project-title")).toContainText("First project");
   expect(readFileSync(unsupported, "utf8")).toBe(unsupportedText);
   const invalid = join(directory, "invalid.json");
   writeFileSync(invalid, '{"name":"bad"}');
   chosen = [invalid];
   await fileCommand(page, "Open Existing Project…");
   await expect(page.locator(".error-banner")).toContainText("missing field");
-  await expect(page.locator(".project-title")).toContainText("Legacy project");
+  await expect(page.locator(".project-title")).toContainText("First project");
   await expect(page.locator(".cm-content")).toContainText("module top");
   await page.getByRole("button", { name: "Dismiss", exact: true }).click();
   chosen = null;
   await fileCommand(page, "Open Existing Project…");
-  await expect(page.locator(".project-title")).toContainText("Legacy project");
+  await expect(page.locator(".project-title")).toContainText("First project");
   const other = join(directory, "other");
   mkdirSync(other);
   writeFileSync(join(other, "top.v"), "module second; endmodule\n");
   writeFileSync(
     join(other, "hdlview.project.json"),
     JSON.stringify({
-      schema_version: 2,
+      schema_version: 3,
       name: "Other project",
-      project_language: "system_verilog",
       top: "second",
       sources: [{ path: "top.v", language: "verilog" }],
     }),
@@ -976,7 +968,6 @@ test("File menu, cancellable creation, independent source groups, and project cl
   ]);
   expect(stored.simulation_headers).toEqual(["inputs/defs.svh"]);
   expect(stored.schema_version).toBe(3);
-  expect(stored.project_language).toBeUndefined();
   for (const [group, file] of [
     ["Design Sources", "design.sv"],
     ["Simulation Sources", "tb.sv"],
@@ -1051,16 +1042,14 @@ test("opening each project restores only its own schematic and matching waveform
     writeFileSync(
       paths[name],
       JSON.stringify({
-        schema_version: 2,
+        schema_version: 3,
         name: `Project ${name}`,
-        project_language: "system_verilog",
         technology: name === "a" ? "sky130" : "ihp_sg13g2",
         top: "top",
         sources: [{ path: "top.sv", language: "system_verilog" }],
         simulation_sources: ["tb.sv"],
         simulations: {
           rtl: {
-            stage: "rtl",
             simulator: "icarus",
             top: "tb",
             dut_scope: ["tb", "dut"],
@@ -1161,7 +1150,7 @@ test("opening each project restores only its own schematic and matching waveform
   });
 });
 
-test("one unchanged testbench configuration runs RTL and generic gates", async ({
+test("a testbench configuration runs on RTL unchanged and offers no timing run", async ({
   page,
 }) => {
   const directory = mkdtempSync(join(tmpdir(), "hdlview shared testbench "));
@@ -1174,15 +1163,13 @@ test("one unchanged testbench configuration runs RTL and generic gates", async (
   writeFileSync(
     config,
     JSON.stringify({
-      schema_version: 2,
+      schema_version: 3,
       name: "Shared testbench",
       top: "counter",
       sources: [{ path: "counter.sv", language: "system_verilog" }],
       simulation_sources: ["tb.sv"],
-      gate_simulation_sources: ["tb.sv"],
       simulations: {
         shared: {
-          stage: "rtl",
           simulator: "icarus",
           top: "tb",
           dut_scope: ["tb", "dut"],
@@ -1225,40 +1212,32 @@ test("one unchanged testbench configuration runs RTL and generic gates", async (
   await expect(
     page.getByRole("dialog", { name: "Classify Simulation Sources" }),
   ).toHaveCount(0);
-  await fileCommand(page, "Save Project");
-  await expect
-    .poll(() => JSON.parse(readFileSync(config, "utf8")).schema_version)
-    .toBe(3);
-  const saved = JSON.parse(readFileSync(config, "utf8"));
-  expect(saved.simulation_sources).toEqual(["tb.sv"]);
-  expect(saved.gate_simulation_sources).toBeUndefined();
-  expect(saved.simulations.shared.stage).toBeUndefined();
-  for (const stage of ["Elaborated RTL", "Generic gates"]) {
-    await page.getByRole("button", { name: stage, exact: true }).click();
-    await page
-      .getByRole("button", { name: "Build schematic", exact: true })
-      .click();
-    await expect(page.getByLabel("Schematic", { exact: true })).toBeVisible({
-      timeout: 30000,
-    });
-    await expect(
-      page.getByRole("button", { name: "Run simulation" }),
-    ).toBeEnabled({ timeout: 30000 });
-    await expect(page.getByLabel("Simulation configuration")).toHaveValue(
-      "shared",
-    );
-    await expect(
-      page.getByRole("option", { name: "timing", exact: true }),
-    ).toBeDisabled();
-    await page.getByRole("button", { name: "Run simulation" }).click();
-    await expect(page.locator(".wave-panel")).toBeVisible({
-      timeout: 30000,
-    });
-    await expect(page.locator(".error-banner")).toBeHidden();
-    await page
-      .getByRole("button", { name: "Close waveform session", exact: true })
-      .click();
-  }
+  await page
+    .getByRole("button", { name: "Elaborated RTL", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Build schematic", exact: true })
+    .click();
+  await expect(page.getByLabel("Schematic", { exact: true })).toBeVisible({
+    timeout: 30000,
+  });
+  await expect(
+    page.getByRole("button", { name: "Run simulation" }),
+  ).toBeEnabled({ timeout: 30000 });
+  await expect(page.getByLabel("Simulation configuration")).toHaveValue(
+    "shared",
+  );
+  await expect(
+    page.getByRole("option", { name: "timing", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "Run simulation" }).click();
+  await expect(page.locator(".wave-panel")).toBeVisible({
+    timeout: 30000,
+  });
+  await expect(page.locator(".error-banner")).toBeHidden();
+  await page
+    .getByRole("button", { name: "Close waveform session", exact: true })
+    .click();
   expect(readFileSync(join(directory, "tb.sv"))).toEqual(originalTestbench);
 });
 
@@ -2249,7 +2228,7 @@ test("project settings configure simulations without JSON and preserve drafts th
   expect(errors).toEqual([]);
 });
 
-test("professional symbols, source detail, themes and export preserve the bound workspace", async ({
+test("professional symbols, group detail, themes and export preserve the bound workspace", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -2287,11 +2266,7 @@ test("professional symbols, source detail, themes and export preserve the bound 
     profile,
   );
   async function openStage(stage: string) {
-    const label = {
-      source: "Source RTL",
-      elaborated: "Elaborated RTL",
-      generic: "Generic gates",
-    }[stage];
+    const label = { elaborated: "Elaborated RTL" }[stage];
     if (!label) throw new Error("Unknown test stage");
     await page.getByRole("button", { name: label, exact: true }).click();
     await page
@@ -2357,34 +2332,6 @@ test("professional symbols, source detail, themes and export preserve the bound 
   await page.getByLabel("Show compiler nodes").uncheck();
   await page.keyboard.press("Escape");
   await expect(page.locator('[data-symbol="encoder"]')).toHaveCount(1);
-  await openStage("source");
-  await expect(page.locator('[data-symbol="function"]')).toHaveCount(1);
-  await expect(page.locator('[data-symbol="task"]')).toHaveCount(1);
-  await page
-    .getByRole("button", { name: /^Open AlwaysComb_.* details$/, exact: true })
-    .click();
-  await expect(
-    page.getByRole("button", { name: "Back to parent schematic" }),
-  ).toBeVisible();
-  await expect(page.locator(".layout-indicator")).toBeHidden();
-  await expect(page.locator(".edge.control_flow").first()).toBeVisible();
-  await expect(page.locator(".edge.control_flow").first()).toHaveAttribute(
-    "marker-end",
-    "url(#arrow-control_flow)",
-  );
-  await expect(page.locator(".edge.dependency").first()).toBeVisible();
-  await page
-    .getByRole("button", { name: "Open accumulate details", exact: true })
-    .click();
-  await expect(page.locator(".layout-indicator")).toBeHidden();
-  await expect(page.locator('[data-symbol="assignment"]')).toHaveCount(1);
-  await page.getByRole("button", { name: "Back to parent schematic" }).click();
-  await expect(page.locator('[data-symbol="task"]')).toHaveCount(1);
-  await page.getByRole("button", { name: "Back to parent schematic" }).click();
-  await openStage("generic");
-  expect(
-    await page.locator('[data-symbol="register"]').count(),
-  ).toBeGreaterThan(0);
   await page.getByRole("button", { name: "Run simulation" }).click();
   await expect(page.locator(".wave-panel")).toBeVisible({
     timeout: 30000,

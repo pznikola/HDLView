@@ -44,7 +44,10 @@ pub struct Runner {
 }
 pub fn resolve_profile(mut profile: ToolchainProfile) -> Result<ToolchainProfile> {
     if matches!(profile.provider, Provider::Docker) {
-        let image = profile.image.clone().unwrap_or_else(|| IMAGE.into());
+        let image = profile
+            .image
+            .clone()
+            .context("A Docker profile needs an image")?;
         let output = Command::new(profile.exe("docker"))
             .args(["image", "inspect", "--format", "{{.Id}}", &image])
             .output()
@@ -152,7 +155,10 @@ impl Runner {
                 a.extend([
                     "--entrypoint".into(),
                     exe,
-                    self.profile.image.clone().unwrap_or_else(|| IMAGE.into()),
+                    self.profile
+                        .image
+                        .clone()
+                        .context("A Docker profile needs an image")?,
                 ]);
                 a.extend_from_slice(args);
                 (self.profile.exe("docker"), a)
@@ -237,7 +243,6 @@ impl Runner {
             ("yosys", vec!["-V"]),
             ("iverilog", vec!["-V"]),
             ("verilator", vec!["--version"]),
-            ("slang", vec!["--version"]),
             ("verible-verilog-lint", vec!["--version"]),
             ("python3", vec!["-c", "import pyslang; from importlib.metadata import version; installed = version('pyslang'); assert installed == '10.0.0', f'Configured Python has pyslang {installed}; HDLView requires 10.0.0. Update the selected tools image or native Python environment.'; assert hasattr(pyslang.Driver, 'runAnalysis') and hasattr(pyslang.SourceManager, 'getFullyOriginalLoc'); print('pyslang', installed)"]),
             ("librelane", vec!["--version"]),

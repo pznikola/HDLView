@@ -25,7 +25,7 @@ pub fn simulate(
     name: &str,
     cancel: CancelToken,
 ) -> Result<SimulationRun> {
-    validate_project(&snapshot.project)?;
+    validate_captured(&snapshot.project)?;
     let cfg = snapshot
         .project
         .simulations
@@ -93,27 +93,15 @@ pub fn simulate(
     let mut models = cfg
         .models
         .iter()
-        .map(|p| {
-            if p.path().is_absolute() {
-                p.path().to_path_buf()
-            } else {
-                inputs.join(p)
-            }
-        })
+        .map(|p| inputs.join(p))
         .collect::<Vec<_>>();
     if !gate {
         models.clear();
     }
     if gate && models.is_empty() {
         if let Some(p) = &snapshot.project.physical {
-            if snapshot.representation != Representation::Generic {
-                models = model_files(&snapshot.profile, p)?;
-            }
+            models = model_files(&snapshot.profile, p)?;
         }
-    }
-    if gate && snapshot.representation == Representation::Generic {
-        let data = r.run("yosys-config", &["--datdir".into()], &dir, "yosys-data")?;
-        models.push(PathBuf::from(data.trim()).join("simcells.v"));
     }
     files.extend(models.clone());
     let mut defines = snapshot.project.defines.clone();
@@ -130,96 +118,94 @@ pub fn simulate(
     }
     let mut diagnostics = Vec::new();
     let mut dut_scope = cfg.dut_scope.clone();
-    let log = match cfg.simulator {
-        Simulator::Icarus | Simulator::Verilator => {
-            // A generated top wraps the user's testbench without changing its source.
-            if cfg.dut_scope.first() != Some(&cfg.top) {
-                bail!("DUT scope must begin with the testbench top")
+    let log = {
+        // A generated top wraps the user's testbench without changing its source.
+        if cfg.dut_scope.first() != Some(&cfg.top) {
+            bail!("DUT scope must begin with the testbench top")
+        }
+        let target = cfg.dut_scope.join(".");
+        dut_scope.insert(0, "hdlview_sim".into());
+        let specialization = if gate {
+            String::new()
+        } else {
+            rtl_parameter_overrides(&snapshot.project, cfg)?
+        };
+        let annotation = sdf
+            .as_ref()
+            .map(|p| {
+                format!(
+                    "$sdf_annotate({}, {target});",
+                    verilog_string(&p.to_string_lossy())
+                )
+            })
+            .unwrap_or_default();
+        let harness=format!("`timescale 1ns/1ps\nmodule hdlview_sim;\n  {} {}();\n{specialization}  initial begin\n    $dumpfile({});\n    $dumpvars(0, {});\n    {}\n    #({}) $finish;\n  end\nendmodule\n",cfg.top,cfg.top,verilog_string(&trace.to_string_lossy()),target,annotation,cfg.stop_time);
+        let harnesspath = dir.join("hdlview_sim.sv");
+        fs::write(&harnesspath, harness)?;
+        files.push(harnesspath);
+        let mut incargs = Vec::new();
+        for d in &snapshot.project.include_dirs {
+            incargs.push(format!("-I{}", inputs.join(d).display()));
+        }
+        for m in &models {
+            if let Some(d) = m.parent() {
+                incargs.push(format!("-I{}", d.display()));
             }
-            let target = cfg.dut_scope.join(".");
-            dut_scope.insert(0, "hdlview_sim".into());
-            let specialization = if gate {
-                String::new()
-            } else {
-                rtl_parameter_overrides(&snapshot.project, cfg)?
-            };
-            let annotation = sdf
-                .as_ref()
-                .map(|p| {
-                    format!(
-                        "$sdf_annotate({}, {target});",
-                        verilog_string(&p.to_string_lossy())
-                    )
-                })
-                .unwrap_or_default();
-            let harness=format!("`timescale 1ns/1ps\nmodule hdlview_sim;\n  {} {}();\n{specialization}  initial begin\n    $dumpfile({});\n    $dumpvars(0, {});\n    {}\n    #({}) $finish;\n  end\nendmodule\n",cfg.top,cfg.top,verilog_string(&trace.to_string_lossy()),target,annotation,cfg.stop_time);
-            let harnesspath = dir.join("hdlview_sim.sv");
-            fs::write(&harnesspath, harness)?;
-            files.push(harnesspath);
-            let mut incargs = Vec::new();
-            for d in &snapshot.project.include_dirs {
-                incargs.push(format!("-I{}", inputs.join(d).display()));
-            }
-            for m in &models {
-                if let Some(d) = m.parent() {
-                    incargs.push(format!("-I{}", d.display()));
+        }
+        for (k, v) in &defines {
+            identifier(k)?;
+            incargs.push(format!("-D{k}={v}"));
+        }
+        if cfg.simulator == Simulator::Icarus {
+            let mut args = vec![
+                "-g2012".into(),
+                "-s".into(),
+                "hdlview_sim".into(),
+                "-o".into(),
+                dir.join("sim.vvp").to_string_lossy().into(),
+            ];
+            if sdf.is_some() {
+                args.extend(["-gspecify".into(), "-ginterconnect".into()]);
+                let corner = cfg
+                    .delay_selection
+                    .as_deref()
+                    .unwrap_or(if cfg.use_snapshot_sdf { "max" } else { "typ" });
+                if ["min", "typ", "max"].contains(&corner) {
+                    args.push(format!("-T{corner}"));
                 }
             }
-            for (k, v) in &defines {
-                identifier(k)?;
-                incargs.push(format!("-D{k}={v}"));
+            args.extend(incargs);
+            args.extend(files.iter().map(|p| p.to_string_lossy().into_owned()));
+            let compile = r.run("iverilog", &args, &dir, "iverilog-compile")?;
+            diagnostics.extend(diagnostics_from_log(&compile));
+            let mut args = vec![dir.join("sim.vvp").to_string_lossy().into_owned()];
+            if sdf.is_some() {
+                args.push("-sdf-verbose".into());
             }
-            if cfg.simulator == Simulator::Icarus {
-                let mut args = vec![
-                    "-g2012".into(),
-                    "-s".into(),
-                    "hdlview_sim".into(),
-                    "-o".into(),
-                    dir.join("sim.vvp").to_string_lossy().into(),
-                ];
-                if sdf.is_some() {
-                    args.extend(["-gspecify".into(), "-ginterconnect".into()]);
-                    let corner = cfg
-                        .delay_selection
-                        .as_deref()
-                        .unwrap_or(if cfg.use_snapshot_sdf { "max" } else { "typ" });
-                    if ["min", "typ", "max"].contains(&corner) {
-                        args.push(format!("-T{corner}"));
-                    }
-                }
-                args.extend(incargs);
-                args.extend(files.iter().map(|p| p.to_string_lossy().into_owned()));
-                let compile = r.run("iverilog", &args, &dir, "iverilog-compile")?;
-                diagnostics.extend(diagnostics_from_log(&compile));
-                let mut args = vec![dir.join("sim.vvp").to_string_lossy().into_owned()];
-                if sdf.is_some() {
-                    args.push("-sdf-verbose".into());
-                }
-                args.extend(cfg.args.clone());
-                r.run("vvp", &args, &dir, "icarus-simulate")?
-            } else {
-                let mut args = vec![
-                    "--binary".into(),
-                    "--timing".into(),
-                    "--trace".into(),
-                    "--trace-structs".into(),
-                    "--top-module".into(),
-                    "hdlview_sim".into(),
-                    "--Mdir".into(),
-                    dir.join("obj").to_string_lossy().into(),
-                    "-Wno-fatal".into(),
-                ];
-                args.extend(incargs);
-                args.extend(files.iter().map(|p| p.to_string_lossy().into_owned()));
-                let log = r.run("verilator", &args, &dir, "verilator-compile")?;
-                diagnostics.extend(diagnostics_from_log(&log));
-                r.run(
-                    &dir.join("obj/Vhdlview_sim").to_string_lossy(),
-                    &cfg.args,
-                    &dir,
-                    "verilator-simulate",
-                )?
-            }
+            args.extend(cfg.args.clone());
+            r.run("vvp", &args, &dir, "icarus-simulate")?
+        } else {
+            let mut args = vec![
+                "--binary".into(),
+                "--timing".into(),
+                "--trace".into(),
+                "--trace-structs".into(),
+                "--top-module".into(),
+                "hdlview_sim".into(),
+                "--Mdir".into(),
+                dir.join("obj").to_string_lossy().into(),
+                "-Wno-fatal".into(),
+            ];
+            args.extend(incargs);
+            args.extend(files.iter().map(|p| p.to_string_lossy().into_owned()));
+            let log = r.run("verilator", &args, &dir, "verilator-compile")?;
+            diagnostics.extend(diagnostics_from_log(&log));
+            r.run(
+                &dir.join("obj/Vhdlview_sim").to_string_lossy(),
+                &cfg.args,
+                &dir,
+                "verilator-simulate",
+            )?
         }
     };
     diagnostics.extend(diagnostics_from_log(&log));
@@ -467,13 +453,13 @@ mod tests {
             "project":{"schema_version":3,"name":"SDF","top":"top","sources":[],
                 "simulations":{"shared":{"simulator":"icarus","top":"tb","dut_scope":["tb","dut"],"testbench":[],"sdf":"delay.sdf"}}},
             "profile":ToolchainProfile::default(),"design":{"modules":{},"scopes":[]},
-            "diagnostics":[],"tool_versions":{},"input_hashes":{},"netlist":null
+            "diagnostics":[],"tool_versions":{},"input_hashes":{},"artifact_hashes":{},"source_origins":{},"netlist":null,"sdf":{}
         })).unwrap();
         assert!(simulate(&snapshot, "shared", CancelToken::default())
             .unwrap_err()
             .to_string()
             .contains("gate snapshot"));
-        snapshot.representation = Representation::Generic;
+        snapshot.representation = Representation::Mapped;
         snapshot
             .project
             .simulations

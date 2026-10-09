@@ -53,7 +53,7 @@ pub(crate) fn contains_dut(path: &Path, dut_scope: &[String]) -> Result<bool> {
 fn check_format(path: &Path) -> Result<()> {
     let mut input = std::io::BufReader::new(std::fs::File::open(path)?);
     if viewers::detect_file_format(&mut input) == FileFormat::Ghw {
-        bail!("GHW waveforms are no longer supported; import VCD or FST")
+        bail!("Unsupported waveform format; import VCD or FST")
     }
     Ok(())
 }
@@ -338,14 +338,12 @@ pub fn prepare_import(
 mod tests {
     use super::*;
     #[test]
-    fn ghw_is_rejected_even_with_a_vcd_filename() {
+    fn an_unsupported_format_is_rejected_even_with_a_vcd_filename() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("renamed.vcd");
         std::fs::write(&path, b"GHDLwave\n\x10\x00\x01\x01\x04\x04\x00").unwrap();
         let error = WaveStore::open(&path).err().unwrap();
-        assert!(error
-            .to_string()
-            .contains("GHW waveforms are no longer supported"));
+        assert!(error.to_string().contains("Unsupported waveform format"));
     }
     #[test]
     fn vcd_alias_and_large_time() {
