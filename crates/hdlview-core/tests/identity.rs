@@ -17,7 +17,7 @@ fn fixture() -> (DesignSnapshot, SimulationRun, WaveInfo) {
             index: Some((7, 4)),
         }],
         end_time: "100".into(),
-        timescale: "1ns".into(),
+        timescale: None,
     };
     (snapshot, run, info)
 }

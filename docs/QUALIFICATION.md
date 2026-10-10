@@ -77,6 +77,34 @@ minimap and **Show selection**.
 - Not run: selection from a waveform trace on this sheet (same code path as the signal
   list, different origin), and anything in the Tauri window.
 
+## Waveform navigation, saved trace list and measurement
+
+10 October 2026, counter fixture, native toolchain, Chromium through the browser suite.
+
+- **Next edge** from the start of the trace put the cursor on 5 ns and then 10 ns of the
+  5 ns half-period clock, **Previous edge** returned to 5 ns, and the value column showed
+  `1` then `0` for the clock. The same times read `5000 ps` with the unit set to ps.
+- Shift+click on the ruler moved cursor B; the times of A and B and their difference
+  are always in the toolbar.
+- Ctrl+wheel changed the window and one new `wave_window` followed; a left drag zoomed to
+  the dragged range without moving the cursor. A plain click still causes no
+  `wave_window` (existing check).
+- A per-row radix, a renamed divider, the cursor and the expanded rows were all present
+  after reloading the page and reopening the project. **Set B** put cursor B on A
+  (difference 0); cursor A then followed a drag along the ruler, and one clock half-period
+  from B read `Δ 5 ns · 200 MHz`. With B chosen, **Next edge** moved B to 10 ns and left
+  A at 5 ns. Alt+Down moved
+  the selected row and dragging its name moved it back.
+- Unit tests cover exact time text above 2^53 ticks, ruler steps, zoom about an anchor,
+  pan limits, the saved list (including damaged entries) and the new radixes. Rust tests
+  cover the edge query on a scalar and on one bit of a vector, with a repeated value in
+  the dump, and the parsed timescale.
+- Not run: the trace list carried across a second simulation run (it is read by the same
+  code as after a reload, but only the reload was exercised); middle-button pan, the
+  name-column resize, dragging B by its flag and colours; `wave_edge` on a
+  joined gate vector of `17_afifo`; pinch zoom and wheel smoothness in the Tauri
+  (WebKitGTK) window; traces larger than the fixture.
+
 ## Example testbenches without their own dump
 
 10 October 2026. The 18 bundled testbenches no longer call `$dumpfile` and

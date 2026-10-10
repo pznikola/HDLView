@@ -87,10 +87,12 @@ impl WaveStore {
         let info = WaveInfo {
             variables,
             end_time: body.time_table.last().copied().unwrap_or(0).to_string(),
-            timescale: h
-                .timescale()
-                .map(|t| format!("{} {:?}", t.factor, t.unit))
-                .unwrap_or_else(|| "unspecified".into()),
+            timescale: h.timescale().and_then(|t| {
+                Some(Timescale {
+                    factor: t.factor,
+                    exponent: t.unit.to_exponent()?,
+                })
+            }),
         };
         Ok(Self {
             hierarchy: h,
@@ -102,19 +104,8 @@ impl WaveStore {
             requests: 0,
         })
     }
-    pub fn window(
-        &mut self,
-        ids: &[u32],
-        start: u64,
-        end: u64,
-        pixels: usize,
-    ) -> Result<Vec<WaveRow>> {
-        if ids.len() > 256 {
-            bail!("Request at most 256 visible signals")
-        }
-        if start > end {
-            bail!("Invalid time interval")
-        }
+    /// Decode the signals a request needs and forget the least recently used.
+    fn load(&mut self, ids: &[u32]) -> Result<Vec<WSignalRef>> {
         let refs: Vec<_> = ids
             .iter()
             .map(|i| {
@@ -146,6 +137,56 @@ impl WaveStore {
             let oldest_kept = uses[LOADED_SIGNALS - 1];
             self.loaded.retain(|_, (used, _)| *used >= oldest_kept);
         }
+        Ok(refs)
+    }
+    /// The nearest time after or before `time` at which a variable changes value.
+    /// `bit` limits this to one character of the value as printed, leftmost first.
+    pub fn edge(
+        &mut self,
+        id: u32,
+        time: u64,
+        forward: bool,
+        bit: Option<usize>,
+    ) -> Result<Option<u64>> {
+        let r = self.load(&[id])?[0];
+        let Some((_, sig)) = self.loaded.get(&r) else {
+            return Ok(None);
+        };
+        let indices = sig.time_indices();
+        let value = |position: usize| {
+            let offset = sig.get_offset(indices[position]).unwrap();
+            let text = sig.get_value_at(&offset, 0).to_string();
+            match bit {
+                Some(bit) => text.chars().nth(bit).map(String::from).unwrap_or_default(),
+                None => text,
+            }
+        };
+        // A dump may repeat a value, so a recorded entry is an edge only when it differs.
+        let changed = |position: usize| position == 0 || value(position) != value(position - 1);
+        let at = |position: usize| self.times[indices[position] as usize];
+        let found = if forward {
+            let first = indices.partition_point(|i| self.times[*i as usize] <= time);
+            (first..indices.len()).find(|p| changed(*p))
+        } else {
+            let end = indices.partition_point(|i| self.times[*i as usize] < time);
+            (0..end).rev().find(|p| changed(*p))
+        };
+        Ok(found.map(at))
+    }
+    pub fn window(
+        &mut self,
+        ids: &[u32],
+        start: u64,
+        end: u64,
+        pixels: usize,
+    ) -> Result<Vec<WaveRow>> {
+        if ids.len() > 256 {
+            bail!("Request at most 256 visible signals")
+        }
+        if start > end {
+            bail!("Invalid time interval")
+        }
+        let refs = self.load(ids)?;
         let pixels = pixels.clamp(1, 8192) as u128;
         let span = (end as u128 - start as u128).max(1);
         Ok(ids
@@ -455,5 +496,28 @@ mod tests {
         assert_eq!(shown, [("0", "0"), ("9", "activity:1"), ("1000", "0")]);
         w.values(&[1], 1000).unwrap();
         assert_eq!(w.loaded.len(), 2);
+    }
+    #[test]
+    fn an_edge_is_the_nearest_change_of_the_variable_or_of_one_of_its_bits() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("test.vcd");
+        std::fs::write(&p, "$timescale 10 ns $end\n$scope module tb $end\n$var wire 1 ! a $end\n$var wire 2 \" v [1:0] $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\nb00 \"\n#5\n1!\nb01 \"\n#7\n1!\nb11 \"\n#9\n0!\nb10 \"\n").unwrap();
+        let mut w = WaveStore::open(&p).unwrap();
+        assert_eq!(
+            w.info.timescale,
+            Some(Timescale {
+                factor: 10,
+                exponent: -9
+            })
+        );
+        // The value repeated at 7 is not a change.
+        assert_eq!(w.edge(0, 5, true, None).unwrap(), Some(9));
+        assert_eq!(w.edge(0, 9, false, None).unwrap(), Some(5));
+        assert_eq!(w.edge(0, 9, true, None).unwrap(), None);
+        assert_eq!(w.edge(1, 0, true, None).unwrap(), Some(5));
+        // The left bit of `v` first changes at 7, the right one at 5 and again at 9.
+        assert_eq!(w.edge(1, 0, true, Some(0)).unwrap(), Some(7));
+        assert_eq!(w.edge(1, 5, true, Some(1)).unwrap(), Some(9));
+        assert_eq!(w.edge(1, 9, false, Some(0)).unwrap(), Some(7));
     }
 }

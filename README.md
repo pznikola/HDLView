@@ -87,7 +87,7 @@ Use **Sources**, **Design**, and **Inspector** to choose the left sidebar view. 
 
 **Waveforms**, **Logs**, and **Problems** share a panel across the full window width. Choose a tab to open it, or use its collapse button to give the upper panes more space. A successful simulation opens Waveforms. Switching tabs preserves waveform rows, cursor, zoom and radix; each view scrolls independently. Drag the sidebar, editor, or bottom-panel dividers to resize them. Focus a divider and use arrow keys, or Home/End for its limits. The sidebar stays between 224 and 420 pixels, leaving at least 360 pixels beside it on supported window sizes. The bottom panel defaults to 35%, with a 140-pixel minimum and limits that leave at least 260 pixels above it. The editor/schematic split stays within 20–80%, reserving 200/320 pixels respectively when space permits. Pane sizes start with defaults when reopening a project.
 
-**File → Open Existing Project…** selects JSON using the native picker and automatically reopens that project's last valid schematic and matching waveform. There is no separate Restore Session command. Restoration is local to this machine and the configuration's canonical path; tabs, pane sizes, scope, waveform cursor/zoom, and row selection start with defaults. Missing/corrupted artifacts produce warnings; changed working inputs retain the old immutable schematic with a rebuild indication. Opening never compiles or simulates automatically. **Close Project** leaves sources and artifacts on disk.
+**File → Open Existing Project…** selects JSON using the native picker and automatically reopens that project's last valid schematic and matching waveform. There is no separate Restore Session command. Restoration is local to this machine and the configuration's canonical path; tabs, pane sizes, scope and row selection start with defaults; the waveform trace list and view are kept (see Waveforms below). Missing/corrupted artifacts produce warnings; changed working inputs retain the old immutable schematic with a rebuild indication. Opening never compiles or simulates automatically. **Close Project** leaves sources and artifacts on disk.
 
 Registered external roots appear as `@root/path`; include settings accept project-relative paths or that notation. Folder rescans preserve manual compilation order; filelist reimports apply reviewed order and retain source/header roles. Project files use schema 3 only; a file of another schema version or with unknown fields is rejected, and opening it leaves the current workspace intact. Schematics and waveforms built by an earlier HDLView version are not read: the project opens without a schematic until the design is built again.
 
@@ -145,6 +145,40 @@ without selection overlays. The desktop opens a native Save dialog; the browser 
 the SVG. Try `examples/08_alu/hdlview.project.json` for arithmetic and logic, or
 `examples/16_mem/hdlview.project.json` for memory. The internal schematic gallery
 fixture is `tests/fixtures/schematic/hdlview.project.json`.
+
+### Waveforms
+
+The trace list is yours to arrange and is kept on this machine for each project, stage and
+testbench: a new simulation run or reopening the project shows the same rows in the same
+order, with their radix, colour, expanded buses and dividers, and the same window, cursors,
+time unit and name-column width. A saved row whose signal is not in the new trace
+stays in the list, greyed. Only a project with no saved list starts with the first twelve
+signals of the DUT.
+
+- **Moving in time.** Ctrl+wheel (or pinch) zooms around the pointer, Shift+wheel or a
+  sideways scroll pans, a middle-button drag pans, and dragging with the left button zooms
+  to the dragged range. The plain wheel scrolls the rows. **Zoom in**, **Zoom out** and
+  **Full trace** remain. The ruler above the traces shows round times in the chosen
+  **Time unit** (automatic by default, or s to fs, or raw ticks).
+- **Cursors.** A click sets the cursor and lands on a change of the clicked row when one
+  is within a few pixels; a click on the ruler sets it exactly. Shift+click sets a second
+  cursor **B**, and **Set B** (key `B`) puts B where A is so that you can then move A
+  and measure from there. Press on the ruler and drag to slide A along it; drag B by its
+  flag, or with Shift. The toolbar always shows the times of A and B, their difference
+  and the matching frequency. **Previous edge** and **Next edge** (and the Left/Right keys) move the cursor that was
+  moved or chosen last, A or B (click its time in the toolbar to choose it; it is the
+  outlined one), to the nearest change of
+  the selected row (of the clicked bit for an expanded bus) and bring it into the window.
+- **Values.** Each row shows its value at the cursor beside its name. The toolbar
+  **Radix** (hex, binary, octal, unsigned, signed, ASCII, float for 32 and 64 bit values)
+  applies to every row without its own; right-click a row to give it its own radix or
+  colour. A pixel that holds several changes is drawn as a filled bar.
+- **Rows.** Drag a name to reorder; right-click for **Add divider above** and **Remove**;
+  double-click a divider to rename it. Drag the edge of the name column to widen it, or
+  clear **Full paths** to show only the last part of each name.
+- **Keys** (with the waveform focused): Left/Right previous/next edge, Shift+Left/Right
+  pan, Up/Down select a row, Alt+Up/Down move it, `+`/`-` zoom, `F` full trace, `B` put
+  cursor B on A, Delete remove the row.
 
 HDLView generates waveform instrumentation without editing the testbench. If a testbench
 uses its own `$dumpfile`, HDLView accepts the sole VCD/FST in that new run directory with

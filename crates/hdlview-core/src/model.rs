@@ -406,11 +406,17 @@ pub struct WaveVariable {
     pub width: u32,
     pub index: Option<(i64, i64)>,
 }
+/// One tick of a trace lasts `factor` × 10^`exponent` seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Timescale {
+    pub factor: u32,
+    pub exponent: i8,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WaveInfo {
     pub variables: Vec<WaveVariable>,
     pub end_time: String,
-    pub timescale: String,
+    pub timescale: Option<Timescale>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transition {

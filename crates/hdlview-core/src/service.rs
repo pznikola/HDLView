@@ -657,6 +657,25 @@ impl Service {
                         .info
                 ))
             }
+            "wave_edge" => {
+                let wave = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .waves
+                    .get(string("run_id")?)
+                    .context("Open a waveform")?
+                    .process
+                    .clone();
+                let mut wave = wave.lock().unwrap_or_else(|e| e.into_inner());
+                let edge = wave.edge(
+                    v["id"].as_u64().context("id required")? as u32,
+                    string("time")?.parse()?,
+                    string("direction")? == "next",
+                    v["bit"].as_u64().map(|bit| bit as usize),
+                )?;
+                Ok(json!(edge.map(|time| time.to_string())))
+            }
             "wave_window" | "wave_values" => {
                 let wave = self
                     .state

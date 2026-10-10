@@ -139,7 +139,7 @@ test("schematic and waveform selections preserve instance identity and stage bin
   await page
     .getByLabel("Waveform traces")
     .click({ position: { x: 320, y: 15 } });
-  await expect(page.locator(".cursor-label")).not.toHaveText("Cursor 0");
+  await expect(page.locator(".cursor-label")).not.toHaveText("A 0");
   await expect
     .poll(() => calls.filter((action) => action === "wave_values").length)
     .toBeGreaterThan(0);
@@ -202,13 +202,16 @@ test("schematic and waveform selections preserve instance identity and stage bin
     timeout: 20000,
   });
   await expect(page.locator(".nodebox").first()).toBeVisible();
+  const waveScroll = page.locator(".wave-scroll");
+  await waveScroll.evaluate((element) => {
+    element.scrollTop = 0;
+  });
   await page
     .getByRole("button", {
       name: "Expand hdlview_sim.tb.dut.slow",
       exact: true,
     })
     .click();
-  const waveScroll = page.locator(".wave-scroll");
   await waveScroll.hover();
   await page.mouse.wheel(0, -1000);
   await expect
@@ -279,6 +282,105 @@ test("schematic and waveform selections preserve instance identity and stage bin
       () => performance.getEntriesByName("hdlview-layout-worker").length,
     ),
   ).toBe(resizeWorkers);
+  // Edges, the second cursor and the value at the cursor.
+  const ruler = page.getByLabel("Time ruler");
+  const clock = page.locator(".wave-name").filter({ hasText: "dut.clk" });
+  const span = page.locator(".wave-toolbar > span").last();
+  const whole = await span.textContent();
+  await clock.click();
+  await ruler.click({ position: { x: 265, y: 10 } });
+  await page.getByRole("button", { name: "Next edge" }).click();
+  await expect(page.locator(".cursor-label")).toHaveText("A 5 ns");
+  await expect(clock.locator("output")).toHaveText("1");
+  await page.getByRole("button", { name: "Next edge" }).click();
+  await expect(page.locator(".cursor-label")).toHaveText("A 10 ns");
+  await expect(clock.locator("output")).toHaveText("0");
+  await ruler.click({ position: { x: 242, y: 10 }, modifiers: ["Shift"] });
+  await expect(page.locator(".delta-label")).not.toHaveText("B 0");
+  await page.locator(".cursor-label").click();
+  await page.getByRole("button", { name: "Previous edge" }).click();
+  await expect(page.locator(".cursor-label")).toHaveText("A 5 ns");
+  await page.getByLabel("Time unit").selectOption("ps");
+  await expect(page.locator(".cursor-label")).toHaveText("A 5000 ps");
+  await page.getByLabel("Time unit").selectOption("auto");
+  // The window follows the wheel and a dragged range, and asks for its rows again.
+  const traces = page.getByLabel("Waveform traces");
+  const zoomWindows = calls.filter((a) => a === "wave_window").length;
+  await traces.hover({ position: { x: 500, y: 10 } });
+  await page.keyboard.down("Control");
+  await page.mouse.wheel(0, -300);
+  await page.keyboard.up("Control");
+  await expect(span).not.toHaveText(whole ?? "");
+  await expect
+    .poll(() => calls.filter((a) => a === "wave_window").length)
+    .toBeGreaterThan(zoomWindows);
+  await page.getByRole("button", { name: "Full trace" }).click();
+  await expect(span).toHaveText(whole ?? "");
+  const box = (await traces.boundingBox())!;
+  await page.mouse.move(box.x + 400, box.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 600, box.y + 10, { steps: 4 });
+  await page.mouse.up();
+  await expect(span).not.toHaveText(whole ?? "");
+  await expect(page.locator(".cursor-label")).toHaveText("A 5 ns");
+  await page.getByRole("button", { name: "Full trace" }).click();
+  // A radix and a divider belong to the saved trace list.
+  await waveScroll.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  const bus = await page
+    .locator(".wave-name")
+    .filter({ hasText: "[3:0]" })
+    .first()
+    .getAttribute("title");
+  const row = page.locator(`.wave-name[title="${bus}"]`).first();
+  await row.click({ button: "right" });
+  await page.getByLabel("Radix of this trace").selectOption("bin");
+  await page.getByRole("menuitem", { name: "Add divider above" }).click();
+  await page.getByLabel("Divider name").fill("Counters");
+  await page.getByLabel("Divider name").press("Enter");
+  await expect(page.locator(".wave-name.divider")).toHaveText("×Counters");
+  await expect(row.locator("output")).toHaveText(/^[01]{4}$/);
+  // Keys act on the selected row; a row is also moved by dragging its name.
+  const firstName = page.locator(".wave-name").first();
+  await clock.click();
+  await expect(firstName).toHaveAttribute("title", /dut\.clk$/);
+  // Either cursor follows the pointer along the ruler; B is put on A to measure from it.
+  const rulerBox = (await ruler.boundingBox())!;
+  const at = (ns: number) =>
+    rulerBox.x + 240 + ((rulerBox.width - 240) * ns) / 132;
+  await page.getByRole("button", { name: "Set B" }).click();
+  await expect(page.locator(".delta-label")).toHaveText("B 5 ns");
+  await expect(page.locator(".wave-toolbar .delta")).toHaveText("Δ 0");
+  await page.mouse.move(at(5) + 2, rulerBox.y + 6);
+  await page.mouse.down();
+  await page.mouse.move(at(66), rulerBox.y + 6, { steps: 4 });
+  await expect(page.locator(".cursor-label")).not.toHaveText("A 5 ns");
+  await page.mouse.move(at(7), rulerBox.y + 6, { steps: 4 });
+  await page.mouse.up();
+  await page.getByRole("button", { name: "Previous edge" }).click();
+  await expect(page.locator(".cursor-label")).toHaveText("A 5 ns");
+  await page.getByRole("button", { name: "Next edge" }).click();
+  await expect(page.locator(".wave-toolbar .delta")).toHaveText(
+    "Δ 5 ns · 200 MHz",
+  );
+  await page.getByRole("button", { name: "Previous edge" }).click();
+  // The edge buttons move whichever cursor was chosen last.
+  await page.locator(".delta-label").click();
+  await page.getByRole("button", { name: "Next edge" }).click();
+  await expect(page.locator(".delta-label")).toHaveText("B 10 ns");
+  await expect(page.locator(".cursor-label")).toHaveText("A 5 ns");
+  await page.locator(".cursor-label").click();
+  await clock.click();
+  await page.keyboard.press("Alt+ArrowDown");
+  await expect(firstName).not.toHaveAttribute("title", /dut\.clk$/);
+  const from = (await clock.boundingBox())!;
+  const to = (await firstName.boundingBox())!;
+  await page.mouse.move(from.x + 120, from.y + 15);
+  await page.mouse.down();
+  await page.mouse.move(to.x + 120, to.y + 5, { steps: 5 });
+  await page.mouse.up();
+  await expect(firstName).toHaveAttribute("title", /dut\.clk$/);
   await waveSplitter.focus();
   await page.keyboard.press("End");
   await page.keyboard.press("ArrowUp");
@@ -309,12 +411,14 @@ test("schematic and waveform selections preserve instance identity and stage bin
   await expect(page.locator(".wave-panel")).toBeVisible({
     timeout: 15000,
   });
-  await expect(
-    page.locator(".wave-name").filter({ hasText: "fast" }).first(),
-  ).toBeVisible();
+  // The list comes back as it was left, expanded rows included.
+  await expect(row).toBeVisible();
   await expect(
     page.getByRole("separator", { name: "Bottom panel height" }),
   ).toHaveAttribute("aria-valuenow", "35");
+  await expect(page.locator(".wave-name.divider")).toHaveText("×Counters");
+  await expect(page.locator(".cursor-label")).toHaveText("A 5 ns");
+  await expect(row.locator("output")).toHaveText(/^[01]{4}$/);
   await page.getByRole("button", { name: "Close waveform session" }).click();
   await expect(page.locator(".wave-panel")).toBeHidden();
   await expect(
@@ -1129,7 +1233,7 @@ test("opening each project restores only its own schematic and matching waveform
   await expect(
     page.locator(".wave-name").filter({ hasText: "b_count" }),
   ).toHaveCount(0);
-  await expect(page.locator(".cursor-label")).toHaveText("Cursor 0");
+  await expect(page.locator(".cursor-label")).toHaveText("A 0");
   await expect(page.locator(".editor-tabs button")).toHaveCount(0);
   await expectCurrentToolchain();
   await fileCommand(page, "Close Project");

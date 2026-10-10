@@ -6,6 +6,8 @@ import { parseProfile } from "./profile";
 import { Schematic } from "./components/Schematic";
 import { readSchematicPreferences } from "./schematic-display";
 import { Waveform } from "./components/Waveform";
+import { addTraces, readTraces, writeTraces } from "./wave-layout";
+import type { Trace } from "./wave-layout";
 import { Workspace, EditorSchematic } from "./components/Workspace";
 import {
   nextSelection,
@@ -99,7 +101,7 @@ function App() {
   const [run, setRun] = useState<Run>();
   const [wave, setWave] = useState<WaveInfo>();
   const [bindings, setBindings] = useState<Binding[]>([]);
-  const [visible, setVisible] = useState<number[]>([]);
+  const [traces, setTraces] = useState<Trace[]>([]);
   const [selection, setSelection] = useState<Selection>();
   const [values, setValues] = useState<Record<number, string>>({});
   const [simulation, setSimulation] = useState("rtl");
@@ -140,7 +142,7 @@ function App() {
     setRun(undefined);
     setWave(undefined);
     setBindings([]);
-    setVisible([]);
+    setTraces([]);
     setValues({});
     setSelection(undefined);
     setInspect(undefined);
@@ -245,7 +247,7 @@ function App() {
       setRun(undefined);
       setWave(undefined);
       setBindings([]);
-      setVisible([]);
+      setTraces([]);
       setSelection(undefined);
       setFocus(undefined);
       setInspect(undefined);
@@ -264,17 +266,32 @@ function App() {
     setPanelTab("waveforms");
     setPanelOpen(true);
     setBindings(binding);
-    setVisible(
-      info.variables
-        .filter(
-          (v) =>
-            v.path.length === r.dut_scope.length + 1 &&
-            r.dut_scope.every((x, i) => v.path[i] === x),
-        )
-        .slice(0, 12)
-        .map((v) => v.id),
-    );
   }, []);
+  const waveKey = run
+    ? `${snapshot?.project_path ?? run.snapshot_id}:${run.representation}:${run.dut_scope.join(".")}`
+    : undefined;
+  // The trace list of a project, stage and testbench outlives its runs.
+  const tracesOf = useRef<string>(undefined);
+  useEffect(() => {
+    if (!waveKey || !wave || !run) return;
+    tracesOf.current = waveKey;
+    setTraces(
+      readTraces(waveKey) ??
+        wave.variables
+          .filter(
+            (v) =>
+              v.path.length === run.dut_scope.length + 1 &&
+              run.dut_scope.every((x, i) => v.path[i] === x),
+          )
+          .slice(0, 12)
+          .map((v) => ({ path: v.path })),
+    );
+  }, [waveKey, wave, run]);
+  useEffect(() => {
+    if (waveKey && tracesOf.current === waveKey) writeTraces(waveKey, traces);
+    // Closing a session empties the list but must not empty the saved one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [traces]);
   useEffect(() => {
     if (!snapshot || !scope.length) return;
     let active = true;
@@ -466,8 +483,8 @@ function App() {
         connection,
       }),
     );
-    if (variableId !== undefined)
-      setVisible((v) => (v.includes(variableId) ? v : [...v, variableId]));
+    const variable = wave?.variables.find((v) => v.id === variableId);
+    if (variable) setTraces((t) => addTraces(t, [variable.path]));
   }
   function pickWave(id: number) {
     const candidates = bindings.filter(
@@ -681,7 +698,7 @@ function App() {
               setRun(undefined);
               setWave(undefined);
               setBindings([]);
-              setVisible([]);
+              setTraces([]);
               setValues({});
             }}
           >
@@ -1062,17 +1079,17 @@ function App() {
                   <button
                     onClick={() => {
                       const prefix = waveformScope;
-                      setVisible((v) => [
-                        ...new Set([
-                          ...v,
-                          ...wave.variables
+                      setTraces((t) =>
+                        addTraces(
+                          t,
+                          wave.variables
                             .filter((x) =>
                               prefix.every((p, i) => x.path[i] === p),
                             )
                             .slice(0, 200)
-                            .map((x) => x.id),
-                        ]),
-                      ]);
+                            .map((x) => x.path),
+                        ),
+                      );
                     }}
                   >
                     Add signals in selected scope
@@ -1089,9 +1106,7 @@ function App() {
                       <button
                         key={v.id}
                         onClick={() => {
-                          setVisible((ids) =>
-                            ids.includes(v.id) ? ids : [...ids, v.id],
-                          );
+                          setTraces((t) => addTraces(t, [v.path]));
                           pickWave(v.id);
                         }}
                       >
@@ -1178,16 +1193,17 @@ function App() {
                 aria-labelledby="panel-tab-waveforms"
                 hidden={panelTab !== "waveforms"}
               >
-                {run && wave ? (
+                {run && wave && waveKey ? (
                   <Waveform
                     key={run.id}
                     active={panelOpen && panelTab === "waveforms"}
                     run={run}
                     info={wave}
-                    visible={visible}
+                    storage={waveKey}
+                    traces={traces}
                     selected={selection?.variableId}
                     onSelect={pickWave}
-                    onVisible={setVisible}
+                    onTraces={setTraces}
                     onCursor={(time) => {
                       void cursor(time);
                     }}

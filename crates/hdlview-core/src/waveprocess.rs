@@ -57,7 +57,7 @@ impl WaveProcess {
             info: WaveInfo {
                 variables: vec![],
                 end_time: "0".into(),
-                timescale: String::new(),
+                timescale: None,
             },
         };
         let value = worker.request(json!({"open":path}), cancel, 3600)?;
@@ -101,6 +101,20 @@ impl WaveProcess {
         )?)
         .map_err(Into::into)
     }
+    pub fn edge(
+        &mut self,
+        id: u32,
+        time: u64,
+        forward: bool,
+        bit: Option<usize>,
+    ) -> Result<Option<u64>> {
+        serde_json::from_value(self.request(
+            json!({"edge":id,"time":time,"forward":forward,"bit":bit}),
+            &CancelToken::default(),
+            120,
+        )?)
+        .map_err(Into::into)
+    }
 }
 pub fn worker_main() -> Result<()> {
     let mut wave = None;
@@ -113,8 +127,17 @@ pub fn worker_main() -> Result<()> {
                 wave = Some(opened);
                 return Ok(info);
             }
+            let wave = wave.as_mut().context("Open trace first")?;
+            if let Some(id) = v["edge"].as_u64() {
+                return Ok(json!(wave.edge(
+                    id as u32,
+                    v["time"].as_u64().context("time required")?,
+                    v["forward"] == true,
+                    v["bit"].as_u64().map(|bit| bit as usize)
+                )?));
+            }
             let ids = serde_json::from_value::<Vec<u32>>(v["ids"].clone())?;
-            Ok(json!(wave.as_mut().context("Open trace first")?.window(
+            Ok(json!(wave.window(
                 &ids,
                 v["start"].as_u64().context("start required")?,
                 v["end"].as_u64().context("end required")?,

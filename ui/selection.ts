@@ -58,5 +58,27 @@ export function formatValue(value: string, radix: string): string {
     const sign = 1n << BigInt(value.length - 1);
     return (n >= sign ? n - (sign << 1n) : n).toString();
   }
-  return radix === "hex" ? "0x" + n.toString(16) : n.toString();
+  if (radix === "oct") return "0o" + n.toString(8);
+  if (radix === "ascii") {
+    const bits = value.padStart(Math.ceil(value.length / 8) * 8, "0");
+    const codes = (bits.match(/.{8}/g) ?? []).map((byte) => parseInt(byte, 2));
+    return (
+      '"' +
+      codes
+        .slice(codes.findIndex((code) => code !== 0))
+        .map((code) =>
+          code >= 32 && code < 127 ? String.fromCharCode(code) : ".",
+        )
+        .join("") +
+      '"'
+    );
+  }
+  if (radix === "float" && (value.length === 32 || value.length === 64)) {
+    const data = new DataView(new ArrayBuffer(8));
+    data.setBigUint64(0, n << BigInt(64 - value.length));
+    return value.length === 32
+      ? Number(data.getFloat32(0).toPrecision(7)).toString()
+      : data.getFloat64(0).toString();
+  }
+  return radix === "dec" ? n.toString() : "0x" + n.toString(16);
 }

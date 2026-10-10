@@ -217,10 +217,15 @@ export interface Variable {
   width: number;
   index?: [number, number];
 }
+/** One tick lasts `factor` × 10^`exponent` seconds. */
+export interface Timescale {
+  factor: number;
+  exponent: number;
+}
 export interface WaveInfo {
   variables: Variable[];
   end_time: string;
-  timescale: string;
+  timescale?: Timescale | null;
 }
 export interface Transition {
   time: string;
