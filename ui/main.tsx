@@ -5,6 +5,7 @@ import { api } from "./api";
 import { parseProfile } from "./profile";
 import { Schematic } from "./components/Schematic";
 import { readSchematicPreferences } from "./schematic-display";
+import { Physical } from "./components/Physical";
 import { Waveform } from "./components/Waveform";
 import { addTraces, readTraces, writeTraces } from "./wave-layout";
 import type { Trace } from "./wave-layout";
@@ -128,12 +129,14 @@ function App() {
   );
   const [editorCollapsed, setEditorCollapsed] = useState(false);
   const [schematicCollapsed, setSchematicCollapsed] = useState(false);
+  const [centre, setCentre] = useState<"design" | "layout">("design");
   const clearWorkspace = useCallback(() => {
     generation.current += 1;
     setRestoring(false);
     setRep("elaborated");
     setEditorCollapsed(false);
     setSchematicCollapsed(false);
+    setCentre("design");
     setPanelOpen(false);
     setPanelTab("waveforms");
     setSnapshot(undefined);
@@ -920,13 +923,21 @@ function App() {
                     <summary>
                       Physical results: {snapshot.physical_run.status}
                     </summary>
-                    <pre>
-                      {JSON.stringify(
-                        snapshot.physical_run.state.metrics,
-                        null,
-                        2,
-                      )}
-                    </pre>
+                    {snapshot.physical_run.layout && (
+                      <button onClick={() => setCentre("layout")}>
+                        Show layout and checks
+                      </button>
+                    )}
+                    <details>
+                      <summary>All metrics</summary>
+                      <pre>
+                        {JSON.stringify(
+                          snapshot.physical_run.state.metrics,
+                          null,
+                          2,
+                        )}
+                      </pre>
+                    </details>
                     {snapshot.physical_run.reports.map((p) => (
                       <button
                         className="path"
@@ -1278,12 +1289,30 @@ function App() {
         }
       >
         <div className="workspace-tools">
-          <button onClick={() => setEditorCollapsed(!editorCollapsed)}>
-            {editorCollapsed ? "Show Editor" : "Hide Editor"}
+          <button
+            aria-pressed={centre === "design"}
+            onClick={() => setCentre("design")}
+          >
+            Code &amp; Schematic
           </button>
-          <button onClick={() => setSchematicCollapsed(!schematicCollapsed)}>
-            {schematicCollapsed ? "Show Schematic" : "Hide Schematic"}
+          <button
+            aria-pressed={centre === "layout"}
+            onClick={() => setCentre("layout")}
+          >
+            Floorplan &amp; Layout
           </button>
+          {centre === "design" && (
+            <>
+              <button onClick={() => setEditorCollapsed(!editorCollapsed)}>
+                {editorCollapsed ? "Show Editor" : "Hide Editor"}
+              </button>
+              <button
+                onClick={() => setSchematicCollapsed(!schematicCollapsed)}
+              >
+                {schematicCollapsed ? "Show Schematic" : "Hide Schematic"}
+              </button>
+            </>
+          )}
           {working.stale && snapshot && (
             <span>
               {pendingSettings
@@ -1331,7 +1360,45 @@ function App() {
               </span>
             )}
         </div>
+        {centre === "layout" && (
+          <Physical
+            project={project}
+            snapshot={snapshot}
+            stale={working.stale}
+            error={error}
+            selectedNet={selectedSignal?.path.slice(1).join(".")}
+            onFloorplan={(floorplan) => {
+              if (!project?.physical) return;
+              const physical = { ...project.physical };
+              // Written only when fixed, so other project files stay as they are.
+              if (floorplan) physical.floorplan = floorplan;
+              else delete physical.floorplan;
+              void working.update({ ...project, physical }).catch(fail);
+            }}
+            onConfigure={() => working.setSettingsSection("physical")}
+            onPickNet={(name) => {
+              // A bit's net selects the vector signal it belongs to.
+              const base = name.replace(/\[\d+\]$/, "");
+              const signal = graph?.signals.find((candidate) => {
+                const local = candidate.path.slice(1).join(".");
+                return (
+                  local === name || (candidate.width > 1 && local === base)
+                );
+              });
+              if (signal) pickSignal([signal.id], undefined, "hierarchy");
+            }}
+            onPickCell={(name) => {
+              const node = graph?.nodes.find((n) => n.label === name);
+              if (node) {
+                setInspect(node);
+                setExplorer("inspector");
+              }
+            }}
+            fail={fail}
+          />
+        )}
         <EditorSchematic
+          hidden={centre === "layout"}
           editorCollapsed={editorCollapsed}
           schematicCollapsed={schematicCollapsed}
           editor={

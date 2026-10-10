@@ -174,11 +174,13 @@ export function EditorSchematic({
   schematic,
   editorCollapsed,
   schematicCollapsed,
+  hidden,
 }: {
   editor?: ReactNode;
   schematic: ReactNode;
   editorCollapsed: boolean;
   schematicCollapsed: boolean;
+  hidden: boolean;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(1000);
@@ -201,6 +203,7 @@ export function EditorSchematic({
   return (
     <div
       className="workbench"
+      hidden={hidden}
       ref={container}
       style={{
         gridTemplateColumns: split

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ProjectController } from "../project-workspace";
 import type { LintPreferences } from "../editor-lint";
+import { SIDE_LABELS, SIDES } from "../floorplan";
 import { fileKey, fileLabel, pick, projects } from "../projects";
 import {
   issueSection,
@@ -24,6 +25,7 @@ import type {
   FileRef,
   SettingsInputKind,
   SettingsIssue,
+  Side,
   Snapshot,
 } from "../types";
 
@@ -1253,6 +1255,77 @@ export function ProjectSettings({
                       }
                     />
                   </label>
+                  <label className="settings-check">
+                    <input
+                      type="checkbox"
+                      aria-label="Fixed floorplan size"
+                      checked={flow.fixed}
+                      onChange={(e) =>
+                        change({
+                          ...draft,
+                          physical: { ...flow, fixed: e.target.checked },
+                        })
+                      }
+                    />
+                    <span>Fixed floorplan size</span>
+                  </label>
+                  <p className="hint">
+                    Off: the flow sizes the block from the core utilization. The
+                    Layout view draws the floorplan and places its pins.
+                  </p>
+                  {flow.fixed && (
+                    <>
+                      {(["width", "height"] as const).map((key) => (
+                        <label key={key}>
+                          Floorplan {key} (µm)
+                          <input
+                            data-setting="physical.floorplan"
+                            aria-label={`Floorplan ${key} (µm)`}
+                            inputMode="decimal"
+                            value={flow[key]}
+                            onChange={(e) =>
+                              change({
+                                ...draft,
+                                physical: { ...flow, [key]: e.target.value },
+                              })
+                            }
+                          />
+                        </label>
+                      ))}
+                      {flow.pins.map((pin, index) => (
+                        <label key={pin.port}>
+                          Side of {pin.port}
+                          <select
+                            aria-label={`Side of ${pin.port}`}
+                            value={pin.side}
+                            onChange={(e) => {
+                              const side = e.target.value as Side | "";
+                              change({
+                                ...draft,
+                                physical: {
+                                  ...flow,
+                                  pins: side
+                                    ? flow.pins.map((known, at) =>
+                                        at === index
+                                          ? { ...known, side }
+                                          : known,
+                                      )
+                                    : flow.pins.filter((_, at) => at !== index),
+                                },
+                              });
+                            }}
+                          >
+                            <option value="">Any side</option>
+                            {SIDES.map((side) => (
+                              <option key={side} value={side}>
+                                {SIDE_LABELS[side]}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ))}
+                    </>
+                  )}
                   <details>
                     <summary>Advanced LibreLane overrides</summary>
                     <p className="hint">

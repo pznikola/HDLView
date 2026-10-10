@@ -170,6 +170,10 @@ pub(crate) fn field_errors(p: &ProjectConfig) -> Vec<SettingsIssue> {
                 Err(anyhow::anyhow!("Clock period must be positive")),
             );
         }
+        check(
+            "physical.floorplan".into(),
+            crate::floorplan::check(physical),
+        );
         for key in physical.overrides.keys() {
             if ["DESIGN_NAME", "VERILOG_FILES", "PDK", "STD_CELL_LIBRARY"].contains(&key.as_str()) {
                 check(

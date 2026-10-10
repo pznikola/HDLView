@@ -1481,3 +1481,162 @@ body:has(.symbol-gallery) {
   color: #82e0d0;
   font-size: 11px;
 }
+.workspace-tools button[aria-pressed="true"],
+.physical-tools button[aria-pressed="true"] {
+  border-color: #6fa8d6;
+  color: #fff;
+}
+.physical-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.physical-tools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #182632;
+  font-size: 11px;
+}
+.physical-tools button {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.physical-tools label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.physical-tools input {
+  width: 72px;
+  padding: 3px 4px;
+  font-size: 11px;
+}
+.physical-tools span {
+  color: #9fb4c4;
+}
+.physical-tools .physical-dense {
+  color: #e0bd70;
+}
+.physical-tools .physical-over,
+.physical-error {
+  color: #ff8a80;
+}
+.physical-error {
+  margin: 0;
+  padding: 8px 12px;
+  background: #2a1b1e;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+.physical-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.physical-canvas {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  background: #0e1720;
+}
+.physical-canvas canvas {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  touch-action: none;
+}
+.physical-empty {
+  padding: 32px;
+  color: #9fb4c4;
+  font-size: 12px;
+}
+.physical-side {
+  flex: none;
+  width: 230px;
+  overflow: auto;
+  padding: 8px 10px;
+  background: #15202b;
+  border-left: 1px solid #283744;
+  font-size: 11px;
+}
+.physical-side h3 {
+  margin: 6px 0;
+  font-size: 11px;
+  color: #9fb4c4;
+}
+.physical-side ul {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+}
+.physical-side li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 0;
+}
+.physical-side li > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.physical-side select {
+  font-size: 11px;
+  padding: 2px;
+}
+.physical-side label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.physical-side label i {
+  width: 10px;
+  height: 10px;
+}
+.physical-checks > li > button {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.physical-checks > li > div {
+  width: 100%;
+}
+.physical-checks details button {
+  font-size: 10px;
+  padding: 2px 4px;
+  margin: 1px;
+}
+.physical-checks .physical-clean span:last-child {
+  color: #7fd19b;
+}
+.physical-checks .physical-violations span:last-child {
+  color: #ff8a80;
+}
+.physical-checks .physical-not_run span:last-child {
+  color: #7692a7;
+}
+.physical-layer-tools {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.physical-layer-tools button {
+  font-size: 10px;
+  padding: 2px 6px;
+}
+.physical-side label i {
+  flex: none;
+  box-sizing: border-box;
+}

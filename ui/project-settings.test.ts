@@ -86,6 +86,28 @@ describe("project settings drafts", () => {
     draft.physical.additional_clocks = [["rd_clk", ""]];
     expect(() => settingsProject(draft)).toThrow("Enter a port and a period");
   });
+  it("writes a fixed floorplan only when chosen and keeps its pins", () => {
+    const draft = settingsDraft(project);
+    if (!draft.physical)
+      throw new Error("fixture has a physical configuration");
+    expect(draft.physical.fixed).toBe(false);
+    draft.physical.fixed = true;
+    expect(() => settingsProject(draft)).toThrow("width and height");
+    draft.physical.width = "80";
+    draft.physical.height = "60.5";
+    draft.physical.pins = [{ port: "clk", side: "west" }];
+    const saved = settingsProject(draft);
+    expect(saved.physical?.floorplan).toEqual({
+      width_um: 80,
+      height_um: 60.5,
+      pins: [{ port: "clk", side: "west" }],
+    });
+    const reopened = settingsDraft(saved);
+    expect(reopened.physical).toMatchObject({ fixed: true, width: "80" });
+    expect(settingsProject(reopened)).toEqual(saved);
+    if (reopened.physical) reopened.physical.fixed = false;
+    expect(settingsProject(reopened)).toEqual(project);
+  });
   it("creates explicit simulation defaults without inventing names or hierarchy", () => {
     const config = newSimulation(project.simulation_sources ?? []);
     expect(config.top).toBe("");

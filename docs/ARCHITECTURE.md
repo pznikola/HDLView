@@ -184,7 +184,7 @@ uses a download without filesystem IPC.
 1. Extend schema contracts and validators together. Do not add shell-interpolated commands.
 2. Preserve unsupported/ambiguous data as explicit diagnostics; never invent signal connectivity or values.
 3. Keep generated model interfaces separate from simulation models. Blackbox interfaces are for graph import only.
-4. A physical run can publish complete artifacts and still fail DRC/LVS/timing checks. Preserve `PhysicalRun.status` and metrics independently from simulation status.
+4. A physical run can publish complete artifacts and still fail DRC/LVS/timing checks. Preserve `PhysicalRun.status` and metrics independently from simulation status. The layout and check views are read from the flow's own database and report files by `tools/layout_dump.py` (names and connectivity, from OpenROAD) and `tools/collect_checks.py`, and the mask view from the final GDS and the PDK's KLayout layer file by the core's own readers (`gds.rs`, `layer_properties.rs`, `masks.rs`) when the view is requested; a check without a result is "not run", never clean, and a build whose views cannot be produced is still complete, with a warning.
 5. Compiler/simulator failures retain logs and never switch backends automatically.
 6. Test instance/bit identity and connectivity, not exact compiler-generated names or layout coordinates.
 7. Keep optional upstream reference checkouts separate from application code; add fixtures under `examples/` or tests.

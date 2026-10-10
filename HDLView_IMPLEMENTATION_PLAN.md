@@ -23,7 +23,7 @@ Do not add a separately hosted application service. Reuse existing HDL parsers, 
 
 Support Verilog/SystemVerilog projects only. Reject unsupported projects without replacing the current workspace. Icarus handles RTL and gate runs; explicitly selected Verilator handles RTL runs only. A shared testbench configuration compiles captured RTL or the exact exported Verilog netlist according to the selected snapshot. Icarus is the SDF backend; Verilator is not.
 
-Physical-design integration configures and launches LibreLane, collects progress/reports/artifacts, and creates a matching post-layout snapshot. Detailed layout viewing stays in external tools.
+Physical-design integration configures and launches LibreLane, collects progress/reports/artifacts, and creates a matching post-layout snapshot. A project may fix the block outline and the side and order of its pins (`physical.floorplan`); HDLView writes LibreLane's absolute die area and pin order file, refuses an outline smaller than the synthesized cells before place and route, and names the step and the tool's message when the flow stops. After the flow, OpenROAD's Python dumps the placed and routed block (cells with their library pin shapes, pins, wires per layer) and a Python script collects DRC/XOR markers and the LVS result; the core reads the final GDS and the PDK's KLayout layer file itself (`gds.rs`, `layer_properties.rs`, `masks.rs`); the Layout view draws those masks with WebGL2, stamping each cell per placement, and uses the OpenROAD data for instance and net names. KLayout's own window, rulers and editing stay in KLayout.
 
 ## 2. Research and reuse
 

@@ -420,6 +420,13 @@ fn library_files(profile: &ToolchainProfile, p: &PhysicalConfig) -> Result<Vec<P
  };
     Ok(vec![lib])
 }
+/// The layer names, colours and fill patterns KLayout shows for a PDK.
+fn layer_properties(profile: &ToolchainProfile, p: &PhysicalConfig) -> PathBuf {
+    pdk_root(profile).join(match p.pdk.as_str() {
+        "ihp-sg13g2" => "ihp-sg13g2/libs.tech/klayout/tech/sg13g2.lyp",
+        _ => "sky130A/libs.tech/klayout/tech/sky130A.lyp",
+    })
+}
 pub fn model_files(profile: &ToolchainProfile, p: &PhysicalConfig) -> Result<Vec<PathBuf>> {
     let root = pdk_root(profile);
     match p.pdk.as_str() {
@@ -517,9 +524,8 @@ fn clocks_sdc(clocks: &[(&str, f64)], related: bool) -> String {
 }
 /// Room beside one strap set for row and site snapping.
 const STRAP_MARGIN: f64 = 1.25;
-/// The power grid needs a core at least one strap set wide and high. Returns a
-/// lower core utilization when the synthesized cells would get a smaller core.
-fn fitting_utilization(cell_area: f64, utilization: f64, resolved: &Value) -> Option<f64> {
+/// The shortest side that holds one set of power straps.
+fn strap_side(resolved: &Value) -> Option<f64> {
     let number = |key: String| {
         let value = &resolved[key.as_str()];
         value
@@ -533,7 +539,12 @@ fn fitting_utilization(cell_area: f64, utilization: f64, resolved: &Value) -> Op
                 + number(format!("PDN_{axis}SPACING"))?,
         )
     };
-    let side = straps("V")?.max(straps("H")?) * STRAP_MARGIN;
+    Some(straps("V")?.max(straps("H")?) * STRAP_MARGIN)
+}
+/// The power grid needs a core at least one strap set wide and high. Returns a
+/// lower core utilization when the synthesized cells would get a smaller core.
+fn fitting_utilization(cell_area: f64, utilization: f64, resolved: &Value) -> Option<f64> {
+    let side = strap_side(resolved)?;
     let fitting = cell_area / (side * side) * 100.0;
     (cell_area > 0.0 && fitting < utilization).then_some(fitting)
 }
@@ -638,6 +649,23 @@ fn run_physical(
         }
         config.insert(k.clone(), v.clone());
     }
+    crate::floorplan::check(cfg)?;
+    if let Some(plan) = &cfg.floorplan {
+        config.insert("FP_SIZING".into(), json!("absolute"));
+        config.insert(
+            "DIE_AREA".into(),
+            json!([0, 0, plan.width_um, plan.height_um]),
+        );
+        let elaborated = read_json(&r.workspace.join("elaborated.json"))?;
+        let modules = graph::modules_from_yosys(&elaborated)?;
+        let ports = &modules.get(&p.top).context("No top module")?.ports;
+        if let Some(order) = crate::floorplan::pin_order(plan, &p.top, ports)? {
+            let path = r.workspace.join("pins.cfg");
+            fs::write(&path, order)?;
+            config.insert("IO_PIN_ORDER_CFG".into(), json!(path));
+            config.insert("ERRORS_ON_UNMATCHED_IO".into(), json!("both"));
+        }
+    }
     let configpath = r.workspace.join("librelane.json");
     let published = r.workspace.join("runs/hdlview/final/nl").is_dir();
     let floorplan_is_set = ["FP_SIZING", "DIE_AREA", "CORE_AREA"]
@@ -663,7 +691,14 @@ fn run_physical(
         let utilization = config["FP_CORE_UTIL"].as_f64();
         if let (Some(area), Some(utilization)) = (area, utilization) {
             let resolved = read_json(&run.join("resolved.json"))?;
-            if let Some(fitting) = fitting_utilization(area, utilization, &resolved) {
+            if let Some(plan) = &cfg.floorplan {
+                let refusal =
+                    crate::floorplan::too_small(plan, area, utilization, strap_side(&resolved));
+                if let Some(refusal) = refusal {
+                    let _ = fs::remove_dir_all(&run);
+                    bail!(refusal)
+                }
+            } else if let Some(fitting) = fitting_utilization(area, utilization, &resolved) {
                 config.insert("FP_CORE_UTIL".into(), json!(fitting));
                 diagnostics.push(Diagnostic {
                     severity: "info".into(),
@@ -708,7 +743,16 @@ fn run_physical(
         Ok(_) => None,
         Err(error) => {
             if !r.workspace.join("runs/hdlview/final/nl").is_dir() {
-                return Err(error);
+                return Err(if synthesis_only {
+                    error
+                } else {
+                    crate::floorplan::failure(
+                        &r.workspace.join("runs/hdlview"),
+                        cfg,
+                        config["FP_CORE_UTIL"].as_f64(),
+                        error,
+                    )
+                });
             }
             Some(format!("{error:#}"))
         }
@@ -749,6 +793,90 @@ fn run_physical(
         "collect-physical",
     )?;
     let state: Value = read_json(&r.workspace.join("physical-state.json"))?;
+    let mut layout = None;
+    let mut gds = None;
+    let mut layer_file = None;
+    let mut checks = None;
+    if !synthesis_only {
+        let file = |name: &str| r.workspace.join(name).to_string_lossy().into_owned();
+        // The views are extras: a build without them is still a complete build.
+        let mut unavailable = |view: &str, error: anyhow::Error| {
+            diagnostics.push(Diagnostic {
+                severity: "warning".into(),
+                message: format!(
+                    "{view} unavailable: {}",
+                    format!("{error:#}").lines().next().unwrap_or_default()
+                ),
+                source: None,
+            })
+        };
+        fs::write(
+            r.workspace.join("layout_dump.py"),
+            include_str!("../../../tools/layout_dump.py"),
+        )?;
+        let dumped = match state["odb"].as_str() {
+            Some(odb) => r.run(
+                "openroad",
+                &[
+                    "-exit".into(),
+                    "-no_splash".into(),
+                    "-python".into(),
+                    file("layout_dump.py"),
+                    odb.into(),
+                    file("layout.json"),
+                ],
+                &r.workspace,
+                "layout",
+            ),
+            None => Err(anyhow::anyhow!("the flow left no database")),
+        };
+        r.cancel.check()?;
+        match dumped {
+            Ok(_) => layout = Some(r.workspace.join("layout.json")),
+            Err(error) => unavailable("Layout view", error),
+        }
+        // The layer file lives in the PDK, which a Docker toolchain only has inside
+        // the image, so it is copied beside the run for the mask view to read.
+        let layers = layer_properties(&r.profile, cfg);
+        let copied = r.run(
+            "cp",
+            &[layers.to_string_lossy().into(), file("layers.lyp")],
+            &r.workspace,
+            "layer-file",
+        );
+        r.cancel.check()?;
+        match (
+            state["gds"].as_str().or(state["klayout_gds"].as_str()),
+            copied,
+        ) {
+            (Some(path), Ok(_)) => {
+                gds = Some(path.into());
+                layer_file = Some(r.workspace.join("layers.lyp"));
+            }
+            (None, _) => unavailable("Mask view", anyhow::anyhow!("the flow left no GDS")),
+            (_, Err(error)) => unavailable("Mask view", error),
+        }
+        fs::write(
+            r.workspace.join("collect_checks.py"),
+            include_str!("../../../tools/collect_checks.py"),
+        )?;
+        let collected = r.run(
+            "python3",
+            &[
+                file("collect_checks.py"),
+                run.to_string_lossy().into(),
+                file("physical-state.json"),
+                file("checks.json"),
+            ],
+            &r.workspace,
+            "collect-checks",
+        );
+        r.cancel.check()?;
+        match collected {
+            Ok(_) => checks = Some(r.workspace.join("checks.json")),
+            Err(error) => unavailable("Check results", error),
+        }
+    }
     Ok(PhysicalRun {
         status: if flow_error.is_some() {
             "failed_checks"
@@ -760,6 +888,10 @@ fn run_physical(
         directory: run,
         state,
         reports,
+        layout,
+        gds,
+        layer_file,
+        checks,
     })
 }
 fn collect_artifacts(
@@ -773,10 +905,11 @@ fn collect_artifacts(
             collect_artifacts(&p, states, reports)?;
         } else if p.file_name().is_some_and(|n| n == "state_out.json") {
             states.push(p)
-        } else if p
-            .extension()
-            .is_some_and(|x| x == "rpt" || x == "csv" || x == "html" || x == "xml")
-        {
+        } else if p.extension().is_some_and(|x| {
+            ["rpt", "csv", "html", "xml", "lyrdb"]
+                .iter()
+                .any(|kind| x == *kind)
+        }) {
             reports.push(p)
         }
     }
@@ -794,6 +927,85 @@ mod tests {
         assert!(side > 21.55 && side < 40.0, "{side}");
         assert_eq!(fitting_utilization(20_000.0, 30.0, &pdn), None);
         assert_eq!(fitting_utilization(90.0, 30.0, &json!({})), None);
+    }
+    #[test]
+    fn checks_keep_markers_by_rule_lvs_mismatches_and_what_did_not_run() {
+        let d = tempfile::tempdir().unwrap();
+        let run = d.path().join("run");
+        let write = |name: &str, text: &str| {
+            let path = run.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        write("resolved.json", r#"{"DESIGN_NAME":"top"}"#);
+        write(
+            "65-klayout-drc/reports/drc.klayout.lyrdb",
+            "<report-database><categories>
+             <category><name>m1.2</name><description>m1.2 : min. m1 spacing : 0.14um</description></category>
+             <category><name>li.1</name><description>li.1 : min. li width</description></category>
+             </categories><items>
+             <item><category>'m1.2'</category><values><value>edge-pair: (1.5,2;1.5,3)|(1.6,2.5;1.6,4)</value></values></item>
+             <item><category>'m1.2'</category><values><value>polygon: (10,10;10,12;-1e-3,12)</value></values></item>
+             <item><category>'li.1'</category><values><value>box: (5,5;6,7)</value></values></item>
+             </items></report-database>",
+        );
+        write(
+            "70-netgen-lvs/reports/lvs.netgen.json",
+            r#"[{"name":["top","top"],"devices":[[["inv",3],["nand",1]],[["inv",3]]],"nets":[6,5],
+                 "badnets":[[[["n1",[["inv","A",1]]]],[["n2",[["inv","A",2]]]]]],
+                 "badelements":[[[["inv0",[["A",1]]]],[]]],
+                 "pins":[["a","VPWR"],["a","vpwr","b"]]}]"#,
+        );
+        let state = d.path().join("state.json");
+        fs::write(
+            &state,
+            r#"{"metrics":{"klayout__drc_error__count":3,"design__lvs_error__count":2,"route__drc_errors":0,"antenna__violating__nets":"NaN"}}"#,
+        )
+        .unwrap();
+        let script = d.path().join("collect_checks.py");
+        fs::write(&script, include_str!("../../../tools/collect_checks.py")).unwrap();
+        let out = d.path().join("checks.json");
+        let status = std::process::Command::new("python3")
+            .arg(&script)
+            .args([&run, &state, &out])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let checks: Value = read_json(&out).unwrap();
+        let check = |id: &str| {
+            checks["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|check| check["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(check("routing_drc")["status"], "clean");
+        assert_eq!(check("magic_drc")["status"], "not_run");
+        assert_eq!(check("antenna")["status"], "not_run");
+        let drc = check("klayout_drc");
+        assert_eq!(drc["status"], "violations");
+        assert_eq!(drc["count"], 3);
+        assert_eq!(
+            drc["rules"],
+            json!([
+                {"rule":"m1.2","description":"m1.2 : min. m1 spacing : 0.14um","count":2,
+                 "boxes":[[1.5,2.0,1.6,4.0],[-0.001,10.0,10.0,12.0]]},
+                {"rule":"li.1","description":"li.1 : min. li width","count":1,"boxes":[[5.0,5.0,6.0,7.0]]}
+            ])
+        );
+        let lvs = check("lvs");
+        assert_eq!(lvs["status"], "violations");
+        assert_eq!(lvs["summary"], json!({"devices":[4,3],"nets":[6,5]}));
+        assert_eq!(
+            lvs["mismatches"],
+            json!([
+                {"kind":"net","cell":"top","layout":["n1"],"netlist":["n2"]},
+                {"kind":"device","cell":"top","layout":["inv0"],"netlist":[]},
+                {"kind":"pin","cell":"top","layout":[],"netlist":["b"]}
+            ])
+        );
     }
     #[test]
     fn several_clocks_are_each_constrained_and_asynchronous_unless_related() {

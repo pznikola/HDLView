@@ -77,6 +77,73 @@ minimap and **Show selection**.
 - Not run: selection from a waveform trace on this sheet (same code path as the signal
   list, different origin), and anything in the Tauri window.
 
+## Floorplan, layout view and checks
+
+10 October 2026, counter fixture (353 µm² of cells on SKY130), Docker toolchain
+`hdlview-tools:2025.12` for the flow, Chromium through the browser suite for the editor.
+
+- **Fixed outline, SKY130.** 70 × 60 µm with `clk` on the left and `fast` on the right:
+  the flow reported die `0 0 70 60`, `clk` on the west edge, `fast[0..3]` on the east
+  edge in order, and the unplaced `enable`, `slow`, `reset` on the top and bottom. Build
+  complete in about one minute; all six checks clean, LVS 55 devices and 56 nets on both
+  sides.
+- **Fixed outline, IHP SG13G2.** The same project: die `0 0 70 60`, build complete, Magic
+  DRC listed as not run, KLayout DRC, XOR, LVS (78 devices, 79 nets) and antenna clean.
+- **Too small, refused before place and route.** 12 × 12 µm: "The design cannot fit in
+  12 × 12 µm: its cells need 353 µm² and the rectangle is 144 µm². At 30 % utilization it
+  needs about 35 × 35 µm." after 7 s.
+- **Too small for the power grid.** 32 × 30 µm and 40 × 36 µm passed the area check and
+  stopped in the flow: "The design cannot fit in 40 × 36 µm: openroad-generatepdn failed."
+  with PDN-0185 quoted.
+- **Too dense.** 34 × 44 µm: "The design cannot fit in 34 × 44 µm:
+  openroad-repairdesignpostgpl failed." with DPL-0036 quoted. The failure is recognised
+  by the tool's error code; the step is not a placement step by name.
+- **Unknown port.** A pin naming `count` stopped the build with "The floorplan places
+  count, which is not a port of counter".
+- **Layout view.** On the SKY130 result: die, core, pins, cells and the six metal layers
+  drawn; zoomed in, cells show named pin shapes; a click on `clkbuf_1_0__f_clk` opened it
+  in the Inspector. The dump of `17_afifo` (16,330 cells, about 44,000 wire boxes) took
+  one second and is 2.4 MB.
+- **Mask view from HDLView's own GDS reader.** 10 October 2026, Docker toolchain,
+  Post-layout builds of `01_simpleRegister` on SKY130 and on IHP SG13G2 and of `17_afifo`
+  on SKY130. The reader's result was compared with KLayout 0.28.8 reading the same GDS
+  (a scratch script counting cells, placements per cell, shapes per layer and texts,
+  with each placed cell flattened one level as the view does): identical on all three —
+  the register on SKY130: 7 cells, 92 placements, 33 layers; on IHP: 7 cells, 89 placements,
+  26 layers; `17_afifo`: 54 cells, 16,330 placements, 36 layers, 36,789 top-level shapes and 32 labels. Building the view took 4 ms for the register and
+  about 20 ms for `17_afifo` (2.9 MB of JSON), against about two seconds for the
+  KLayout export it replaces. Beside a headless KLayout render of the same layer file the
+  pane shows the same colours, custom fill patterns and layer order on both PDKs; the
+  differences are the ones documented in the README: the layer file's line styles (IHP's
+  dashed `prBoundary` is drawn solid) and label colour (white, not the text layer's).
+- **WebGL view.** Chromium on the NVIDIA GPU: the register's masks appeared 28 ms after the
+  pane opened; 12 wheel zoom steps, 10 more, a 20-move pan and 6 zoom-out steps each
+  completed within the two animation frames the measurement waits for (median 33 ms, which
+  is that floor). `17_afifo`: every zoom and pan step also completed within that floor (median 33 ms, max
+  34 ms, with all 36 layers shown and no culling beyond the window); its masks appeared
+  6.1 s after the pane opened, almost all of it the test harness moving the 2.9 MB view
+  through its line-based RPC (2.0 s per request, measured from the page) and the flow
+  database (0.7 s) — the Rust side builds the view in 20 ms, and parsing it, triangulating
+  the 54 cells and the top cell, packing the pattern atlas and one culling pass take under
+  200 ms in Node. The Tauri IPC was not measured. Headless Chromium draws with software GL
+  (SwiftShader): the register's steps then took 75 to 110 ms (max 190 ms). A click on a
+  cell opened `_5_ · sky130_fd_sc_hd__dfrtp_2` and `_7_ · sg13g2_dfrbpq_1` in the
+  Inspector; **Routing only** kept the same layers as before. The Tauri window on this
+  machine (WebKitGTK 2.50) created a WebGL2 context and drew a test triangle.
+- **Editor (browser test).** Draw a rectangle, set 80 × 60, give three ports sides, see
+  the same values in Project Settings, change the width there to 90 and see it in the
+  view, drag `fast` above `slow` on the right side, save: the project file holds the
+  outline and the pins in the new order.
+
+Not checked: a real run with DRC violations or an LVS mismatch (the collector is tested on
+fixture files only, and Netgen's mismatch lists are read as the fixture has them);
+the mask view compared side by side with KLayout's own window (only against a headless
+KLayout render by eye); KLayout's built-in stipples other than solid and hollow, which
+neither PDK uses; a GDS with magnified or non-quarter-turn placements (the reader reports
+them as errors by design) or with arrays (none in a place-and-route GDS; covered by unit
+tests only); a layout larger than `17_afifo` in the view; a flow stopped by pin slots or by
+routing congestion; a layout opened in the Tauri window (only the WebGL2 probe ran there).
+
 ## Waveform navigation, saved trace list and measurement
 
 10 October 2026, counter fixture, native toolchain, Chromium through the browser suite.

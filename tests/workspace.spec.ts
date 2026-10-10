@@ -2911,3 +2911,117 @@ test("aligned schematic, resizable workspace and panel tabs with testbench-named
   expect(readFileSync(join(dir, "counter.sv"), "utf8")).toBe(source);
   expect(readFileSync(join(dir, "tb.sv"), "utf8")).toBe(tb);
 });
+test("a floorplan is drawn, sized in settings, given pin sides and saved with the project", async ({
+  page,
+}) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdlview floorplan "));
+  for (const name of ["counter.sv", "tb.sv", "hdlview.project.json"])
+    writeFileSync(
+      join(dir, name),
+      readFileSync(join("tests/fixtures/counter", name)),
+    );
+  const file = join(dir, "hdlview.project.json");
+  const profile = JSON.parse(
+    readFileSync(
+      process.env.HDLVIEW_TOOL_PROFILE ?? "tools/profiles/docker.json",
+      "utf8",
+    ),
+  );
+  await page.addInitScript(
+    (profile) =>
+      localStorage.setItem("hdlview-profile", JSON.stringify(profile)),
+    profile,
+  );
+  await page.exposeFunction(
+    "__HDLVIEW_TEST_API__",
+    (action: string, args: unknown) =>
+      new Promise((resolve, reject) => {
+        pending.push((value: unknown) => {
+          const r = value as { ok: boolean; result: unknown; error: string };
+          r.ok ? resolve(r.result) : reject(new Error(r.error));
+        });
+        backend.stdin.write(JSON.stringify({ action, args }) + "\n");
+      }),
+  );
+  await page.exposeFunction("__HDLVIEW_TEST_PICKER__", () => [file]);
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto("/");
+  await fileCommand(page, "Open Existing Project…");
+  await page
+    .getByRole("button", { name: "Build schematic", exact: true })
+    .click();
+  await expect(page.locator(".nodebox").first()).toBeVisible({
+    timeout: 30000,
+  });
+  const tools = page.locator(".workspace-tools");
+  await tools
+    .getByRole("button", { name: "Floorplan & Layout", exact: true })
+    .click();
+  await expect(page.getByLabel("Schematic", { exact: true })).toBeHidden();
+  const pane = page.locator(".physical-pane");
+  await expect(pane.getByText("Automatic size")).toBeVisible();
+  // Pins need a fixed outline.
+  await expect(pane.getByLabel("Side of clk")).toBeDisabled();
+  const canvas = pane.getByLabel("Floorplan", { exact: true });
+  const box = (await canvas.boundingBox())!;
+  await pane.getByRole("button", { name: "Draw floorplan" }).click();
+  await page.mouse.move(box.x + 100, box.y + box.height - 100);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 300, box.y + 100, { steps: 4 });
+  await page.mouse.up();
+  const width = pane.getByLabel("Floorplan width");
+  const height = pane.getByLabel("Floorplan height");
+  await expect(width).toBeVisible();
+  expect(Number(await width.inputValue())).toBeGreaterThan(0);
+  await width.fill("80");
+  await height.fill("60");
+  await pane.getByLabel("Side of clk").selectOption("west");
+  await pane.getByLabel("Side of fast").selectOption("east");
+  await pane.getByLabel("Side of slow").selectOption("east");
+
+  // The same outline in Project Settings; a size typed there is drawn here.
+  await page
+    .getByRole("button", { name: "Project Settings", exact: true })
+    .click();
+  const settings = page.getByRole("dialog", { name: "Project Settings" });
+  await settings.getByRole("button", { name: "Physical Design" }).click();
+  await expect(settings.getByLabel("Fixed floorplan size")).toBeChecked();
+  await expect(settings.getByLabel("Floorplan width (µm)")).toHaveValue("80");
+  await expect(settings.getByLabel("Side of fast")).toHaveValue("east");
+  await settings.getByLabel("Floorplan width (µm)").fill("90");
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
+  await expect(settings).toBeHidden();
+  await expect(width).toHaveValue("90");
+
+  // Dragging a pin along its side changes the order: fast is drawn below slow.
+  await pane.getByRole("button", { name: "Fit" }).click();
+  const scale = Math.min((box.width - 120) / 90, (box.height - 120) / 60);
+  const east = box.x + box.width / 2 + 45 * scale;
+  const y = (um: number) => box.y + box.height / 2 + (30 - um) * scale;
+  await page.mouse.move(east, y(20));
+  await page.mouse.down();
+  await page.mouse.move(east, y(40), { steps: 4 });
+  await page.mouse.move(east, y(55), { steps: 4 });
+  await page.mouse.up();
+  await fileCommand(page, "Save Project");
+  await expect
+    .poll(() => JSON.parse(readFileSync(file, "utf8")).physical.floorplan)
+    .toEqual({
+      width_um: 90,
+      height_um: 60,
+      pins: [
+        { port: "clk", side: "west" },
+        { port: "slow", side: "east" },
+        { port: "fast", side: "east" },
+      ],
+    });
+
+  await pane.getByRole("button", { name: "Automatic", exact: true }).click();
+  await expect(pane.getByText("Automatic size")).toBeVisible();
+  await tools
+    .getByRole("button", { name: "Code & Schematic", exact: true })
+    .click();
+  await expect(page.getByLabel("Schematic", { exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});

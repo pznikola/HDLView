@@ -1,6 +1,7 @@
 import { fileKey } from "./projects";
 import type {
   FileRef,
+  Floorplan,
   PhysicalConfig,
   Project,
   SettingsSection,
@@ -22,6 +23,7 @@ interface PhysicalDraft
     | "additional_clocks"
     | "related_clocks"
     | "flatten_mapped"
+    | "floorplan"
     | "overrides"
   > {
   clock_port: string;
@@ -33,6 +35,11 @@ interface PhysicalDraft
   overrides: string;
   utilization: string;
   density: string;
+  /** A fixed block outline; the flow sizes the block when it is off. */
+  fixed: boolean;
+  width: string;
+  height: string;
+  pins: Floorplan["pins"];
 }
 export interface SettingsDraft
   extends Omit<Project, "defines" | "parameters" | "simulations" | "physical"> {
@@ -66,7 +73,16 @@ export function physicalDraft(
     overrides: "{}",
     utilization: "",
     density: "",
+    fixed: false,
+    width: "",
+    height: "",
+    pins: [],
   };
+}
+function withoutFloorplan(physical: PhysicalConfig) {
+  const rest = { ...physical };
+  delete rest.floorplan;
+  return rest;
 }
 export function settingsDraft(project: Project): SettingsDraft {
   const p = structuredClone(project);
@@ -88,7 +104,11 @@ export function settingsDraft(project: Project): SettingsDraft {
     parameters: Object.entries(p.parameters),
     physical: physical
       ? {
-          ...physical,
+          ...withoutFloorplan(physical),
+          fixed: !!physical.floorplan,
+          width: String(physical.floorplan?.width_um ?? ""),
+          height: String(physical.floorplan?.height_um ?? ""),
+          pins: physical.floorplan?.pins ?? [],
           clock_port: physical.clock_port ?? "",
           clock_period_ns: String(physical.clock_period_ns),
           additional_clocks: (physical.additional_clocks ?? []).map(
@@ -200,6 +220,13 @@ export function settingsProject(draft: SettingsDraft): Project {
         );
       return { port, period_ns };
     });
+    const width_um = Number(physical.width),
+      height_um = Number(physical.height);
+    if (physical.fixed && !(width_um > 0 && height_um > 0))
+      throw new SettingsDraftError(
+        "physical.floorplan",
+        "Enter the floorplan width and height in µm",
+      );
     flow = {
       pdk: physical.pdk,
       library: physical.library,
@@ -216,6 +243,9 @@ export function settingsProject(draft: SettingsDraft): Project {
           }
         : {}),
       ...(physical.flatten_mapped ? { flatten_mapped: true } : {}),
+      ...(physical.fixed
+        ? { floorplan: { width_um, height_um, pins: physical.pins } }
+        : {}),
     };
   }
   return {

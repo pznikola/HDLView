@@ -1,6 +1,6 @@
 use crate::{
-    editor_lint, file_management, model::*, pipeline, project::*, runner::*, simulation, waveform,
-    waveprocess::WaveProcess, workspace,
+    editor_lint, file_management, masks, model::*, pipeline, project::*, runner::*, simulation,
+    waveform, waveprocess::WaveProcess, workspace,
 };
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -752,6 +752,59 @@ impl Service {
                 }
                 Ok(json!(tail(&path, 2_000_000)?))
             }
+            // The block outline, cells and pins; each layer's wires are asked for
+            // when the layer is shown.
+            "layout" | "layout_shapes" => {
+                let snapshot = self.snapshot(string("snapshot_id")?)?;
+                let path = snapshot
+                    .physical_run
+                    .as_ref()
+                    .and_then(|run| run.layout.as_ref())
+                    .context("This snapshot has no layout")?;
+                let mut layout: Value = read_json(path)?;
+                let shapes = |layout: &mut Value, key: &str, layer: usize| {
+                    layout[key]
+                        .get_mut(layer)
+                        .map(Value::take)
+                        .unwrap_or_else(|| json!([]))
+                };
+                if action == "layout_shapes" {
+                    let layer = v["layer"].as_u64().context("Missing layer")? as usize;
+                    let wires = shapes(&mut layout, "wires", layer);
+                    Ok(json!({"wires": wires, "power": shapes(&mut layout, "power", layer)}))
+                } else {
+                    let count = |key: &str| -> Vec<usize> {
+                        let layers = layout[key].as_array();
+                        layers
+                            .into_iter()
+                            .flatten()
+                            .map(|shapes| shapes.as_array().map_or(0, Vec::len))
+                            .collect()
+                    };
+                    let (wires, power) = (count("wires"), count("power"));
+                    layout["wires"] = json!(wires);
+                    layout["power"] = json!(power);
+                    Ok(layout)
+                }
+            }
+            "checks" => {
+                let snapshot = self.snapshot(string("snapshot_id")?)?;
+                let path = snapshot
+                    .physical_run
+                    .as_ref()
+                    .and_then(|run| run.checks.as_ref())
+                    .context("This snapshot has no check results")?;
+                read_json::<Value>(path)
+            }
+            // The final GDS with the PDK layer file's names, colours and patterns.
+            "layout_masks" => {
+                let snapshot = self.snapshot(string("snapshot_id")?)?;
+                let run = snapshot.physical_run.as_ref();
+                let (gds, layers) = run
+                    .and_then(|run| Some((run.gds.as_ref()?, run.layer_file.as_ref()?)))
+                    .context("This snapshot has no mask view")?;
+                Ok(serde_json::to_value(masks::view(gds, layers)?)?)
+            }
             "source" => {
                 let snapshot = self.snapshot(string("snapshot_id")?)?;
                 let raw = string("source")?;
@@ -835,6 +888,81 @@ mod lint_tests {
             }
             assert!(started.elapsed() < Duration::from_secs(3));
             thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[test]
+    fn a_layout_is_served_without_its_wires_and_each_layer_on_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let layout = temp.path().join("layout.json");
+        fs::write(
+            &layout,
+            r#"{"dbu":1000,"die":[0,0,9,9],"layers":["met1","met2"],"instances":[["u1",0,1,1,2,2]],
+                "wires":[[[0,0,1,1,0],[1,1,2,2,0]],[]],"power":[[],[[0,0,9,1,1]]]}"#,
+        )
+        .unwrap();
+        let service = Service::new(temp.path().join("store"));
+        let snapshot = |id: &str, run: Value| -> DesignSnapshot {
+            serde_json::from_value(json!({"schema_version":SCHEMA,"id":id,"representation":"post_layout","project_path":null,"project_fingerprint":null,
+                "project":{"schema_version":PROJECT_SCHEMA,"name":"p","top":"top","sources":[]},"profile":ToolchainProfile::default(),
+                "directory":temp.path(),"design":{"modules":{},"scopes":[]},"diagnostics":[],"tool_versions":{},"input_hashes":{},
+                "artifact_hashes":{},"source_origins":{},"netlist":null,"sdf":{},"physical_run":run})).unwrap()
+        };
+        let gds = temp.path().join("final.gds");
+        fs::write(
+            &gds,
+            crate::gds::tests::library(&[crate::gds::tests::cell(
+                "top",
+                &[crate::gds::tests::boundary(
+                    68,
+                    20,
+                    &[0, 0, 0, 5, 10, 5, 10, 0],
+                )],
+            )]),
+        )
+        .unwrap();
+        let layers = temp.path().join("layers.lyp");
+        fs::write(&layers, "<layer-properties><properties><fill-color>#0000ff</fill-color><frame-color>#0000ff</frame-color><dither-pattern>I0</dither-pattern><name>met1</name><source>68/20@1</source></properties></layer-properties>").unwrap();
+        let run = |layout: Value, masks: bool| json!({"status":"complete","flow_error":null,"directory":temp.path(),"state":{},"reports":[],"layout":layout,"gds":masks.then(|| gds.clone()),"layer_file":masks.then(|| layers.clone()),"checks":null});
+        for (id, run) in [
+            ("routed", run(json!(layout), true)),
+            ("bare", run(Value::Null, false)),
+        ] {
+            let mut state = service.state.lock().unwrap();
+            state
+                .snapshots
+                .insert(id.into(), Arc::new(snapshot(id, run)));
+        }
+        let outline = service
+            .request("layout", json!({"snapshot_id":"routed"}))
+            .unwrap();
+        assert_eq!(outline["instances"], json!([["u1", 0, 1, 1, 2, 2]]));
+        assert_eq!(outline["wires"], json!([2, 0]));
+        assert_eq!(outline["power"], json!([0, 1]));
+        let layer = |layer: u64| {
+            service
+                .request(
+                    "layout_shapes",
+                    json!({"snapshot_id":"routed","layer":layer}),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            layer(0),
+            json!({"wires":[[0,0,1,1,0],[1,1,2,2,0]],"power":[]})
+        );
+        assert_eq!(layer(1), json!({"wires":[],"power":[[0,0,9,1,1]]}));
+        assert_eq!(layer(7), json!({"wires":[],"power":[]}));
+        let masks = service
+            .request("layout_masks", json!({"snapshot_id":"routed"}))
+            .unwrap();
+        assert_eq!(masks["layers"][0]["name"], "met1");
+        assert_eq!(masks["layers"][0]["pattern"], json!(["*"]));
+        assert_eq!(masks["shapes"][0]["boxes"], json!([0, 0, 10, 5]));
+        for action in ["layout", "checks", "layout_masks"] {
+            let error = service
+                .request(action, json!({"snapshot_id":"bare"}))
+                .unwrap_err();
+            assert!(error.to_string().starts_with("This snapshot has no"));
         }
     }
     #[test]

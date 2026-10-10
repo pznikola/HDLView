@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 5;
 pub const PROJECT_SCHEMA: u32 = 3;
 fn std_sv() -> String {
     "1800-2017".into()
@@ -232,6 +232,31 @@ pub struct Clock {
     pub port: String,
     pub period_ns: f64,
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum Side {
+    North,
+    East,
+    South,
+    West,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinPlacement {
+    /// A port of the top module; a vector port keeps its bits together.
+    pub port: String,
+    pub side: Side,
+}
+/// A fixed block outline. Pins are listed in their order along each side, from
+/// the low coordinate to the high one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Floorplan {
+    pub width_um: f64,
+    pub height_um: f64,
+    #[serde(default)]
+    pub pins: Vec<PinPlacement>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhysicalConfig {
     pub pdk: String,
@@ -251,6 +276,9 @@ pub struct PhysicalConfig {
     pub flatten_mapped: bool,
     #[serde(default)]
     pub sdc: Option<FileRef>,
+    /// `None` lets the flow size the block from the core utilization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floorplan: Option<Floorplan>,
     #[serde(default)]
     pub overrides: BTreeMap<String, serde_json::Value>,
 }
@@ -384,6 +412,13 @@ pub struct PhysicalRun {
     pub directory: PathBuf,
     pub state: serde_json::Value,
     pub reports: Vec<PathBuf>,
+    /// Geometry of the routed block, written by `tools/layout_dump.py`.
+    pub layout: Option<PathBuf>,
+    /// The final GDS and the PDK's KLayout layer file, read for the mask view.
+    pub gds: Option<PathBuf>,
+    pub layer_file: Option<PathBuf>,
+    /// DRC markers and the LVS result, written by `tools/collect_checks.py`.
+    pub checks: Option<PathBuf>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationRun {

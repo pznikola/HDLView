@@ -20,7 +20,94 @@ export interface PhysicalConfig {
   /** Mapped gates keeps the module hierarchy unless this is set. */
   flatten_mapped?: boolean;
   sdc?: FileRef | null;
+  /** Absent: the flow sizes the block from the core utilization. */
+  floorplan?: Floorplan | null;
   overrides: Record<string, unknown>;
+}
+export type Side = "north" | "east" | "south" | "west";
+/** A fixed block outline; pins are in their order along each side. */
+export interface Floorplan {
+  width_um: number;
+  height_um: number;
+  pins: { port: string; side: Side }[];
+}
+/** [x0, y0, x1, y1] in database units. */
+type LayoutBox = [number, number, number, number];
+/** The routed block. Wire and power counts are per routing layer. */
+export interface LayoutData {
+  dbu: number;
+  die: LayoutBox;
+  core: LayoutBox;
+  layers: string[];
+  /** The via layers between them. */
+  cuts: string[];
+  /** A cell as its library describes it. */
+  masters: { name: string; class: string; width: number; height: number }[];
+  /** name, master index, box, orientation */
+  instances: [string, number, number, number, number, number, string][];
+  /** name, layer index, box, direction, signal type */
+  pins: [string, number, number, number, number, number, string, string][];
+  nets: string[];
+  wires: number[];
+  power: number[];
+}
+/** Boxes of one layer, each followed by the index of its net. */
+export interface LayoutShapes {
+  wires: [number, number, number, number, number][];
+  power: [number, number, number, number, number][];
+}
+/** Flat x0, y0, x1, y1 boxes and flat x, y polygons, in database units. */
+export interface MaskShapes {
+  boxes: number[];
+  polygons: number[][];
+}
+export interface MaskLayer {
+  name: string;
+  /** GDS layer/datatype. */
+  source: string;
+  fill: string;
+  frame: string;
+  /** Rows of the repeated fill bitmap, top row first; `*` is a set pixel. */
+  pattern: string[];
+  visible: boolean;
+  /** The layer's position in the layer file, which shifts its pattern rows. */
+  offset: number;
+}
+/** The final GDS with the PDK layer file's names, colours and patterns. */
+export interface MaskData {
+  dbu: number;
+  top: string;
+  box: LayoutBox;
+  /** In drawing order, bottom first. */
+  layers: MaskLayer[];
+  /** A cell with its shapes by layer index, in its own coordinates. */
+  cells: { name: string; box: LayoutBox; layers: Record<string, MaskShapes> }[];
+  /** cell index, x, y, KLayout orientation code */
+  instances: [number, number, number, number][];
+  /** The top cell's own shapes, per layer. */
+  shapes: MaskShapes[];
+  /** layer index, x, y, text */
+  labels: [number, number, number, string][];
+}
+export interface Check {
+  id: string;
+  title: string;
+  status: "clean" | "violations" | "not_run";
+  count: number | null;
+  /** Boxes are in microns. */
+  rules?: {
+    rule: string;
+    description: string;
+    count: number;
+    boxes: LayoutBox[];
+  }[];
+  summary?: { devices: number[]; nets: number[] } | null;
+  mismatches?: {
+    kind: string;
+    cell: string;
+    layout: string[];
+    netlist: string[];
+  }[];
 }
 export interface Project {
   technology?: Technology | null;
@@ -89,6 +176,7 @@ export interface Snapshot {
     modules: Record<
       string,
       {
+        ports: { name: string; direction: string; bits: unknown[] }[];
         cells: {
           name: string;
           kind: string;
@@ -102,6 +190,10 @@ export interface Snapshot {
     reports: string[];
     status: string;
     state: { metrics?: Record<string, unknown> };
+    layout?: string | null;
+    gds?: string | null;
+    layer_file?: string | null;
+    checks?: string | null;
   };
 }
 export interface Diagnostic {
