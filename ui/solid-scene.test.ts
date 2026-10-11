@@ -31,7 +31,7 @@ describe("extrude", () => {
     expect(vertexCount(mesh)).toBe(24);
     expect(mesh.indices.length).toBe(36);
     expect(mesh.triangles).toBe(12);
-    expect(mesh.ranges).toEqual([{ layer: 1, start: 0, count: 36 }]);
+    expect(mesh.ranges).toEqual([{ layer: 1, start: 0, count: 36, caps: 6 }]);
     const heights = new Set<number>();
     const normals = new Set<string>();
     for (let i = 0; i < 24; i++) {
@@ -81,6 +81,73 @@ describe("extrude", () => {
     expect(wallNormals.size).toBe(4);
   });
 
+  it("turns every triangle anticlockwise seen from outside, whatever the input's direction", () => {
+    const outer = [0, 0, 10, 0, 10, 10, 0, 10];
+    const hole = [2, 2, 2, 8, 8, 8, 8, 2];
+    const reversed = (ring: number[]) =>
+      ring.flatMap((_, i) =>
+        i % 2 ? [] : ring.slice(-2 - i, ring.length - i),
+      );
+    for (const polygon of [
+      [...outer, ...hole],
+      [...reversed(outer), ...reversed(hole)],
+    ]) {
+      const mesh = extrude(
+        [[0, { boxes: [20, 0, 30, 5], polygons: [[polygon, [4]]] }]],
+        slabs,
+        1,
+      );
+      expect(mesh.triangles).toBe(12 + 32);
+      for (let i = 0; i < mesh.indices.length; i += 3) {
+        const [a, b, c] = [0, 1, 2].map((k) =>
+          position(mesh, mesh.indices[i + k]!),
+        ) as [number[], number[], number[]];
+        const u = a.map((v, k) => b[k]! - v),
+          w = a.map((v, k) => c[k]! - v);
+        const facing = [
+          u[1]! * w[2]! - u[2]! * w[1]!,
+          u[2]! * w[0]! - u[0]! * w[2]!,
+          u[0]! * w[1]! - u[1]! * w[0]!,
+        ];
+        const stored = normal(mesh, mesh.indices[i]!);
+        expect(
+          facing.reduce((n, v, k) => n + v * stored[k]!, 0),
+        ).toBeGreaterThan(0);
+      }
+      // A wall of the hole faces into the hole: the one at x = 2 looks east.
+      const west = Array.from(
+        { length: vertexCount(mesh) },
+        (_, i) => i,
+      ).filter((i) => position(mesh, i)[0] === 2 && normal(mesh, i)[0] !== 0);
+      expect(west.length).toBeGreaterThan(0);
+      for (const i of west)
+        if (normal(mesh, i)[1] === 0) expect(normal(mesh, i)[0]).toBe(127);
+    }
+  });
+
+  it("puts a slab's top caps first in its range", () => {
+    const mesh = extrude(
+      [
+        [0, { boxes: [0, 0, 1, 1], polygons: [] }],
+        [
+          1,
+          {
+            boxes: [0, 0, 1, 1],
+            polygons: [[[5, 5, 9, 5, 9, 9, 7, 7, 5, 9], []]],
+          },
+        ],
+      ],
+      slabs,
+      1,
+    );
+    expect(mesh.ranges.map((range) => range.caps)).toEqual([6, 6 + 9]);
+    for (const range of mesh.ranges)
+      for (let i = 0; i < range.count; i++) {
+        const top = normal(mesh, mesh.indices[range.start + i]!)[2] === 127;
+        expect(top).toBe(i < range.caps);
+      }
+  });
+
   it("keeps one index range per slab and rejects unknown slabs", () => {
     const mesh = extrude(
       [
@@ -91,8 +158,8 @@ describe("extrude", () => {
       1,
     );
     expect(mesh.ranges).toEqual([
-      { layer: 0, start: 0, count: 36 },
-      { layer: 1, start: 36, count: 72 },
+      { layer: 0, start: 0, count: 36, caps: 6 },
+      { layer: 1, start: 36, count: 72, caps: 12 },
     ]);
     expect(() => extrude([[2, { boxes: [], polygons: [] }]], slabs, 1)).toThrow(
       "Unknown slab 2",

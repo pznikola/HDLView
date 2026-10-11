@@ -205,11 +205,18 @@ ordering are retained; bitmap patterns sample device pixels independently of wor
 (`layer_stack.rs`): each material's parts are evaluated per placed cell and for the top cell
 (booleans through `i_overlay`, within one cell only), optionally limited to a region that clips
 the top cell's shapes and keeps placed cells whole. `solid.worker.ts` runs `solid-scene.ts` once per view: every shape becomes caps and
-walls with int8 normals, cells stay local, top batches are relative to their own origin, and
+walls with int8 normals and outward winding (each slab's top caps first in its index range),
+cells stay local, top batches are relative to their own origin, and
 the same BVHs index placements and batches. `gl-solid.ts` owns the orbit camera (pivot,
 azimuth, elevation, distance, z scale), the matrices in anchor-relative database units, the
-frustum footprint used for culling, and one instanced draw per cell mesh and batch, with
-index buffers filtered by material visibility and a white override for highlights.
+footprint of the view's pyramid between the stack's planes used for culling, and instanced
+draws per cell mesh and one draw per batch with back faces culled, with
+index buffers filtered by material visibility and a white override for highlights. Placements
+are grouped per cell into near and far, plain and mirrored (a mirrored placement reverses the
+winding); a far placement, whose walls would cover under two pixels, draws only the top caps
+at the start of the index buffer. The groups are rebuilt when the footprint changes or the
+viewer has moved by 3 % of the camera distance. `Physical.tsx` halves the 3D pixel ratio
+while frames arrive late and redraws at full resolution when the view rests.
 
 One animation-frame callback in `Physical.tsx` takes the camera ref, viewport and display scale
 and draws both WebGL masks and 2D overlays, or the 3D canvas when that tab is active. Both canvases use the same rounded backing size;

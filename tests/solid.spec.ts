@@ -137,6 +137,75 @@ test("the z scale stretches heights and highlights are drawn white on top", asyn
   expect(red(result.plain)).toBe(true);
 });
 
+test("placed cells are closed from every side and distant ones are drawn as their top faces", async ({
+  page,
+}) => {
+  const size = { width: 800, height: 600 };
+  // A cell placed as it is and mirrored, and a shape of the top cell, 5 µm tall.
+  await mountSolid(
+    page,
+    {
+      ...fixture([45000, 75000, 55000, 85000], 6),
+      cells: [
+        {
+          name: "leaf",
+          box: [0, 0, 10000, 10000],
+          slabs: { "0": { boxes: [0, 0, 10000, 10000], polygons: [] } },
+        },
+      ],
+      instances: [
+        [0, 20000, 45000, 0],
+        [0, 70000, 55000, 4],
+      ],
+    },
+    scripts,
+    size,
+  );
+  const result = await page.evaluate(() => {
+    const probe = window.solidProbe;
+    const { project, topView, dolly } = window.SolidRenderer;
+    const viewport = { ...probe.size, pixelWidth: 800, pixelHeight: 600 };
+    const centres: [number, number, number][] = [
+      [25, 50, 3.5],
+      [75, 50, 3.5],
+      [50, 80, 3.5],
+    ];
+    const seen = (camera: SolidCamera) => {
+      const drawn = probe.draw(camera, 1);
+      return {
+        indices: drawn.indices,
+        pixels: centres.map((centre) => {
+          const [x, y] = project(camera, viewport, probe.scene, centre);
+          return probe.pixel(
+            Math.round(((x + 1) / 2) * 800),
+            Math.round(((1 - y) / 2) * 600),
+            1,
+          );
+        }),
+      };
+    };
+    const fit = probe.fit();
+    return {
+      oblique: seen(fit),
+      turned: seen({ ...fit, azimuth: 205 }),
+      below: seen({ ...fit, elevation: -50 }),
+      distant: seen(dolly(topView(fit), 8)),
+      error: probe.gl.getError(),
+    };
+  });
+  expect(result.error).toBe(0);
+  const lit = (pixel: number[]) =>
+    pixel[0]! > 60 && pixel[1]! < 40 && pixel[2]! < 40;
+  for (const view of [result.oblique, result.turned, result.below])
+    expect(view.pixels.map(lit)).toEqual([true, true, true]);
+  // Two placements and one shape, whole, and the outline frame.
+  expect(result.oblique.indices).toBe(3 * 36 + 4 * 36);
+  expect(result.below.indices).toBe(3 * 36 + 4 * 36);
+  // From far above the cells' walls are under two pixels: their top faces only.
+  expect(result.distant.indices).toBe(2 * 6 + 36 + 4 * 36);
+  expect(result.distant.pixels.map(lit)).toEqual([true, true, true]);
+});
+
 test("a lost context pauses drawing and a restored one draws again", async ({
   page,
 }) => {

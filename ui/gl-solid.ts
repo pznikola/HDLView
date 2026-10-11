@@ -1,5 +1,5 @@
 import { type Box } from "./floorplan";
-import { visibleIndices, type Viewport } from "./gl-layout";
+import { type Viewport } from "./gl-layout";
 import { orientation } from "./masks";
 import { querySpatial } from "./mask-scene";
 import {
@@ -10,6 +10,12 @@ import {
 } from "./solid-scene";
 
 export const MAX_SLABS = 64;
+/**
+ * A placed cell whose tallest wall would cover fewer pixels than this is drawn
+ * as its top faces only. Wires keep their walls at every distance: a wire is
+ * as tall as it is wide, so its walls are much of what is seen of it.
+ */
+const FAR_PIXELS = 2;
 /** Vertical field of view in degrees. */
 export const FOV = 45;
 
@@ -138,6 +144,20 @@ export function dolly(camera: SolidCamera, factor: number): SolidCamera {
   };
 }
 
+/** The far clipping distance in µm, beyond the whole box seen from its inside. */
+function farDistance(
+  camera: SolidCamera,
+  box: Box,
+  zRange: [number, number],
+): number {
+  const diagonal = Math.hypot(
+    box[2] - box[0],
+    box[3] - box[1],
+    (zRange[1] - zRange[0]) * camera.zScale,
+  );
+  return (camera.distance + diagonal) * 1.1;
+}
+
 type Mat4 = Float64Array;
 function perspective(aspect: number, near: number, far: number): Mat4 {
   const f = 1 / Math.tan(radians(FOV / 2));
@@ -189,7 +209,7 @@ export function matrices(
   camera: SolidCamera,
   viewport: Viewport,
   scene: SolidScene,
-): { matrix: Mat4; light: Vec3 } {
+): { matrix: Mat4; light: Vec3; eye: Vec3 } {
   const { forward, right, up } = basis(camera);
   const { eye } = placed(camera);
   const [ax, ay] = sceneAnchor(scene);
@@ -198,12 +218,12 @@ export function matrices(
     (eye[1] - ay / scene.dbu) * scene.dbu,
     eye[2] * scene.dbu,
   ];
-  const diagonal = Math.hypot(
-    (scene.box[2] - scene.box[0]) / scene.dbu,
-    (scene.box[3] - scene.box[1]) / scene.dbu,
-    (scene.zRange[1] - scene.zRange[0]) * camera.zScale,
-  );
-  const far = (camera.distance + diagonal) * 1.1 * scene.dbu;
+  const far =
+    farDistance(
+      camera,
+      scene.box.map((v) => v / scene.dbu) as Box,
+      scene.zRange,
+    ) * scene.dbu;
   const near = Math.max(far * 1e-5, camera.distance * 0.02 * scene.dbu);
   return {
     matrix: multiply(
@@ -214,6 +234,7 @@ export function matrices(
     light: normalised(
       sum(sum(scaled(right, -0.3), scaled(up, 0.5)), scaled(forward, -0.8)),
     ),
+    eye: anchored,
   };
 }
 /** Where a point (µm, z unscaled) lands in normalised device coordinates. */
@@ -237,9 +258,9 @@ export function project(
   return [out[0]! / out[3]!, out[1]! / out[3]!];
 }
 /**
- * The ground area the view can show, in µm: where the corner rays meet the
- * stack's lowest and highest planes. A ray that misses a plane sees to the
- * horizon, so the whole box is returned.
+ * The ground area the view can show, in µm: the box around the part of the
+ * view's pyramid, cut at the far distance, that lies between the stack's
+ * lowest and highest planes. Inverted when the view misses the stack.
  */
 export function footprint(
   camera: SolidCamera,
@@ -251,6 +272,28 @@ export function footprint(
   const { eye } = placed(camera);
   const tangent = Math.tan(radians(FOV / 2));
   const aspect = viewport.width / viewport.height;
+  const far = farDistance(camera, box, zRange);
+  const corners = (
+    [
+      [-1, -1],
+      [1, -1],
+      [1, 1],
+      [-1, 1],
+    ] as const
+  ).map(([sx, sy]) =>
+    sum(
+      eye,
+      scaled(
+        sum(
+          forward,
+          sum(scaled(right, sx * tangent * aspect), scaled(up, sy * tangent)),
+        ),
+        far,
+      ),
+    ),
+  );
+  const low = zRange[0] * camera.zScale,
+    high = zRange[1] * camera.zScale;
   const area: Box = [Infinity, Infinity, -Infinity, -Infinity];
   const include = (x: number, y: number) => {
     area[0] = Math.min(area[0], x);
@@ -258,20 +301,20 @@ export function footprint(
     area[2] = Math.max(area[2], x);
     area[3] = Math.max(area[3], y);
   };
-  const planes = [zRange[0] * camera.zScale, zRange[1] * camera.zScale];
-  if (eye[2] >= planes[0]! && eye[2] <= planes[1]!) include(eye[0], eye[1]);
-  for (const sx of [-1, 1])
-    for (const sy of [-1, 1]) {
-      const ray = sum(
-        forward,
-        sum(scaled(right, sx * tangent * aspect), scaled(up, sy * tangent)),
-      );
-      for (const z of planes) {
-        const t = (z - eye[2]) / ray[2];
-        if (!(t > 0)) return box;
-        include(eye[0] + ray[0] * t, eye[1] + ray[1] * t);
-      }
+  // The part between the planes is spanned by the pyramid's corners there
+  // and by the points where its edges cross a plane.
+  const edge = (a: Vec3, b: Vec3) => {
+    if (a[2] >= low && a[2] <= high) include(a[0], a[1]);
+    for (const z of [low, high]) {
+      const t = (z - a[2]) / (b[2] - a[2]);
+      if (t > 0 && t < 1)
+        include(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
     }
+  };
+  corners.forEach((corner, i) => {
+    edge(eye, corner);
+    edge(corner, corners[(i + 1) % 4]!);
+  });
   return [
     Math.max(area[0], box[0]),
     Math.max(area[1], box[1]),
@@ -322,22 +365,37 @@ function rgb(hex: string): [number, number, number] {
   ];
 }
 
+/** Bytes per instance: x, y and the orientation code as float32. */
+const INSTANCE_BYTES = 12;
 interface MeshBuffer {
   vao: WebGLVertexArrayObject;
   vertices: WebGLBuffer;
   indices: WebGLBuffer;
   instances: WebGLBuffer;
+  /** Indices of the visible slabs: their top faces, then everything else. */
   count: number;
+  /** How many of them are the top faces. */
+  caps: number;
+  /** The height of the tallest visible slab in µm. */
+  thickness: number;
+  /** Bytes allocated for the instances. */
+  capacity: number;
 }
 interface InstanceData {
   data: Float32Array;
   count: number;
-  capacity: number;
 }
 interface Loaded {
   scene: SolidScene;
   cells: MeshBuffer[];
-  placements: InstanceData[];
+  /**
+   * Per cell, its placements in view, near ones then far ones: of each, those
+   * that keep the cell's handedness, then the mirrored ones, which turn every
+   * triangle the other way round.
+   */
+  placements: InstanceData[][];
+  /** What the placements were last chosen for. */
+  grouped?: { seen: Box; eye: Vec3; reach: number };
   top: MeshBuffer[];
   outline: MeshBuffer;
   highlight?: { geometry: SolidGeometry; mesh: MeshBuffer };
@@ -401,6 +459,7 @@ export function createSolidRenderer(
   const context = canvas.getContext("webgl2", {
     antialias: true,
     alpha: false,
+    powerPreference: "high-performance",
   });
   if (!context) return undefined;
   const gl = context;
@@ -408,6 +467,7 @@ export function createSolidRenderer(
   let uniforms: Record<string, WebGLUniformLocation | null> = {};
   let loaded: Loaded | undefined;
   let lost = false;
+  const matrix32 = new Float32Array(16);
 
   function initialize() {
     const linked = allocated(gl.createProgram());
@@ -454,7 +514,7 @@ export function createSolidRenderer(
     );
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LESS);
-    gl.disable(gl.CULL_FACE);
+    gl.enable(gl.CULL_FACE);
   }
   function deleteMesh(mesh: MeshBuffer) {
     gl.deleteVertexArray(mesh.vao);
@@ -492,10 +552,10 @@ export function createSolidRenderer(
       const instances = buffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, instances);
       gl.enableVertexAttribArray(3);
-      gl.vertexAttribPointer(3, 2, gl.FLOAT, false, 12, 0);
+      gl.vertexAttribPointer(3, 2, gl.FLOAT, false, INSTANCE_BYTES, 0);
       gl.vertexAttribDivisor(3, 1);
       gl.enableVertexAttribArray(4);
-      gl.vertexAttribPointer(4, 1, gl.FLOAT, false, 12, 8);
+      gl.vertexAttribPointer(4, 1, gl.FLOAT, false, INSTANCE_BYTES, 8);
       gl.vertexAttribDivisor(4, 1);
       const indices = buffer();
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
@@ -504,7 +564,16 @@ export function createSolidRenderer(
         mesh.indices.byteLength,
         gl.STATIC_DRAW,
       );
-      return { vao, vertices, indices, instances, count: 0 };
+      return {
+        vao,
+        vertices,
+        indices,
+        instances,
+        count: 0,
+        caps: 0,
+        thickness: 0,
+        capacity: 0,
+      };
     } catch (error) {
       gl.deleteVertexArray(vao);
       for (const value of buffers) gl.deleteBuffer(value);
@@ -520,10 +589,33 @@ export function createSolidRenderer(
       gl.STATIC_DRAW,
     );
   }
-  function setIndices(mesh: MeshBuffer, indices: Uint32Array) {
+  /** Send the indices of the slabs to show, every one without `shown`. */
+  function setIndices(
+    mesh: MeshBuffer,
+    geometry: SolidGeometry,
+    slabs: SolidScene["slabs"],
+    shown?: boolean[],
+  ) {
+    const ranges = geometry.ranges.filter(
+      (range) => !shown || shown[range.layer],
+    );
+    const indices = new Uint32Array(ranges.reduce((n, r) => n + r.count, 0));
+    let offset = 0;
+    for (const caps of [true, false])
+      for (const range of ranges) {
+        const start = range.start + (caps ? 0 : range.caps);
+        const count = caps ? range.caps : range.count - range.caps;
+        indices.set(geometry.indices.subarray(start, start + count), offset);
+        offset += count;
+      }
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.indices);
     gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, indices);
     mesh.count = indices.length;
+    mesh.caps = ranges.reduce((n, range) => n + range.caps, 0);
+    mesh.thickness = ranges.reduce((most, range) => {
+      const slab = slabs[range.layer];
+      return slab ? Math.max(most, slab.zstop - slab.zstart) : most;
+    }, 0);
   }
   function load(scene: SolidScene): Loaded {
     if (loaded?.scene === scene) return loaded;
@@ -577,15 +669,16 @@ export function createSolidRenderer(
     };
     loaded = data;
     try {
-      setIndices(data.outline, frame.indices);
+      setIndices(data.outline, frame, scene.slabs);
       staticInstance(data.outline, 0, 0);
       for (const cell of scene.cells) {
         data.cells.push(meshBuffer(cell));
-        data.placements.push({
-          data: new Float32Array(3),
-          count: 0,
-          capacity: 0,
-        });
+        data.placements.push(
+          Array.from({ length: 4 }, () => ({
+            data: new Float32Array(3),
+            count: 0,
+          })),
+        );
       }
       scene.top.forEach((batch, i) => {
         const mesh = meshBuffer(batch);
@@ -613,41 +706,61 @@ export function createSolidRenderer(
   function append(instances: InstanceData, x: number, y: number, code: number) {
     const offset = instances.count++ * 3;
     if (offset + 3 > instances.data.length) {
-      const larger = new Float32Array(
-        Math.max(offset + 3, instances.data.length * 2),
-      );
+      const larger = new Float32Array(instances.data.length * 2);
       larger.set(instances.data);
       instances.data = larger;
     }
-    instances.data.set([x, y, code], offset);
+    instances.data[offset] = x;
+    instances.data[offset + 1] = y;
+    instances.data[offset + 2] = code;
   }
-  function upload(mesh: MeshBuffer, instances: InstanceData) {
-    if (!instances.count) return;
-    gl.bindBuffer(gl.ARRAY_BUFFER, mesh.instances);
-    if (instances.capacity < instances.data.byteLength) {
-      gl.bufferData(
-        gl.ARRAY_BUFFER,
-        instances.data.byteLength,
-        gl.DYNAMIC_DRAW,
-      );
-      instances.capacity = instances.data.byteLength;
-    }
-    gl.bufferSubData(
-      gl.ARRAY_BUFFER,
-      0,
-      instances.data.subarray(0, instances.count * 3),
-    );
-  }
-  function drawMesh(mesh: MeshBuffer, count: number) {
-    if (!count || !mesh.count) return;
+  /** Draw a cell at its placements in view, sending them first when they changed. */
+  function drawPlaced(
+    mesh: MeshBuffer,
+    groups: InstanceData[],
+    changed: boolean,
+  ) {
+    const bytes =
+      groups.reduce((n, group) => n + group.count, 0) * INSTANCE_BYTES;
+    if (!bytes || !mesh.count) return;
     gl.bindVertexArray(mesh.vao);
-    gl.drawElementsInstanced(
-      gl.TRIANGLES,
-      mesh.count,
-      gl.UNSIGNED_INT,
-      0,
-      count,
-    );
+    gl.bindBuffer(gl.ARRAY_BUFFER, mesh.instances);
+    if (changed) {
+      // A fresh store each time, so the upload never waits for a frame that
+      // still reads the old one; every group is sent before any is drawn.
+      mesh.capacity = Math.max(bytes, mesh.capacity);
+      gl.bufferData(gl.ARRAY_BUFFER, mesh.capacity, gl.DYNAMIC_DRAW);
+      let offset = 0;
+      for (const group of groups) {
+        gl.bufferSubData(
+          gl.ARRAY_BUFFER,
+          offset,
+          group.data.subarray(0, group.count * 3),
+        );
+        offset += group.count * INSTANCE_BYTES;
+      }
+    }
+    let offset = 0;
+    groups.forEach((group, k) => {
+      if (!group.count) return;
+      gl.vertexAttribPointer(3, 2, gl.FLOAT, false, INSTANCE_BYTES, offset);
+      gl.vertexAttribPointer(4, 1, gl.FLOAT, false, INSTANCE_BYTES, offset + 8);
+      gl.frontFace(k % 2 ? gl.CW : gl.CCW);
+      gl.drawElementsInstanced(
+        gl.TRIANGLES,
+        k < 2 ? mesh.count : mesh.caps,
+        gl.UNSIGNED_INT,
+        0,
+        group.count,
+      );
+      offset += group.count * INSTANCE_BYTES;
+    });
+    gl.frontFace(gl.CCW);
+  }
+  function drawMesh(mesh: MeshBuffer) {
+    if (!mesh.count) return;
+    gl.bindVertexArray(mesh.vao);
+    gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, gl.UNSIGNED_INT, 0, 1);
   }
   function lostContext(event: Event) {
     event.preventDefault();
@@ -678,8 +791,9 @@ export function createSolidRenderer(
       gl.clearColor(14 / 255, 23 / 255, 32 / 255, 1);
       gl.clearDepth(1);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-      const { matrix, light } = matrices(camera, viewport, scene);
-      gl.uniformMatrix4fv(uniforms.matrix!, false, Float32Array.from(matrix));
+      const { matrix, light, eye } = matrices(camera, viewport, scene);
+      matrix32.set(matrix);
+      gl.uniformMatrix4fv(uniforms.matrix!, false, matrix32);
       gl.uniform1f(uniforms.zScale!, camera.zScale);
       gl.uniform3fv(uniforms.light!, light);
       const shown = scene.slabs.map(
@@ -692,12 +806,10 @@ export function createSolidRenderer(
           [scene.top, data.top],
         ] as const)
           meshes.forEach((mesh, i) =>
-            setIndices(
-              buffers[i]!,
-              visibleIndices(mesh.indices, mesh.ranges, shown),
-            ),
+            setIndices(buffers[i]!, mesh, scene.slabs, shown),
           );
         data.visibility = visibility;
+        data.grouped = undefined;
       }
       if (data.highlight && data.highlight.geometry !== highlight) {
         deleteMesh(data.highlight.mesh);
@@ -705,7 +817,7 @@ export function createSolidRenderer(
       }
       if (highlight && !data.highlight) {
         const mesh = meshBuffer(highlight);
-        setIndices(mesh, highlight.indices);
+        setIndices(mesh, highlight, scene.slabs);
         staticInstance(mesh, 0, 0);
         gl.bindVertexArray(null);
         data.highlight = { geometry: highlight, mesh };
@@ -717,30 +829,75 @@ export function createSolidRenderer(
         scene.box.map((v) => v / scene.dbu) as Box,
         scene.zRange,
       ).map((v) => v * scene.dbu) as Box;
-      for (const instances of data.placements) instances.count = 0;
-      for (const i of querySpatial(scene.placements, seen)) {
-        const offset = i * 4;
-        const cell = scene.instances[offset]!;
-        if (!data.cells[cell]!.count) continue;
-        append(
-          data.placements[cell]!,
-          scene.instances[offset + 1]! - ax,
-          scene.instances[offset + 2]! - ay,
-          scene.instances[offset + 3]!,
+      // From above the stack only top faces and walls can be seen, and a
+      // wall of height h at ground distance r and distance d covers about
+      // h · r / d² of a radian, so walls are too small to see when
+      // h · r · reach < d².
+      const ceiling = scene.zRange[1] * camera.zScale * scene.dbu;
+      const reach =
+        eye[2] > ceiling
+          ? (viewport.pixelHeight * camera.zScale * scene.dbu) /
+            (2 * Math.tan(radians(FOV / 2)) * FAR_PIXELS)
+          : 0;
+      const height = eye[2] - ceiling;
+      /** Whether the placement whose box starts here is far. */
+      const far = (mesh: MeshBuffer, at: number) => {
+        const boxes = scene.placements.items;
+        const x0 = boxes[at]!,
+          y0 = boxes[at + 1]!,
+          x1 = boxes[at + 2]!,
+          y1 = boxes[at + 3]!;
+        const x = (x0 + x1) / 2 - ax - eye[0],
+          y = (y0 + y1) / 2 - ay - eye[1];
+        const square = x * x + y * y;
+        return (
+          mesh.thickness *
+            (Math.sqrt(square) + (x1 - x0 + y1 - y0) / 2) *
+            reach <
+          square + height * height
         );
+      };
+      // The placements are kept while the same ground is in view and the
+      // viewer has hardly moved: turning around a whole scene regroups them
+      // every few frames only.
+      const known = data.grouped;
+      const changed =
+        !known ||
+        known.reach !== reach ||
+        known.seen.some((value, i) => value !== seen[i]) ||
+        (reach > 0 &&
+          Math.hypot(...eye.map((value, i) => value - known.eye[i]!)) >
+            camera.distance * scene.dbu * 0.03);
+      if (changed) {
+        for (const groups of data.placements)
+          for (const group of groups) group.count = 0;
+        for (const i of querySpatial(scene.placements, seen)) {
+          const offset = i * 4;
+          const cell = scene.instances[offset]!;
+          const mesh = data.cells[cell]!;
+          if (!mesh.count) continue;
+          const code = scene.instances[offset + 3]!;
+          append(
+            data.placements[cell]![
+              (code < 4 ? 0 : 1) + (reach && far(mesh, offset) ? 2 : 0)
+            ]!,
+            scene.instances[offset + 1]! - ax,
+            scene.instances[offset + 2]! - ay,
+            code,
+          );
+        }
+        data.grouped = { seen, eye, reach };
       }
       gl.uniform4f(uniforms.override!, 0, 0, 0, 0);
-      data.cells.forEach((mesh, i) => {
-        upload(mesh, data.placements[i]!);
-        drawMesh(mesh, data.placements[i]!.count);
-      });
-      for (const i of querySpatial(scene.routing, seen))
-        drawMesh(data.top[i]!, 1);
+      data.cells.forEach((mesh, i) =>
+        drawPlaced(mesh, data.placements[i]!, changed),
+      );
+      for (const i of querySpatial(scene.routing, seen)) drawMesh(data.top[i]!);
       gl.uniform4f(uniforms.override!, 0.3, 0.36, 0.42, 1);
-      drawMesh(data.outline, 1);
+      drawMesh(data.outline);
       if (data.highlight) {
         gl.uniform4f(uniforms.override!, 1, 1, 1, 1);
-        drawMesh(data.highlight.mesh, 1);
+        drawMesh(data.highlight.mesh);
       }
       gl.bindVertexArray(null);
     },

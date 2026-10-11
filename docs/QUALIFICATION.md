@@ -167,6 +167,41 @@ minimap and **Show selection**.
   (unit tests cover a box and an L-shaped polygon crossing the edge). The region request on a stack with no shapes in it lists no
   materials. The 3D tab of the e2e fixture (`tests/workspace.spec.ts`) shows the two
   materials, draws frames on its own canvas, and returns to the Layout tab with its layers.
+- **3D view speed (11 October 2026).** Measured with `tools/benchmark-solid.mjs --headed`
+  (Chromium, ANGLE on the RTX 3060, 1100 × 700) on fresh Docker Post-layout builds, each
+  design with the renderer of commit `431d28d` and with the optimized one; `--tile N` repeats
+  a design N × N times. At fit, before → after:
+
+  | Design                       | Triangles drawn | GPU p50 ms  | CPU p50 ms | Frame p50 ms | Preparation ms |
+  | ---------------------------- | --------------- | ----------- | ---------- | ------------ | -------------- |
+  | `01_simpleRegister`, SKY130  | 78 k → 78 k     | 0.10 → 0.06 | 0.2 → 0.2  | 16.7 → 16.7  | 30 → 17        |
+  | `01_simpleRegister`, IHP     | 81 k → 81 k     | 0.10 → 0.07 | 0.2 → 0.2  | 16.7 → 16.7  | 62 → 16        |
+  | `16_mem`                     | 8.26 M → 2.24 M | 4.4 → 1.2   | 1.4 → 0.5  | 16.7 → 16.7  | 394 → 250      |
+  | `17_afifo`                   | 8.68 M → 2.30 M | 4.3 → 1.8   | 1.5 → 0.6  | 16.7 → 16.7  | 385 → 259      |
+  | `17_afifo` × 4 (`--tile 2`)  | 34.7 M → 9.2 M  | 10.1 → 3.0  | 4.9 → 1.0  | 16.7 → 16.7  | 1466 → 1059    |
+  | `17_afifo` × 16 (`--tile 4`) | 139 M → 36.8 M  | 35.1 → 9.1  | 18.1 → 1.0 | 50.0 → 16.7  | 7136 → 4298    |
+  | `16_mem` × 16 (`--tile 4`)   | 132 M → 35.8 M  | 33.6 → 9.1  | 17.6 → 1.1 | 49.9 → 16.7  | 6390 → 4611    |
+
+  At twice the pixel ratio `17_afifo` × 4 went from 33.3 to 16.7 ms per frame. A close view
+  along the ground (elevation 10°) of `17_afifo` draws 5.66 M triangles instead of all 8.68 M.
+  Draw calls for the × 16 designs fell from 8,247 to 2,148 (routing batches grow with the
+  design). Frames that regroup placements cost more CPU: p95 2.3 ms on `17_afifo`, 20 ms on
+  the × 16 design (261,280 placements). The first GPU workload after loading a tiled design
+  sometimes read 12 ms instead of 3 ms for the same frames; later workloads did not.
+  Images: eight views of each of the four designs were read back from both renderers. On the
+  registers they match within 0.06 % of the drawn pixels except the top view (walls of far
+  cells, one pixel wide) and one view from inside a metal shape, which used to show the
+  shape's inner walls and now shows the scene. On `16_mem` and `17_afifo` 14 to 39 % of the
+  drawn pixels of the fit, top and middle-distance views differ, from walls under two pixels of
+  far cells; side by side the frames could not be told apart by eye. Dropping walls of far
+  wires was tried and removed: it visibly paled the routing.
+  Browser tests (`tests/solid.spec.ts`): a plain and a mirrored placement and a top shape are
+  closed from two sides and from below, and from far above the two placements send 6 indices
+  each. `tests/workspace.spec.ts` delays animation frames by 40 ms and sees the 3D canvas at
+  half width during a drag and at full width afterwards. The release CLI answers
+  `layout_solid` for `17_afifo` in about 50 ms (GDS read 34, evaluation 11, serialization 6),
+  so the GDS was not cached; the 744 ms above was a debug build.
+
 - **Editor (browser test).** Draw a rectangle, set 80 × 60, give three ports sides, see
   the same values in Project Settings, change the width there to 90 and see it in the
   view, drag `fast` above `slow` on the right side, save: the project file holds the
@@ -180,7 +215,8 @@ neither PDK uses; a GDS with magnified or non-quarter-turn placements (the reade
 them as errors by design) or with arrays (none in a place-and-route GDS; covered by unit
 tests only); a layout larger than `17_afifo` in the view; a flow stopped by pin slots or by
 routing congestion; the 3D tab inside the Tauri window (no desktop automation; the WebGL2
-probe of the layout view stands), a 2.5D script using DRC operations outside the subset
+probe of the layout view stands), the 3D view's speed on an integrated GPU or in WebKitGTK
+and its half-resolution mode on a GPU that is really slow (only with delayed frames), a 2.5D script using DRC operations outside the subset
 (reported as unavailable by design), booleans across the hierarchy, GF180 (no 2.5D script),
 and the 3D view's z ranges against KLayout's beyond the by-eye comparison. The later GDS
 viewer qualification below covers the actual Tauri layout pane.

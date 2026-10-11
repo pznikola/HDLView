@@ -3240,6 +3240,38 @@ test("GDS masks and overlays share frames, stay loaded across panes, and ignore 
   await pane.getByLabel("met1.first").uncheck();
   await pane.getByRole("button", { name: "Top", exact: true }).click();
   await page.getByLabel("Z scale").fill("4");
+  // Frames that come late halve the 3D resolution while the view moves; at
+  // rest it is drawn sharp again.
+  const solidWidths = () =>
+    page.evaluate(() =>
+      window.maskFrames.filter((r) => r.kind === "solid").map((r) => r.width),
+    );
+  const sharp = (await solidWidths()).at(-1)!;
+  await page.evaluate(() => {
+    const raf = window.requestAnimationFrame;
+    window.requestAnimationFrame = (callback) => {
+      setTimeout(() => raf(callback), 40);
+      return 0;
+    };
+    window.addEventListener(
+      "pointerup",
+      () => (window.requestAnimationFrame = raf),
+      { once: true },
+    );
+  });
+  const solidBox = (await pane.getByLabel("3D layout").boundingBox())!;
+  const drawnBefore = (await solidWidths()).length;
+  await page.mouse.move(solidBox.x + 100, solidBox.y + 100);
+  await page.mouse.down();
+  for (let step = 1; step <= 10; step++) {
+    await page.mouse.move(solidBox.x + 100 + step * 4, solidBox.y + 100);
+    await page.waitForTimeout(70);
+  }
+  await page.mouse.up();
+  expect((await solidWidths()).slice(drawnBefore)).toContain(
+    Math.round(sharp / 2),
+  );
+  await expect.poll(async () => (await solidWidths()).at(-1)).toBe(sharp);
   await pane.getByRole("button", { name: "Layout", exact: true }).click();
   await expect(pane.getByLabel("Layout", { exact: true })).toBeVisible();
   await expect(pane.getByLabel("met1.first")).toBeChecked();

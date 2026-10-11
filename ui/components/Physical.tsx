@@ -69,6 +69,10 @@ type Drag =
   | { kind: "draw"; from: Point; to: Point }
   | { kind: "resize"; handle: Handle }
   | { kind: "pin"; port: string; at: Point };
+/** A 3D frame after which the next one starts later than this came too late. */
+const SLOW_FRAME_MS = 25;
+/** This many late 3D frames in a row halve the resolution until the view rests. */
+const SLOW_FRAMES = 3;
 /** What the 3D view is built from: the Layout view's region or the whole design. */
 interface SolidRequest {
   /** The Layout view's area in database units when the 3D tab was opened. */
@@ -144,12 +148,22 @@ export function Physical({
   const renderer = useRef<LayoutRenderer>(undefined);
   const [unsupported, setUnsupported] = useState(false);
   const [solidRequest, setSolidRequest] = useState<SolidRequest>();
-  const [solid, setSolid] = useState<SolidData>();
+  // The shapes go to the preparation worker and are not kept here.
+  const [solid, setSolid] = useState<Pick<SolidData, "materials" | "slabs">>();
   const [solidScene, setSolidScene] = useState<SolidScene>();
   const solidCanvas = useRef<HTMLCanvasElement>(null);
   const solidRenderer = useRef<SolidRenderer>(undefined);
   const solidCamera = useRef<SolidCamera>(undefined);
   const presentedSolid = useRef<SolidCamera>(undefined);
+  // While frames come late the 3D view moves at half resolution.
+  const solidPace = useRef<{ slow: number; coarse: boolean; settle?: number }>({
+    slow: 0,
+    coarse: false,
+  });
+  useEffect(() => {
+    const pace = solidPace.current;
+    return () => window.clearTimeout(pace.settle);
+  }, []);
   const [solidDrag, setSolidDrag] = useState<{
     kind: "orbit" | "pan";
     from: Point;
@@ -286,8 +300,10 @@ export function Physical({
   // layers hidden in the Layout tab start hidden, as in KLayout.
   useEffect(() => {
     setSolid(undefined);
+    setSolidScene(undefined);
     if (!solidId || !solidRequest) return;
     let active = true;
+    let worker: Worker | undefined;
     const box = solidRequest.whole ? undefined : solidRequest.region;
     api<SolidData>("layout_solid", {
       snapshot_id: solidId,
@@ -295,7 +311,7 @@ export function Physical({
     })
       .then((data) => {
         if (!active) return;
-        setSolid(data);
+        setSolid({ materials: data.materials, slabs: data.slabs });
         setHiddenMaterials(
           new Set(
             data.materials
@@ -307,37 +323,31 @@ export function Physical({
               .map((material) => material.name),
           ),
         );
+        const started = new Worker(
+          new URL("../solid.worker.ts", import.meta.url),
+          { type: "module" },
+        );
+        worker = started;
+        started.onmessage = ({ data }: MessageEvent<SolidResponse>) => {
+          if (!active) return;
+          if ("error" in data) fail(data.error);
+          else setSolidScene(data.scene);
+          started.terminate();
+        };
+        started.onerror = (event) => {
+          if (active) fail(event.message);
+          started.terminate();
+        };
+        started.postMessage(data);
       })
       .catch((error: unknown) => {
         if (active) fail(error);
       });
     return () => {
       active = false;
+      worker?.terminate();
     };
   }, [solidId, solidRequest, fail]);
-  useEffect(() => {
-    setSolidScene(undefined);
-    if (!solid) return;
-    const worker = new Worker(new URL("../solid.worker.ts", import.meta.url), {
-      type: "module",
-    });
-    let current = true;
-    worker.onmessage = ({ data }: MessageEvent<SolidResponse>) => {
-      if (!current) return;
-      if ("error" in data) fail(data.error);
-      else setSolidScene(data.scene);
-      worker.terminate();
-    };
-    worker.onerror = (event) => {
-      if (current) fail(event.message);
-      worker.terminate();
-    };
-    worker.postMessage(solid);
-    return () => {
-      current = false;
-      worker.terminate();
-    };
-  }, [solid, fail]);
 
   // The flow's wire boxes supply names and selection overlays.
   const wanted = layout?.layers.findIndex(
@@ -562,11 +572,19 @@ export function Physical({
           ? { ...solidCamera.current, zScale }
           : fittedSolid;
         if (!solidRenderer.current || !solidScene || !shown) return;
+        const pace = solidPace.current;
+        const started = performance.now();
         try {
           solidRenderer.current.draw(
             solidScene,
             shown,
-            viewport,
+            pace.coarse
+              ? viewportSize(
+                  size.width,
+                  size.height,
+                  (window.devicePixelRatio || 1) / 2,
+                )
+              : viewport,
             hiddenMaterials,
             solidHighlight,
           );
@@ -575,6 +593,20 @@ export function Physical({
           return;
         }
         presentedSolid.current = shown;
+        if (pace.coarse) {
+          // The view at rest is drawn sharp again, and that frame is timed too.
+          window.clearTimeout(pace.settle);
+          pace.settle = window.setTimeout(() => {
+            pace.coarse = false;
+            pace.slow = SLOW_FRAMES - 1;
+            schedule();
+          }, 150);
+        } else
+          requestAnimationFrame(() => {
+            pace.slow =
+              performance.now() - started > SLOW_FRAME_MS ? pace.slow + 1 : 0;
+            if (pace.slow >= SLOW_FRAMES) pace.coarse = true;
+          });
         return;
       }
       const element = canvas.current;

@@ -7,20 +7,55 @@ import type { SolidData, SolidMaterial, SolidShapes, SolidSlab } from "./types";
 /** Bytes per vertex: x, y, z as float32, the normal as three int8, the slab as uint8. */
 export const VERTEX_BYTES = 16;
 
+/** A slab's indices: the top caps first, then the bottom caps and the walls. */
+export interface SolidRange extends IndexRange {
+  /** How many of the indices are the top caps. */
+  caps: number;
+}
 export interface SolidGeometry {
   vertices: ArrayBuffer;
   indices: Uint32Array;
   /** `layer` is the slab index. */
-  ranges: IndexRange[];
+  ranges: SolidRange[];
   triangles: number;
 }
+
+/** Twice the area of a ring of flat x, y; positive when anticlockwise. */
+function doubledArea(points: number[], from: number, to: number): number {
+  let area = 0;
+  for (let i = from; i < to; i++) {
+    const j = i + 1 < to ? i + 1 : from;
+    area +=
+      points[i * 2]! * points[j * 2 + 1]! - points[j * 2]! * points[i * 2 + 1]!;
+  }
+  return area;
+}
+/** The rings with the outer one anticlockwise and the holes clockwise. */
+function outward(points: number[], holes: number[]): number[] {
+  const turned = points.slice();
+  for (let ring = 0; ring <= holes.length; ring++) {
+    const from = ring ? holes[ring - 1]! : 0;
+    const to = holes[ring] ?? points.length / 2;
+    if (doubledArea(points, from, to) < 0 === (ring === 0))
+      for (let i = from, j = to - 1; i < j; i++, j--)
+        for (const axis of [0, 1]) {
+          const kept = turned[i * 2 + axis]!;
+          turned[i * 2 + axis] = turned[j * 2 + axis]!;
+          turned[j * 2 + axis] = kept;
+        }
+  }
+  return turned;
+}
+
+const RECTANGLE = [0, 1, 2, 0, 2, 3];
+const NO_HOLES: number[] = [];
 
 /**
  * Every shape of each slab as a closed solid: a top and a bottom cap and one
  * wall per edge of every ring, holes included. Coordinates are database units
  * relative to `origin`, so a float32 holds them exactly; heights are the slab's
- * µm times `dbu`. Walls get the edge's perpendicular as their normal and are
- * lit from both sides, so ring orientation does not matter.
+ * µm times `dbu`. Every triangle is anticlockwise seen from outside the solid,
+ * so the faces turned away from the viewer can be skipped.
  */
 export function extrude(
   parts: Iterable<[number, SolidShapes]>,
@@ -28,100 +63,138 @@ export function extrude(
   dbu: number,
   origin: [number, number] = [0, 0],
 ): SolidGeometry {
-  const positions: number[] = [];
-  const normals: number[] = [];
-  const owners: number[] = [];
-  const indices: number[] = [];
-  const ranges: IndexRange[] = [];
-  const vertex = (
-    x: number,
-    y: number,
-    z: number,
-    nx: number,
-    ny: number,
-    nz: number,
-    slab: number,
-  ) => {
-    positions.push(x - origin[0], y - origin[1], z);
-    normals.push(nx, ny, nz);
-    owners.push(slab);
-    return owners.length - 1;
-  };
-  const solid = (
-    points: number[],
-    holes: number[],
-    rectangle: boolean,
-    z0: number,
-    z1: number,
-    slab: number,
-  ) => {
-    const count = points.length / 2;
-    const cap = (z: number, nz: number) => {
-      const base = owners.length;
-      for (let i = 0; i < count; i++)
-        vertex(points[i * 2]!, points[i * 2 + 1]!, z, 0, 0, nz, slab);
-      for (const i of rectangle
-        ? [0, 1, 2, 0, 2, 3]
-        : earcut(points, holes.length ? holes : undefined))
-        indices.push(base + i);
-    };
-    cap(z1, 1);
-    cap(z0, -1);
-    const starts = [0, ...holes, count];
-    for (let ring = 0; ring + 1 < starts.length; ring++) {
-      const from = starts[ring]!,
-        to = starts[ring + 1]!;
-      for (let i = from; i < to; i++) {
-        const j = i + 1 < to ? i + 1 : from;
-        const [x0, y0, x1, y1] = [
-          points[i * 2]!,
-          points[i * 2 + 1]!,
-          points[j * 2]!,
-          points[j * 2 + 1]!,
-        ];
-        const length = Math.hypot(x1 - x0, y1 - y0) || 1;
-        const nx = (y1 - y0) / length,
-          ny = (x0 - x1) / length;
-        const base = vertex(x0, y0, z0, nx, ny, 0, slab);
-        vertex(x1, y1, z0, nx, ny, 0, slab);
-        vertex(x1, y1, z1, nx, ny, 0, slab);
-        vertex(x0, y0, z1, nx, ny, 0, slab);
-        indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
-      }
-    }
-  };
+  // The sizes first, so the buffers are allocated once.
+  const prepared: {
+    slab: number;
+    z0: number;
+    z1: number;
+    boxes: number[];
+    polygons: { points: number[]; holes: number[]; triangles: number[] }[];
+    caps: number;
+    count: number;
+  }[] = [];
+  let vertexCount = 0,
+    indexCount = 0;
   for (const [slab, shapes] of parts) {
     const range = slabs[slab];
     if (!range) throw new Error(`Unknown slab ${slab}`);
-    const z0 = range.zstart * dbu,
-      z1 = range.zstop * dbu;
-    const start = indices.length;
-    for (let i = 0; i < shapes.boxes.length; i += 4) {
-      const [x0, y0, x1, y1] = shapes.boxes.slice(i, i + 4) as Box;
-      solid([x0, y0, x1, y0, x1, y1, x0, y1], [], true, z0, z1, slab);
-    }
-    for (const [points, holes] of shapes.polygons)
-      solid(points, holes, false, z0, z1, slab);
-    ranges.push({ layer: slab, start, count: indices.length - start });
+    const boxes = shapes.boxes.length / 4;
+    let caps = boxes * 6,
+      walls = boxes * 24;
+    vertexCount += boxes * 24;
+    const polygons = shapes.polygons.map(([points, holes]) => {
+      const turned = outward(points, holes);
+      const triangles = earcut(turned, holes.length ? holes : undefined);
+      caps += triangles.length;
+      walls += points.length * 3;
+      vertexCount += points.length * 3;
+      return { points: turned, holes, triangles };
+    });
+    const count = caps * 2 + walls;
+    prepared.push({
+      slab,
+      z0: range.zstart * dbu,
+      z1: range.zstop * dbu,
+      boxes: shapes.boxes,
+      polygons,
+      caps,
+      count,
+    });
+    indexCount += count;
   }
-  const vertices = new ArrayBuffer(owners.length * VERTEX_BYTES);
+  const vertices = new ArrayBuffer(vertexCount * VERTEX_BYTES);
   const floats = new Float32Array(vertices);
   const bytes = new Int8Array(vertices);
-  const unsigned = new Uint8Array(vertices);
-  owners.forEach((slab, i) => {
-    floats.set(positions.slice(i * 3, i * 3 + 3), i * 4);
-    for (let axis = 0; axis < 3; axis++)
-      bytes[i * VERTEX_BYTES + 12 + axis] = Math.round(
-        normals[i * 3 + axis]! * 127,
-      );
-    unsigned[i * VERTEX_BYTES + 15] = slab;
-  });
-  return {
-    vertices,
-    indices: Uint32Array.from(indices),
-    ranges,
-    triangles: indices.length / 3,
-  };
+  const indices = new Uint32Array(indexCount);
+  const ranges: SolidRange[] = [];
+  let next = 0,
+    top = 0,
+    rest = 0;
+  for (const { slab, z0, z1, boxes, polygons, caps, count } of prepared) {
+    const vertex = (
+      x: number,
+      y: number,
+      z: number,
+      nx: number,
+      ny: number,
+      nz: number,
+    ) => {
+      floats[next * 4] = x - origin[0];
+      floats[next * 4 + 1] = y - origin[1];
+      floats[next * 4 + 2] = z;
+      const at = next * VERTEX_BYTES + 12;
+      bytes[at] = Math.round(nx * 127);
+      bytes[at + 1] = Math.round(ny * 127);
+      bytes[at + 2] = nz * 127;
+      bytes[at + 3] = slab;
+      return next++;
+    };
+    const solid = (points: number[], holes: number[], triangles: number[]) => {
+      const total = points.length / 2;
+      const upper = next;
+      for (let i = 0; i < total; i++)
+        vertex(points[i * 2]!, points[i * 2 + 1]!, z1, 0, 0, 1);
+      const lower = next;
+      for (let i = 0; i < total; i++)
+        vertex(points[i * 2]!, points[i * 2 + 1]!, z0, 0, 0, -1);
+      for (let i = 0; i < triangles.length; i += 3) {
+        const a = triangles[i]!;
+        let b = triangles[i + 1]!,
+          c = triangles[i + 2]!;
+        const turn =
+          (points[b * 2]! - points[a * 2]!) *
+            (points[c * 2 + 1]! - points[a * 2 + 1]!) -
+          (points[c * 2]! - points[a * 2]!) *
+            (points[b * 2 + 1]! - points[a * 2 + 1]!);
+        if (turn < 0) [b, c] = [c, b];
+        indices[top++] = upper + a;
+        indices[top++] = upper + b;
+        indices[top++] = upper + c;
+        indices[rest++] = lower + a;
+        indices[rest++] = lower + c;
+        indices[rest++] = lower + b;
+      }
+      for (let ring = 0; ring <= holes.length; ring++) {
+        const from = ring ? holes[ring - 1]! : 0;
+        const to = holes[ring] ?? total;
+        for (let i = from; i < to; i++) {
+          const j = i + 1 < to ? i + 1 : from;
+          const x0 = points[i * 2]!,
+            y0 = points[i * 2 + 1]!,
+            x1 = points[j * 2]!,
+            y1 = points[j * 2 + 1]!;
+          const length = Math.hypot(x1 - x0, y1 - y0) || 1;
+          const nx = (y1 - y0) / length,
+            ny = (x0 - x1) / length;
+          const base = vertex(x0, y0, z0, nx, ny, 0);
+          vertex(x1, y1, z0, nx, ny, 0);
+          vertex(x1, y1, z1, nx, ny, 0);
+          vertex(x0, y0, z1, nx, ny, 0);
+          indices[rest++] = base;
+          indices[rest++] = base + 1;
+          indices[rest++] = base + 2;
+          indices[rest++] = base;
+          indices[rest++] = base + 2;
+          indices[rest++] = base + 3;
+        }
+      }
+    };
+    const start = top;
+    rest = start + caps;
+    const corners = [0, 0, 0, 0, 0, 0, 0, 0];
+    for (let i = 0; i < boxes.length; i += 4) {
+      corners[0] = corners[6] = boxes[i]!;
+      corners[1] = corners[3] = boxes[i + 1]!;
+      corners[2] = corners[4] = boxes[i + 2]!;
+      corners[5] = corners[7] = boxes[i + 3]!;
+      solid(corners, NO_HOLES, RECTANGLE);
+    }
+    for (const { points, holes, triangles } of polygons)
+      solid(points, holes, triangles);
+    ranges.push({ layer: slab, start, count, caps });
+    top = start + count;
+  }
+  return { vertices, indices, ranges, triangles: indexCount / 3 };
 }
 
 export interface SolidScene {
@@ -165,10 +238,11 @@ export function prepareSolid(data: SolidData): SolidScene {
       parts.push({ slab, box, shape: polygon });
     }
   });
-  // Nearby whole shapes share a batch; a batch's origin keeps its coordinates small.
+  // Nearby whole shapes share a batch; a batch's origin keeps its coordinates
+  // small. Batches grow with the design, so their number stays in the thousands.
   const partition = spatialIndex(
     parts.map((part) => part.box),
-    128,
+    Math.max(128, Math.ceil(parts.length / 2048)),
   );
   const top: SolidGeometry[] = [];
   const origins: number[] = [];

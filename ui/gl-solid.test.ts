@@ -117,10 +117,49 @@ describe("3D camera", () => {
     expect(
       footprint({ ...top, distance: 5000 }, viewport, box, [0, 0]),
     ).toEqual(box);
-    // Rays above the horizon see to the edge of the scene.
-    expect(footprint({ ...top, elevation: 5 }, viewport, box, [0, 2])).toEqual(
+  });
+
+  it("leaves out the ground behind and beside a view along the ground", () => {
+    const box: [number, number, number, number] = [0, 0, 1000, 1000];
+    const low: SolidCamera = {
+      pivot: [500, 500, 0],
+      azimuth: 0,
+      elevation: 5,
+      distance: 200,
+      zScale: 1,
+    };
+    // Looking north from 200 µm south of the pivot: rays above the horizon
+    // see to the far edge, and the ground starts where the lowest rays reach
+    // the top of the stack, 30 µm ahead of the viewer.
+    const seen = footprint(low, viewport, box, [0, 2]);
+    expect(seen[3]).toBe(1000);
+    expect(seen[1]).toBeGreaterThan(325);
+    expect(seen[1]).toBeLessThan(335);
+    expect([seen[0], seen[2]]).toEqual([0, 1000]);
+    // Looking down more steeply, every side is left out.
+    const close = footprint(
+      { ...low, elevation: 40, distance: 20 },
+      viewport,
       box,
+      [0, 2],
     );
+    expect(close[1]).toBeGreaterThan(475);
+    expect(close[3]).toBeLessThan(600);
+    expect(close[0]).toBeGreaterThan(400);
+    expect(close[0] + close[2]).toBeCloseTo(1000);
+    // The stretched heights are the ones cut.
+    const tall = footprint({ ...low, zScale: 20 }, viewport, box, [0, 2]);
+    expect(tall[1]).toBeLessThan(seen[1]);
+    // A view that misses the stack shows no ground.
+    const away = footprint(
+      { ...low, pivot: [500, 5000, 0], distance: 20 },
+      viewport,
+      box,
+      [0, 2],
+    );
+    expect(away[1]).toBeGreaterThan(away[3]);
+    const up = footprint({ ...low, elevation: -60 }, viewport, box, [0, 2]);
+    expect(up[0] <= up[2] && up[1] <= up[3]).toBe(true);
   });
 
   it("builds highlights relative to the scene anchor", () => {
