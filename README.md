@@ -99,6 +99,9 @@ The schematic uses gate, mux, register, arithmetic, memory and directional-port 
 Open a module with its expansion button or double-click it; **Back to parent schematic**
 restores the previous camera. The stages are **Elaborated RTL**, **Mapped gates** and
 **Post-layout**; the two gate stages need physical settings and the PDK toolchain.
+Delays in the design, such as `assign #5 y = a;`, are not drawn: the schematic shows the
+logic alone, and an RTL simulation compiles the sources and keeps the delays. A source
+that sets no time unit is simulated with 1 ns units and 1 ps precision.
 
 Elaborated RTL can compact complete mux trees, decoders and priority encoders. Open those
 symbols to inspect original compiler nodes. Selecting a dumped internal signal in Waveforms

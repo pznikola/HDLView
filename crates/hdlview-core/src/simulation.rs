@@ -190,6 +190,10 @@ pub fn simulate(
                     args.push(format!("-T{corner}"));
                 }
             }
+            // Sources that set no time unit share the harness's, not Icarus's one second.
+            let timescale = dir.join("timescale.f");
+            fs::write(&timescale, "+timescale+1ns/1ps\n")?;
+            args.extend(["-c".into(), timescale.to_string_lossy().into()]);
             args.extend(incargs);
             args.extend(files.iter().map(|p| p.to_string_lossy().into_owned()));
             let compile = r.run("iverilog", &args, &dir, "iverilog-compile")?;
@@ -211,6 +215,8 @@ pub fn simulate(
                 "--Mdir".into(),
                 dir.join("obj").to_string_lossy().into(),
                 "-Wno-fatal".into(),
+                "--timescale".into(),
+                "1ns/1ps".into(),
             ];
             args.extend(incargs);
             args.extend(files.iter().map(|p| p.to_string_lossy().into_owned()));

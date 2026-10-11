@@ -64,8 +64,9 @@ fn frontend(r: &Runner, p: &ProjectConfig) -> Result<(String, Vec<String>)> {
     let mut script = String::new();
     let plugins = {
         let plugins = plugin(r, "slang", "read_slang")?;
+        // Delays cannot be drawn; simulation compiles the sources and keeps them.
         script.push_str(&format!(
-            "--keep-hierarchy --std={} --top {} ",
+            "--keep-hierarchy --ignore-timing --std={} --top {} ",
             p.standard,
             identifier(&p.top)?
         ));
