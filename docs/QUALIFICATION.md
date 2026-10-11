@@ -142,7 +142,74 @@ KLayout render by eye); KLayout's built-in stipples other than solid and hollow,
 neither PDK uses; a GDS with magnified or non-quarter-turn placements (the reader reports
 them as errors by design) or with arrays (none in a place-and-route GDS; covered by unit
 tests only); a layout larger than `17_afifo` in the view; a flow stopped by pin slots or by
-routing congestion; a layout opened in the Tauri window (only the WebGL2 probe ran there).
+routing congestion. The later GDS viewer qualification below covers the actual Tauri layout pane.
+
+## GDS viewer precision, lifecycle and performance
+
+10 October 2026, production mask renderer and preparation worker, current saved physical
+artifacts. This supersedes the mask-view navigation measurements above. The viewer keeps
+actual cell geometry at every zoom, projects camera-relative high/low DBU coordinates, and
+presents masks and overlays in one animation frame.
+
+- GPU transform-feedback regressions execute the production shader with all eight orientations,
+  top-level and instantiated geometry, origins at −90,000,001, 90,000,001 and 2,147,483,001 DBU,
+  fractional pans, zoom limits 0.01–2000, and display scales 1, 1.25, 1.5 and 2. Projected
+  error stays below 0.25 device pixel. Pixel readbacks check coincident edge motion, exact
+  return to the original camera, layer visibility, and context restoration. Additional
+  coverage checks two-DBU gaps in cells with large local coordinates.
+- The CLI-backed browser workflow loads an actual fixture GDS and layer file, pans/zooms,
+  picks a wire, resizes at fractional display scale, toggles layers, reopens the pane, and
+  delays a real mask response across snapshot changes. Every mask frame has its overlay in
+  the same callback and at the same backing size; reopening causes no layout refetch or
+  second preparation worker. A static-BVH regression checks inclusive viewport boundaries
+  against a brute-force query and retains whole crossing polygons and original outlines.
+- `tools/check-mask-geometry.py` checks coordinate/orientation placement multisets and XOR
+  polygon coverage against KLayout 0.28.8, including recursive cell geometry. All comparisons
+  have zero differing DBU²: SKY130 register, 92 placements / 264 layer-cell comparisons;
+  IHP register, 89 / 208; SKY130 FIFO, 16,330 / 1,980. Shape counts alone are not the oracle.
+- Tauri/WebKitGTK 2.50.4 loaded the real FIFO through native IPC. Pointer-centered wheel zoom,
+  real pointer pans and reversal, layer toggles, pane reopening, window resize and context
+  loss/restoration completed without page or GL errors. One preparation worker was retained
+  across pane switches; masks and overlays shared all observed frame IDs and dimensions.
+  Antialiasing was enabled in the actual context, with four multisamples after restoration.
+  WebGL2's drawing-buffer requirements are specified in the [Khronos specification](https://registry.khronos.org/webgl/specs/latest/2.0/#THE_DRAWING_BUFFER).
+  PDK bitmap patterns remain screen-based, independently of moving polygon edges.
+
+`tools/benchmark-masks.mjs` measures the physical viewer separately from schematic layout.
+It runs 65 frames per workload and discards five warm-up frames. First-visible timing starts
+when an already decoded `MaskData` is posted to the worker and ends at GPU completion; it
+excludes GDS parsing and IPC. Worker preparation includes startup, triangulation, BVHs and
+transfer. Steady-frame timing never waits synchronously for the GPU; GPU duration uses
+`EXT_disjoint_timer_query_webgl2` when available. Submitted index references count both fill
+and outline passes, including instance multiplicity; they are not unique mesh vertices.
+
+FIFO, 1100 × 700, Chromium on NVIDIA RTX 3060 Laptop GPU, all initially visible PDK layers:
+
+| Workload         | CPU p95 | GPU p95 | Frame interval p95 | Submitted index references | Upload bytes / warm frame |
+| ---------------- | ------: | ------: | -----------------: | -------------------------: | ------------------------: |
+| Fit              |  2.6 ms | 3.04 ms |            16.7 ms |                 13,038,230 |                   326,620 |
+| Detail, 40 px/µm |  0.2 ms | 1.88 ms |            16.8 ms |                    171,958 |                     2,240 |
+| Deep, 2000 px/µm |  0.2 ms | 0.56 ms |            16.8 ms |                     40,466 |                        60 |
+
+Preparation: 214 ms; first visible GPU-complete frame: 282 ms, including 56 ms for initial
+GPU setup/drawing/completion. Warm navigation performs no GPU buffer allocations or mesh
+preparation. Deep-zoom submissions are about 96% below the prior ~973,000 vertex submissions.
+The raw local report is `.hdlview/benchmarks/masks-hardware.json`.
+
+The same workload with headless Chromium/SwiftShader is separately recorded in
+`.hdlview/benchmarks/masks-software.json`: preparation 220 ms; first fit draw plus GPU completion
+1,800 ms; warm frame p95 at Fit/detail/deep is approximately 2,000 / 150 / 50 ms. GPU timer
+queries were unavailable. Keeping all actual geometry at Fit remains expensive in software.
+
+The isolated Tauri session required `WEBKIT_DISABLE_DMABUF_RENDERER=1` after default startup
+failed with `EGL_NOT_INITIALIZED`; software forcing was not enabled. The WebKit process loaded
+the NVIDIA driver and `/dev/nvidia0`; its WebGL renderer string was privacy-masked as `Apple GPU`.
+An alternating zoom sequence at approximately 166 px/µm measured CPU callback p95 3 ms and
+frame interval p95 21 ms (`.hdlview/benchmarks/masks-tauri.json`); GPU timer queries were absent.
+**The native 16.7 ms p95 target is not yet qualified on this compatibility path.** Browser
+hardware results cannot substitute for it. The default DMA-BUF path, native display-scale
+changes, and native first-pane-to-screen latency remain unmeasured. Runs were on a shared
+development workstation, not an isolated performance lab.
 
 ## Waveform navigation, saved trace list and measurement
 

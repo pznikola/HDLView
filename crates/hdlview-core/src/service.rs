@@ -27,6 +27,9 @@ struct State {
     previews: BTreeMap<String, (String, String, workspace::ImportPreview)>,
     file_previews: BTreeMap<String, (String, String, file_management::ChangePreview)>,
     snapshots: BTreeMap<String, Arc<DesignSnapshot>>,
+    // One immutable physical artifact, shared by outline and layer requests.
+    layout_cache: Option<(String, Arc<Value>)>,
+    layout_generation: u64,
     runs: BTreeMap<String, SimulationRun>,
     waves: BTreeMap<String, Wave>,
     jobs: BTreeMap<String, (Job, CancelToken)>,
@@ -53,6 +56,8 @@ impl Service {
                 previews: BTreeMap::new(),
                 file_previews: BTreeMap::new(),
                 snapshots: BTreeMap::new(),
+                layout_cache: None,
+                layout_generation: 0,
                 runs: BTreeMap::new(),
                 waves: BTreeMap::new(),
                 jobs: BTreeMap::new(),
@@ -76,6 +81,40 @@ impl Service {
             .get(id)
             .cloned()
             .context("Open a snapshot first")
+    }
+    fn remember_snapshot(&self, snapshot: Arc<DesignSnapshot>) {
+        let mut state = self.state.lock().unwrap();
+        state.layout_cache = None;
+        state.layout_generation += 1;
+        state.snapshots.insert(snapshot.id.clone(), snapshot);
+    }
+    fn physical_layout(&self, snapshot: &DesignSnapshot) -> Result<Arc<Value>> {
+        let path = snapshot
+            .physical_run
+            .as_ref()
+            .and_then(|run| run.layout.as_ref())
+            .context("This snapshot has no layout")?;
+        let generation = {
+            let state = self.state.lock().unwrap();
+            if let Some((id, layout)) = &state.layout_cache {
+                if id == &snapshot.id {
+                    return Ok(layout.clone());
+                }
+            }
+            state.layout_generation
+        };
+        let layout = Arc::new(read_json::<Value>(path)?);
+        let mut state = self.state.lock().unwrap();
+        // A read finishing after close/open must not repopulate the previous session.
+        if state.layout_generation == generation
+            && state
+                .snapshots
+                .get(&snapshot.id)
+                .is_some_and(|current| std::ptr::eq(current.as_ref(), snapshot))
+        {
+            state.layout_cache = Some((snapshot.id.clone(), layout.clone()));
+        }
+        Ok(layout)
     }
     fn launch<F>(&self, kind: &str, f: F) -> Result<Value>
     where
@@ -319,6 +358,8 @@ impl Service {
                     state.waves.clear();
                     state.runs.clear();
                     state.snapshots.clear();
+                    state.layout_cache = None;
+                    state.layout_generation += 1;
                 }
                 Ok(Value::Null)
             }
@@ -537,22 +578,13 @@ impl Service {
                 let service = self.clone();
                 self.launch("build", move |c| {
                     let snapshot = Arc::new(pipeline::compile(&path, p, rep, &service.store, c)?);
-                    service
-                        .state
-                        .lock()
-                        .unwrap()
-                        .snapshots
-                        .insert(snapshot.id.clone(), snapshot.clone());
+                    service.remember_snapshot(snapshot.clone());
                     Ok(serde_json::to_value(&*snapshot)?)
                 })
             }
             "open_snapshot" => {
                 let snapshot = Arc::new(read_snapshot(Path::new(string("path")?))?);
-                self.state
-                    .lock()
-                    .unwrap()
-                    .snapshots
-                    .insert(snapshot.id.clone(), snapshot.clone());
+                self.remember_snapshot(snapshot.clone());
                 Ok(serde_json::to_value(&*snapshot)?)
             }
             "simulate" => {
@@ -756,37 +788,33 @@ impl Service {
             // when the layer is shown.
             "layout" | "layout_shapes" => {
                 let snapshot = self.snapshot(string("snapshot_id")?)?;
-                let path = snapshot
-                    .physical_run
-                    .as_ref()
-                    .and_then(|run| run.layout.as_ref())
-                    .context("This snapshot has no layout")?;
-                let mut layout: Value = read_json(path)?;
-                let shapes = |layout: &mut Value, key: &str, layer: usize| {
-                    layout[key]
-                        .get_mut(layer)
-                        .map(Value::take)
-                        .unwrap_or_else(|| json!([]))
-                };
+                let layout = self.physical_layout(&snapshot)?;
                 if action == "layout_shapes" {
                     let layer = v["layer"].as_u64().context("Missing layer")? as usize;
-                    let wires = shapes(&mut layout, "wires", layer);
-                    Ok(json!({"wires": wires, "power": shapes(&mut layout, "power", layer)}))
+                    let shapes =
+                        |key: &str| layout[key].get(layer).cloned().unwrap_or_else(|| json!([]));
+                    Ok(json!({"wires": shapes("wires"), "power": shapes("power")}))
                 } else {
-                    let count = |key: &str| -> Vec<usize> {
-                        let layers = layout[key].as_array();
-                        layers
+                    let mut outline = layout
+                        .as_object()
+                        .context("Invalid layout object")?
+                        .iter()
+                        .filter(|(key, _)| *key != "wires" && *key != "power")
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect::<serde_json::Map<String, Value>>();
+                    for key in ["wires", "power"] {
+                        let counts: Vec<usize> = layout[key]
+                            .as_array()
                             .into_iter()
                             .flatten()
                             .map(|shapes| shapes.as_array().map_or(0, Vec::len))
-                            .collect()
-                    };
-                    let (wires, power) = (count("wires"), count("power"));
-                    layout["wires"] = json!(wires);
-                    layout["power"] = json!(power);
-                    Ok(layout)
+                            .collect();
+                        outline.insert(key.into(), json!(counts));
+                    }
+                    Ok(Value::Object(outline))
                 }
             }
+
             "checks" => {
                 let snapshot = self.snapshot(string("snapshot_id")?)?;
                 let path = snapshot
@@ -838,11 +866,7 @@ impl Service {
                 let project = self.working_project(string("path")?)?;
                 let restored = crate::lifecycle::restore(&self.store, &project);
                 if let Some(snapshot) = &restored.snapshot {
-                    self.state
-                        .lock()
-                        .unwrap()
-                        .snapshots
-                        .insert(snapshot.id.clone(), Arc::new(snapshot.clone()));
+                    self.remember_snapshot(Arc::new(snapshot.clone()));
                 }
                 Ok(json!(restored))
             }
@@ -952,6 +976,13 @@ mod lint_tests {
         );
         assert_eq!(layer(1), json!({"wires":[],"power":[[0,0,9,1,1]]}));
         assert_eq!(layer(7), json!({"wires":[],"power":[]}));
+        // Layer requests share the captured JSON; none reread or take from it.
+        fs::remove_file(&layout).unwrap();
+        assert_eq!(layer(0)["wires"].as_array().unwrap().len(), 2);
+        assert_eq!(layer(1)["power"], json!([[0, 0, 9, 1, 1]]));
+        fs::write(&layout, r#"{"wires":[[[2,2,3,3,0]]],"power":[[]]}"#).unwrap();
+        service.remember_snapshot(service.snapshot("routed").unwrap());
+        assert_eq!(layer(0)["wires"], json!([[2, 2, 3, 3, 0]]));
         let masks = service
             .request("layout_masks", json!({"snapshot_id":"routed"}))
             .unwrap();
@@ -964,6 +995,10 @@ mod lint_tests {
                 .unwrap_err();
             assert!(error.to_string().starts_with("This snapshot has no"));
         }
+        service
+            .request("close_project", json!({"path":"closed"}))
+            .unwrap();
+        assert!(service.state.lock().unwrap().layout_cache.is_none());
     }
     #[test]
     fn settings_validation_is_read_only_and_stale_configurations_cannot_launch_simulation() {

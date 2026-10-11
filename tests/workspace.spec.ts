@@ -1,3 +1,4 @@
+import { physicalSnapshot } from "./fixtures/layout/snapshot";
 import { test, expect, type Page } from "@playwright/test";
 import {
   spawn,
@@ -15,6 +16,16 @@ import {
   chmodSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+declare global {
+  interface Window {
+    maskFrames: {
+      kind: string;
+      frame: number;
+      width: number;
+      height: number;
+    }[];
+  }
+}
 let backend: ChildProcessWithoutNullStreams;
 let snapshot: { directory: string };
 let pending: ((result: unknown) => void)[] = [];
@@ -3023,5 +3034,203 @@ test("a floorplan is drawn, sized in settings, given pin sides and saved with th
     .getByRole("button", { name: "Code & Schematic", exact: true })
     .click();
   await expect(page.getByLabel("Schematic", { exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("GDS masks and overlays share frames, stay loaded across panes, and ignore stale snapshots", async ({
+  page,
+}) => {
+  const first = physicalSnapshot(snapshot.directory, "first");
+  const second = physicalSnapshot(snapshot.directory, "second");
+  const calls: string[] = [];
+  let holdMasks = false;
+  let releaseMasks: (() => void) | undefined;
+  await page.exposeFunction(
+    "__HDLVIEW_TEST_API__",
+    (action: string, args: unknown) =>
+      new Promise((resolve, reject) => {
+        calls.push(action);
+        pending.push((value: unknown) => {
+          const r = value as { ok: boolean; result: unknown; error: string };
+          if (!r.ok) {
+            reject(new Error(r.error));
+            return;
+          }
+          if (holdMasks && action === "layout_masks") {
+            holdMasks = false;
+            releaseMasks = () => resolve(r.result);
+          } else resolve(r.result);
+        });
+        backend.stdin.write(JSON.stringify({ action, args }) + "\n");
+      }),
+  );
+  await page.addInitScript(() => {
+    const records: {
+      kind: string;
+      frame: number;
+      width: number;
+      height: number;
+    }[] = [];
+    let frame = 0;
+    const raf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (callback) =>
+      raf((time) => {
+        frame++;
+        callback(time);
+      });
+    const draw = WebGL2RenderingContext.prototype.drawElementsInstanced;
+    WebGL2RenderingContext.prototype.drawElementsInstanced = function (
+      ...args
+    ) {
+      records.push({
+        kind: "mask",
+        frame,
+        width: this.canvas.width,
+        height: this.canvas.height,
+      });
+      return draw.apply(this, args);
+    };
+    const clear = CanvasRenderingContext2D.prototype.clearRect;
+    CanvasRenderingContext2D.prototype.clearRect = function (...args) {
+      if (this.canvas.getAttribute("aria-label") === "Layout")
+        records.push({
+          kind: "overlay",
+          frame,
+          width: this.canvas.width,
+          height: this.canvas.height,
+        });
+      return clear.apply(this, args);
+    };
+    const Worker = window.Worker;
+    window.Worker = class extends Worker {
+      constructor(...args: ConstructorParameters<typeof Worker>) {
+        super(...args);
+        if (String(args[0]).includes("masks.worker"))
+          performance.mark("mask-worker");
+      }
+    };
+    Object.assign(window, { maskFrames: records });
+  });
+  let projectFile = "";
+  await page.exposeFunction("__HDLVIEW_TEST_PICKER__", () => [projectFile]);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  let opened = false;
+  const open = async (path: string) => {
+    if (opened) await fileCommand(page, "Close Project");
+    // A fresh project path avoids restoring checkpoints left by other workflows.
+    const directory = mkdtempSync(join(tmpdir(), "hdlview mask project "));
+    for (const name of ["counter.sv", "tb.sv", "hdlview.project.json"])
+      writeFileSync(
+        join(directory, name),
+        readFileSync(join("tests/fixtures/counter", name)),
+      );
+    projectFile = join(directory, "hdlview.project.json");
+    await fileCommand(page, "Open Existing Project…");
+    opened = true;
+    await page
+      .getByRole("button", { name: "Code & Schematic", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Open saved snapshot" }).click();
+    await page.getByLabel("Open snapshot input").fill(path);
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Floorplan & Layout", exact: true })
+      .click();
+  };
+  await open(first);
+  const pane = page.locator(".physical-pane");
+  await expect(pane.getByLabel("met1.first")).toBeChecked();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.maskFrames.filter((r) => r.kind === "mask").length,
+      ),
+    )
+    .toBeGreaterThan(0);
+  await expect
+    .poll(() => calls.filter((action) => action === "layout_shapes").length)
+    .toBe(2);
+  const originalCalls = calls.filter((a) => a.startsWith("layout")).length;
+  const workers = await page.evaluate(
+    () => performance.getEntriesByName("mask-worker").length,
+  );
+  const canvas = pane.getByLabel("Layout", { exact: true });
+  const box = (await canvas.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    box.x + box.width / 2 + 37.25,
+    box.y + box.height / 2 - 23.5,
+    { steps: 20 },
+  );
+  await page.mouse.up();
+  for (const deltaY of [-1, -1, -1, 1, 1, 1])
+    await canvas.dispatchEvent("wheel", {
+      deltaY,
+      clientX: box.x + 100,
+      clientY: box.y + 100,
+    });
+  await pane.getByRole("button", { name: "Fit", exact: true }).click();
+  const scale = Math.min((box.width - 120) / 100, (box.height - 120) / 100);
+  await canvas.click({
+    position: { x: box.width / 2 - 20 * scale, y: box.height / 2 + 15 * scale },
+  });
+  await page.getByRole("button", { name: "Inspector", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "Project inspector" }),
+  ).toContainText("fast");
+  await page
+    .getByRole("button", { name: "Code & Schematic", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Floorplan & Layout", exact: true })
+    .click();
+  await page.setViewportSize({ width: 1301, height: 901 });
+  const display = await page.context().newCDPSession(page);
+  await display.send("Emulation.setDeviceMetricsOverride", {
+    width: 1301,
+    height: 901,
+    deviceScaleFactor: 1.25,
+    mobile: false,
+  });
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  expect(calls.filter((a) => a.startsWith("layout"))).toHaveLength(
+    originalCalls,
+  );
+  expect(
+    await page.evaluate(
+      () => performance.getEntriesByName("mask-worker").length,
+    ),
+  ).toBe(workers);
+  const frames = await page.evaluate(() => window.maskFrames);
+  for (const mask of frames.filter((r) => r.kind === "mask"))
+    expect(
+      frames.find((r) => r.kind === "overlay" && r.frame === mask.frame),
+    ).toEqual({ ...mask, kind: "overlay" });
+  await pane.getByRole("button", { name: "Hide all", exact: true }).click();
+  await expect(pane.getByLabel("met1.first")).not.toBeChecked();
+  await pane.getByRole("button", { name: "Show all", exact: true }).click();
+  await expect(pane.getByLabel("met1.first")).toBeChecked();
+  // Delay a real CLI response across another snapshot activation.
+  holdMasks = true;
+  await open(second);
+  await expect.poll(() => !!releaseMasks).toBe(true);
+  await open(first);
+  await expect(pane.getByLabel("met1.first")).toBeChecked();
+  releaseMasks!();
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  await expect(pane.getByLabel("met1.second")).toHaveCount(0);
   expect(errors).toEqual([]);
 });

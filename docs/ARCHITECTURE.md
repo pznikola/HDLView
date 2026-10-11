@@ -179,6 +179,34 @@ main thread; the independent core publishes the completed file atomically. Brows
 uses a download without filesystem IPC.
 `SymbolGallery.tsx` uses the same production geometry for reviewed visual regression.
 
+## Physical layout rendering
+
+`Physical.tsx` owns the active snapshot's physical data and prepared mask scene. It loads on
+first opening, remains mounted while hidden, and unmounts when the snapshot changes. Pending
+requests cannot publish after cleanup, and the preparation worker is terminated on replacement.
+The Rust service caches one immutable parsed physical-layout JSON artifact, shared by metadata
+and layer requests; snapshot activation and project closure invalidate it. These are internal
+caches: `MaskData`, `layout_masks`, and `layout_shapes` retain their existing wire formats.
+
+`masks.worker.ts` runs `mask-scene.ts` once per scene: triangulate in database units, build
+indexed meshes and placement bounds, and partition whole top-level polygons into spatial
+batches. Static BVHs index the placements and routing batches. Transferred typed arrays stay
+with the pane so a lost WebGL context can be rebuilt without repeating preparation.
+
+`gl-layout.ts` owns GPU resources. Geometry and camera-relative placements use high/low float
+pairs; the CPU subtracts the camera in double precision before uploading translations. All
+eight orientations use the same projection. Cached VAOs/uniforms, reusable instance buffers,
+and visibility-filtered index buffers avoid rebuilding meshes during navigation. Fill and
+outline passes reuse each frame's placement upload. Culling includes an outline margin and
+never clips polygons or substitutes cell boxes at small scales. PDK colors, patterns and depth
+ordering are retained; bitmap patterns sample device pixels independently of world geometry.
+
+One animation-frame callback in `Physical.tsx` takes the camera ref, viewport and display scale
+and draws both WebGL masks and 2D overlays. Both canvases use the same rounded backing size;
+picking uses the last presented camera. Display-scale changes schedule a redraw. Context loss
+pauses drawing with a visible status; restoration recreates GPU resources from the CPU scene.
+Unmounting cancels scheduled frames and releases worker and GPU resources.
+
 ## Extension rules
 
 1. Extend schema contracts and validators together. Do not add shell-interpolated commands.

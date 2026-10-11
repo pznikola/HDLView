@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { api } from "../api";
 import {
   automaticSide,
@@ -23,7 +30,13 @@ import {
   toWorld,
   zoomCamera,
 } from "../floorplan";
-import { createRenderer, type LayoutRenderer, placements } from "../gl-layout";
+import {
+  createRenderer,
+  type LayoutRenderer,
+  viewportSize,
+} from "../gl-layout";
+import type { MaskScene } from "../mask-scene";
+import type { MaskResponse } from "../masks.worker";
 import { besideRouting } from "../masks";
 import type {
   Check,
@@ -48,6 +61,7 @@ function metric(snapshot: Snapshot | undefined, key: string) {
 }
 
 export function Physical({
+  active,
   project,
   snapshot,
   stale,
@@ -59,6 +73,7 @@ export function Physical({
   onPickCell,
   fail,
 }: {
+  active: boolean;
   project?: Project;
   snapshot?: Snapshot;
   stale: boolean;
@@ -74,10 +89,34 @@ export function Physical({
   const host = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 800, height: 500 });
-  const [camera, setCamera] = useState<Camera>();
+  const camera = useRef<Camera>(undefined);
+  const presented = useRef<Camera>(undefined);
+  const frame = useRef<number>(undefined);
+  const redraw = useRef<() => void>(() => {});
+  const schedule = useCallback(() => {
+    if (frame.current !== undefined) return;
+    frame.current = requestAnimationFrame(() => {
+      frame.current = undefined;
+      redraw.current();
+    });
+  }, []);
+  const setCamera = useCallback(
+    (next: Camera | undefined) => {
+      camera.current = next;
+      schedule();
+    },
+    [schedule],
+  );
+  // Keep only this snapshot's pane alive across tab switches, and load on first use.
+  const [opened, setOpened] = useState(active);
+  useEffect(() => {
+    if (active) setOpened(true);
+  }, [active]);
   const [view, setView] = useState<"plan" | "result">("plan");
   const [layout, setLayout] = useState<LayoutData>();
   const [masks, setMasks] = useState<MaskData>();
+  const [scene, setScene] = useState<MaskScene>();
+  const [contextLost, setContextLost] = useState(false);
   const glCanvas = useRef<HTMLCanvasElement>(null);
   const renderer = useRef<LayoutRenderer>(undefined);
   const [unsupported, setUnsupported] = useState(false);
@@ -108,10 +147,12 @@ export function Physical({
       ),
     [snapshot],
   );
-  const layoutId = snapshot?.physical_run?.layout ? snapshot.id : undefined;
-  const checksId = snapshot?.physical_run?.checks ? snapshot.id : undefined;
+  const layoutId =
+    opened && snapshot?.physical_run?.layout ? snapshot.id : undefined;
+  const checksId =
+    opened && snapshot?.physical_run?.checks ? snapshot.id : undefined;
   const masksId =
-    snapshot?.physical_run?.gds && snapshot.physical_run.layer_file
+    opened && snapshot?.physical_run?.gds && snapshot.physical_run.layer_file
       ? snapshot.id
       : undefined;
 
@@ -128,11 +169,13 @@ export function Physical({
       .then((data) => {
         if (active) setLayout(data);
       })
-      .catch(fail);
+      .catch((error: unknown) => {
+        if (active) fail(error);
+      });
     return () => {
       active = false;
     };
-  }, [layoutId, fail]);
+  }, [layoutId, fail, setCamera]);
   useEffect(() => {
     setChecks([]);
     if (!checksId) return;
@@ -141,7 +184,9 @@ export function Physical({
       .then((data) => {
         if (active) setChecks(data.checks);
       })
-      .catch(fail);
+      .catch((error: unknown) => {
+        if (active) fail(error);
+      });
     return () => {
       active = false;
     };
@@ -163,12 +208,38 @@ export function Physical({
           ),
         );
       })
-      .catch(fail);
+      .catch((error: unknown) => {
+        if (active) fail(error);
+      });
     return () => {
       active = false;
     };
   }, [masksId, fail]);
-  // A layer's boxes are fetched the first time the layer is shown.
+  useEffect(() => {
+    setScene(undefined);
+    if (!masks) return;
+    const worker = new Worker(new URL("../masks.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    let current = true;
+    worker.onmessage = ({ data }: MessageEvent<MaskResponse>) => {
+      if (!current) return;
+      if ("error" in data) fail(data.error);
+      else setScene(data.scene);
+      worker.terminate();
+    };
+    worker.onerror = (event) => {
+      if (current) fail(event.message);
+      worker.terminate();
+    };
+    worker.postMessage(masks);
+    return () => {
+      current = false;
+      worker.terminate();
+    };
+  }, [masks, fail]);
+
+  // The flow's wire boxes supply names and selection overlays.
   const wanted = layout?.layers.findIndex(
     (_, index) =>
       !shapes[index] && (layout.wires[index] || layout.power[index]),
@@ -181,7 +252,9 @@ export function Physical({
       .then((data) => {
         if (active) setShapes((known) => ({ ...known, [wanted]: data }));
       })
-      .catch(fail);
+      .catch((error: unknown) => {
+        if (active) fail(error);
+      });
     return () => {
       active = false;
     };
@@ -189,7 +262,7 @@ export function Physical({
 
   useEffect(() => {
     const observer = new ResizeObserver(([entry]) => {
-      if (entry)
+      if (entry && entry.contentRect.width > 0 && entry.contentRect.height > 0)
         setSize({
           width: Math.max(1, Math.floor(entry.contentRect.width)),
           height: Math.max(1, Math.floor(entry.contentRect.height)),
@@ -214,10 +287,12 @@ export function Physical({
         ? [0, 0, plan.width_um, plan.height_um]
         : [0, 0, estimate ?? 100, estimate ?? 100];
   const [x0, y0, x1, y1] = world;
-  const shown = useMemo(
-    () => camera ?? fitCamera([x0, y0, x1, y1], size.width, size.height),
-    [camera, x0, y0, x1, y1, size],
+  const fitted = useMemo(
+    () => fitCamera([x0, y0, x1, y1], size.width, size.height),
+    [x0, y0, x1, y1, size],
   );
+  const currentCamera = () => camera.current ?? fitted;
+  const presentedCamera = () => presented.current ?? currentCamera();
   // A vector signal is the nets of its bits.
   const highlighted = useMemo(() => {
     const nets = new Set<number>();
@@ -236,7 +311,12 @@ export function Physical({
     if (!element) return;
     let created: LayoutRenderer | undefined;
     try {
-      created = createRenderer(element);
+      setUnsupported(false);
+      setContextLost(false);
+      created = createRenderer(element, (lost) => {
+        setContextLost(lost);
+        schedule();
+      });
     } catch (error) {
       fail(error);
       return;
@@ -250,186 +330,228 @@ export function Physical({
       created.dispose();
       renderer.current = undefined;
     };
-  }, [glShown, fail]);
-  const placed = useMemo(
-    () => (masks && glShown ? placements(masks, shown, size) : undefined),
-    [masks, glShown, shown, size],
-  );
-  useEffect(() => {
-    const drawer = renderer.current;
-    if (!drawer || !masks || !placed) return;
-    const frame = requestAnimationFrame(() => {
-      try {
-        drawer.draw(
-          masks,
-          shown,
-          size,
-          window.devicePixelRatio || 1,
-          hidden,
-          placed,
-        );
-      } catch (error) {
-        fail(error);
-      }
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [masks, placed, shown, size, hidden, fail]);
+  }, [glShown, fail, schedule]);
 
   useEffect(() => {
-    const element = canvas.current;
-    if (!element) return;
-    const ratio = window.devicePixelRatio || 1;
-    element.width = size.width * ratio;
-    element.height = size.height * ratio;
-    const ctx = element.getContext("2d")!;
-    ctx.scale(ratio, ratio);
-    ctx.clearRect(0, 0, size.width, size.height);
-    ctx.font = "11px ui-monospace, monospace";
-    const rect = (box: Box): [number, number, number, number] => {
-      const [x0, y1] = toScreen(shown, [box[0], box[1]]);
-      const [x1, y0] = toScreen(shown, [box[2], box[3]]);
-      return [x0, y0, x1 - x0, y1 - y0];
+    let query: MediaQueryList;
+    const changed = () => {
+      query?.removeEventListener("change", changed);
+      query = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      query.addEventListener("change", changed);
+      schedule();
     };
-    if (view === "result" && layout) {
-      const scaled = (b: readonly (string | number)[], at: number): Box => [
-        (b[at] as number) / dbu,
-        (b[at + 1] as number) / dbu,
-        (b[at + 2] as number) / dbu,
-        (b[at + 3] as number) / dbu,
-      ];
-      // The flow's own wires only tell which ones belong to the selected signal.
-      layout.layers.forEach((_, index) => {
-        const data = shapes[index];
-        if (!data) return;
-        if (highlighted.size) {
-          ctx.fillStyle = "#ffffff";
-          for (const shape of data.wires)
-            if (highlighted.has(shape[4])) {
-              const [x, y, w, h] = rect(scaled(shape, 0));
-              ctx.fillRect(x, y, Math.max(w, 1.5), Math.max(h, 1.5));
-            }
+    changed();
+    window.addEventListener("resize", changed);
+    return () => {
+      query.removeEventListener("change", changed);
+      window.removeEventListener("resize", changed);
+    };
+  }, [schedule]);
+
+  // Both canvases commit in one animation frame. Pointer motion only changes the
+  // camera ref; it does not reconcile the layer list or rebuild a scene.
+  useLayoutEffect(() => {
+    redraw.current = () => {
+      if (!active || contextLost) return;
+      const element = canvas.current;
+      if (!element) return;
+      const shown = camera.current ?? fitted;
+      const viewport = viewportSize(
+        size.width,
+        size.height,
+        window.devicePixelRatio || 1,
+      );
+      if (renderer.current && scene && glShown) {
+        try {
+          renderer.current.draw(scene, shown, viewport, hidden);
+        } catch (error) {
+          fail(error);
+          return;
         }
-      });
-      ctx.strokeStyle = "#5f7486";
-      ctx.setLineDash([4, 4]);
-      ctx.strokeRect(...rect(scaled(layout.core, 0)));
+      }
+      if (element.width !== viewport.pixelWidth)
+        element.width = viewport.pixelWidth;
+      if (element.height !== viewport.pixelHeight)
+        element.height = viewport.pixelHeight;
+      const ctx = element.getContext("2d");
+      if (!ctx) {
+        fail(new Error("Cannot create layout overlay canvas"));
+        return;
+      }
+      ctx.setTransform(
+        viewport.pixelWidth / size.width,
+        0,
+        0,
+        viewport.pixelHeight / size.height,
+        0,
+        0,
+      );
+      ctx.clearRect(0, 0, size.width, size.height);
+      ctx.lineWidth = 1;
       ctx.setLineDash([]);
-      ctx.strokeStyle = "#d8e3ec";
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(...rect(scaled(layout.die, 0)));
-      const chosen = layout.instances.find((i) => i[0] === cell);
-      if (chosen) {
-        ctx.strokeStyle = "#ffffff";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(...rect(scaled(chosen, 2)));
-      }
-      for (const pin of layout.pins) {
-        // The masks carry the pins' own metal and labels.
-        if (masks || pin[7] !== "SIGNAL") continue;
-        const box = scaled(pin, 2);
-        const [x, y, w, h] = rect(box);
-        ctx.fillStyle = "#eec475";
-        ctx.fillRect(x - 1, y - 1, Math.max(w, 3) + 2, Math.max(h, 3) + 2);
-        if (layout.pins.length < 80 || shown.scale > 12)
-          label(ctx, pin[0], x + w / 2, y + h / 2, size);
-      }
-      if (marker) {
-        const [x, y, w, h] = rect(marker);
-        ctx.strokeStyle = "#ff5d5d";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x - 6, y - 6, w + 12, h + 12);
-      }
-      if (masks && shown.scale > 6) {
-        ctx.fillStyle = "#ffffff";
-        for (const [layer, x, y, text] of masks.labels) {
-          if (hidden.has(masks.layers[layer]?.source ?? "")) continue;
-          const [px, py] = toScreen(shown, [x / masks.dbu, y / masks.dbu]);
-          if (px > 0 && py > 0 && px < size.width && py < size.height)
-            ctx.fillText(text, px + 3, py - 3);
-        }
-      }
-    } else {
-      if (!plan && estimate) {
-        ctx.strokeStyle = "#5f7486";
-        ctx.setLineDash([6, 5]);
-        ctx.strokeRect(...rect([0, 0, estimate, estimate]));
-        ctx.setLineDash([]);
-        ctx.fillStyle = "#7692a7";
-        const [x, y] = toScreen(shown, [0, estimate]);
-        ctx.fillText(
-          `Automatic: about ${estimate} × ${estimate} µm at ${utilization} % utilization`,
-          x,
-          y - 8,
-        );
-      }
-      const outline =
-        drag?.kind === "draw" ? drawn(drag.from, drag.to) : plan && { ...plan };
-      if (outline) {
-        const origin: Point =
-          drag?.kind === "draw"
-            ? [
-                Math.min(drag.from[0], drag.to[0]),
-                Math.min(drag.from[1], drag.to[1]),
-              ]
-            : [0, 0];
-        const box: Box = [
-          origin[0],
-          origin[1],
-          origin[0] + outline.width_um,
-          origin[1] + outline.height_um,
+      ctx.textAlign = "left";
+      ctx.font = "11px ui-monospace, monospace";
+      const rect = (box: Box): [number, number, number, number] => {
+        const [x0, y1] = toScreen(shown, [box[0], box[1]]);
+        const [x1, y0] = toScreen(shown, [box[2], box[3]]);
+        return [x0, y0, x1 - x0, y1 - y0];
+      };
+      if (view === "result" && layout) {
+        const scaled = (b: readonly (string | number)[], at: number): Box => [
+          (b[at] as number) / dbu,
+          (b[at + 1] as number) / dbu,
+          (b[at + 2] as number) / dbu,
+          (b[at + 3] as number) / dbu,
         ];
-        const [x, y, w, h] = rect(box);
-        ctx.fillStyle = "#182632";
-        ctx.fillRect(x, y, w, h);
+        // The flow's own wires only tell which ones belong to the selected signal.
+        layout.layers.forEach((_, index) => {
+          const data = shapes[index];
+          if (!data) return;
+          if (highlighted.size) {
+            ctx.fillStyle = "#ffffff";
+            for (const shape of data.wires)
+              if (highlighted.has(shape[4])) {
+                const [x, y, w, h] = rect(scaled(shape, 0));
+                ctx.fillRect(x, y, Math.max(w, 1.5), Math.max(h, 1.5));
+              }
+          }
+        });
+        ctx.strokeStyle = "#5f7486";
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(...rect(scaled(layout.core, 0)));
+        ctx.setLineDash([]);
         ctx.strokeStyle = "#d8e3ec";
         ctx.lineWidth = 1.5;
-        ctx.strokeRect(x, y, w, h);
-        ctx.fillStyle = "#9fb4c4";
-        ctx.textAlign = "center";
-        ctx.fillText(`${outline.width_um} µm`, x + w / 2, y + h + 16);
-        ctx.save();
-        ctx.translate(x - 8, y + h / 2);
-        ctx.rotate(-Math.PI / 2);
-        ctx.fillText(`${outline.height_um} µm`, 0, 0);
-        ctx.restore();
-        ctx.textAlign = "left";
-        if (drag?.kind !== "draw") {
-          ctx.fillStyle = "#d8e3ec";
-          for (const [hx, hy] of [
-            [outline.width_um, outline.height_um / 2],
-            [outline.width_um / 2, outline.height_um],
-            [outline.width_um, outline.height_um],
-          ] as Point[]) {
-            const [px, py] = toScreen(shown, [hx, hy]);
-            ctx.fillRect(px - 4, py - 4, 8, 8);
+        ctx.strokeRect(...rect(scaled(layout.die, 0)));
+        const chosen = layout.instances.find((i) => i[0] === cell);
+        if (chosen) {
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(...rect(scaled(chosen, 2)));
+        }
+        for (const pin of layout.pins) {
+          // The masks carry the pins' own metal and labels.
+          if (masks || pin[7] !== "SIGNAL") continue;
+          const box = scaled(pin, 2);
+          const [x, y, w, h] = rect(box);
+          ctx.fillStyle = "#eec475";
+          ctx.fillRect(x - 1, y - 1, Math.max(w, 3) + 2, Math.max(h, 3) + 2);
+          if (layout.pins.length < 80 || shown.scale > 12)
+            label(ctx, pin[0], x + w / 2, y + h / 2, size);
+        }
+        if (marker) {
+          const [x, y, w, h] = rect(marker);
+          ctx.strokeStyle = "#ff5d5d";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x - 6, y - 6, w + 12, h + 12);
+        }
+        if (masks && shown.scale > 6) {
+          ctx.fillStyle = "#ffffff";
+          for (const [layer, x, y, text] of masks.labels) {
+            if (hidden.has(masks.layers[layer]?.source ?? "")) continue;
+            const [px, py] = toScreen(shown, [x / masks.dbu, y / masks.dbu]);
+            if (px > 0 && py > 0 && px < size.width && py < size.height)
+              ctx.fillText(text, px + 3, py - 3);
           }
-          for (const side of SIDES) {
-            const names = sidePins(outline, side);
-            pinPoints(outline, side).forEach((point, index) => {
-              const name = names[index]!;
-              const [px, py] =
-                drag?.kind === "pin" && drag.port === name
-                  ? toScreen(shown, drag.at)
-                  : toScreen(shown, point);
-              ctx.fillStyle = "#eec475";
-              ctx.fillRect(px - 5, py - 5, 10, 10);
-              const width = ports.find((port) => port.name === name)?.width;
-              label(
-                ctx,
-                width && width > 1 ? `${name}[${width}]` : name,
-                px,
-                py,
-                size,
-                side,
-              );
-            });
+        }
+      } else {
+        if (!plan && estimate) {
+          ctx.strokeStyle = "#5f7486";
+          ctx.setLineDash([6, 5]);
+          ctx.strokeRect(...rect([0, 0, estimate, estimate]));
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#7692a7";
+          const [x, y] = toScreen(shown, [0, estimate]);
+          ctx.fillText(
+            `Automatic: about ${estimate} × ${estimate} µm at ${utilization} % utilization`,
+            x,
+            y - 8,
+          );
+        }
+        const outline =
+          drag?.kind === "draw"
+            ? drawn(drag.from, drag.to)
+            : plan && { ...plan };
+        if (outline) {
+          const origin: Point =
+            drag?.kind === "draw"
+              ? [
+                  Math.min(drag.from[0], drag.to[0]),
+                  Math.min(drag.from[1], drag.to[1]),
+                ]
+              : [0, 0];
+          const box: Box = [
+            origin[0],
+            origin[1],
+            origin[0] + outline.width_um,
+            origin[1] + outline.height_um,
+          ];
+          const [x, y, w, h] = rect(box);
+          ctx.fillStyle = "#182632";
+          ctx.fillRect(x, y, w, h);
+          ctx.strokeStyle = "#d8e3ec";
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(x, y, w, h);
+          ctx.fillStyle = "#9fb4c4";
+          ctx.textAlign = "center";
+          ctx.fillText(`${outline.width_um} µm`, x + w / 2, y + h + 16);
+          ctx.save();
+          ctx.translate(x - 8, y + h / 2);
+          ctx.rotate(-Math.PI / 2);
+          ctx.fillText(`${outline.height_um} µm`, 0, 0);
+          ctx.restore();
+          ctx.textAlign = "left";
+          if (drag?.kind !== "draw") {
+            ctx.fillStyle = "#d8e3ec";
+            for (const [hx, hy] of [
+              [outline.width_um, outline.height_um / 2],
+              [outline.width_um / 2, outline.height_um],
+              [outline.width_um, outline.height_um],
+            ] as Point[]) {
+              const [px, py] = toScreen(shown, [hx, hy]);
+              ctx.fillRect(px - 4, py - 4, 8, 8);
+            }
+            for (const side of SIDES) {
+              const names = sidePins(outline, side);
+              pinPoints(outline, side).forEach((point, index) => {
+                const name = names[index]!;
+                const [px, py] =
+                  drag?.kind === "pin" && drag.port === name
+                    ? toScreen(shown, drag.at)
+                    : toScreen(shown, point);
+                ctx.fillStyle = "#eec475";
+                ctx.fillRect(px - 5, py - 5, 10, 10);
+                const width = ports.find((port) => port.name === name)?.width;
+                label(
+                  ctx,
+                  width && width > 1 ? `${name}[${width}]` : name,
+                  px,
+                  py,
+                  size,
+                  side,
+                );
+              });
+            }
           }
         }
       }
-    }
+      presented.current = shown;
+    };
+    schedule();
+    return () => {
+      redraw.current = () => {};
+      if (frame.current !== undefined) cancelAnimationFrame(frame.current);
+      frame.current = undefined;
+    };
   }, [
+    active,
+    contextLost,
+    fitted,
+    scene,
+    glShown,
+    fail,
+    schedule,
     size,
-    shown,
     view,
     layout,
     shapes,
@@ -490,7 +612,7 @@ export function Physical({
     plan?.pins.find((pin) => pin.port === port)?.side ?? "";
 
   return (
-    <div className="physical-pane">
+    <div className="physical-pane" hidden={!active}>
       <div className="physical-tools">
         <button
           aria-pressed={view === "plan"}
@@ -613,13 +735,23 @@ export function Physical({
             </div>
           ) : (
             <>
-              {glShown && !unsupported && (
+              {glShown && (
                 <canvas
                   className="physical-gl"
                   ref={glCanvas}
                   aria-hidden="true"
                   style={{ width: size.width, height: size.height }}
                 />
+              )}
+              {glShown && contextLost && (
+                <div className="physical-empty" role="status">
+                  Layout graphics context lost. Waiting for recovery…
+                </div>
+              )}
+              {glShown && !scene && !unsupported && (
+                <div className="physical-empty" role="status">
+                  Preparing layout…
+                </div>
               )}
               {glShown && unsupported && (
                 <div className="physical-empty">
@@ -640,7 +772,7 @@ export function Physical({
                 onWheel={(event) =>
                   setCamera(
                     zoomCamera(
-                      shown,
+                      currentCamera(),
                       event.deltaY < 0 ? 1.15 : 1 / 1.15,
                       at(event),
                     ),
@@ -656,15 +788,15 @@ export function Physical({
                   event.preventDefault();
                   const place = dropPlace(
                     plan,
-                    toWorld(shown, at(event)),
+                    toWorld(presentedCamera(), at(event)),
                     port,
                   );
                   commit(placePin(plan, port, place.side, place.index));
                 }}
                 onPointerDown={(event) => {
                   event.currentTarget.setPointerCapture(event.pointerId);
-                  const point = toWorld(shown, at(event));
-                  const tolerance = 7 / shown.scale;
+                  const point = toWorld(presentedCamera(), at(event));
+                  const tolerance = 7 / presentedCamera().scale;
                   if (view === "plan" && event.button === 0) {
                     if (drawing) {
                       setDrag({ kind: "draw", from: point, to: point });
@@ -672,23 +804,27 @@ export function Physical({
                     }
                     const port = plan && pinAt(plan, point, tolerance);
                     if (port) {
-                      setCamera(shown);
+                      setCamera(presentedCamera());
                       setDrag({ kind: "pin", port, at: point });
                       return;
                     }
                     const handle = plan && handleAt(plan, point, tolerance);
                     if (plan && handle) {
-                      setCamera(shown);
+                      setCamera(presentedCamera());
                       setDraft(plan);
                       setDrag({ kind: "resize", handle });
                       return;
                     }
                   }
-                  setDrag({ kind: "pan", from: at(event), camera: shown });
+                  setDrag({
+                    kind: "pan",
+                    from: at(event),
+                    camera: presentedCamera(),
+                  });
                 }}
                 onPointerMove={(event) => {
                   if (!drag) return;
-                  const point = toWorld(shown, at(event));
+                  const point = toWorld(presentedCamera(), at(event));
                   if (drag.kind === "pan") {
                     const [x, y] = at(event);
                     setCamera({
@@ -701,8 +837,9 @@ export function Physical({
                   else if (drag.kind === "pin") setDrag({ ...drag, at: point });
                   else if (plan) setDraft(resized(plan, drag.handle, point));
                 }}
+                onPointerCancel={() => setDrag(undefined)}
                 onPointerUp={(event) => {
-                  const point = toWorld(shown, at(event));
+                  const point = toWorld(presentedCamera(), at(event));
                   const ended = drag;
                   setDrag(undefined);
                   if (!ended) return;
@@ -722,7 +859,7 @@ export function Physical({
                     if (draft) commit(draft);
                   } else if (plan) {
                     // A pin dropped well away from the outline is taken off it.
-                    const away = 40 / shown.scale;
+                    const away = 40 / presentedCamera().scale;
                     const outside =
                       point[0] < -away ||
                       point[1] < -away ||

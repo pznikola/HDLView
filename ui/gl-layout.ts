@@ -1,74 +1,16 @@
-import earcut from "earcut";
-import { type Camera, overlaps, visibleBox } from "./floorplan";
-import { orientation, placedBox } from "./masks";
-import type { MaskData, MaskLayer, MaskShapes } from "./types";
+import { type Camera, visibleBox } from "./floorplan";
+import { orientation } from "./masks";
+import {
+  expandedBox,
+  querySpatial,
+  splitCoordinate,
+  type Geometry,
+  type MaskScene,
+} from "./mask-scene";
+import type { MaskLayer } from "./types";
 
-/** Placed cells narrower than this on screen are drawn as one box. */
-export const DETAIL_PIXELS = 3;
-/** The fragment shader's uniform arrays hold this many layers. */
 export const MAX_LAYERS = 64;
-/** Each layer's pattern bitmap is kept in a square of this many texels. */
 const PATTERN_SIZE = 32;
-
-/** Vertices of a cell: x, y in database units and the layer index, per vertex. */
-export interface Geometry {
-  /** Triangles. */
-  fill: Float32Array;
-  /** Line segments along every edge. */
-  frame: Float32Array;
-}
-/**
- * Boxes and polygons per layer index as triangles and edges, moved by `dx, dy`.
- * Coordinates stay exact in single precision while they are below 2^24.
- */
-export function geometry(
-  layers: Iterable<[number, MaskShapes]>,
-  dx = 0,
-  dy = 0,
-): Geometry {
-  const fill: number[] = [];
-  const frame: number[] = [];
-  const edge = (
-    x0: number,
-    y0: number,
-    x1: number,
-    y1: number,
-    layer: number,
-  ) => frame.push(x0 + dx, y0 + dy, layer, x1 + dx, y1 + dy, layer);
-  for (const [layer, shapes] of layers) {
-    const { boxes, polygons } = shapes;
-    for (let at = 0; at + 3 < boxes.length; at += 4) {
-      const [x0, y0, x1, y1] = [
-        boxes[at]! + dx,
-        boxes[at + 1]! + dy,
-        boxes[at + 2]! + dx,
-        boxes[at + 3]! + dy,
-      ];
-      fill.push(x0, y0, layer, x1, y0, layer, x1, y1, layer);
-      fill.push(x0, y0, layer, x1, y1, layer, x0, y1, layer);
-      edge(x0 - dx, y0 - dy, x1 - dx, y0 - dy, layer);
-      edge(x1 - dx, y0 - dy, x1 - dx, y1 - dy, layer);
-      edge(x1 - dx, y1 - dy, x0 - dx, y1 - dy, layer);
-      edge(x0 - dx, y1 - dy, x0 - dx, y0 - dy, layer);
-    }
-    for (const points of polygons) {
-      for (const index of earcut(points))
-        fill.push(points[2 * index]! + dx, points[2 * index + 1]! + dy, layer);
-      const count = points.length / 2;
-      for (let i = 0; i < count; i++) {
-        const next = (i + 1) % count;
-        edge(
-          points[2 * i]!,
-          points[2 * i + 1]!,
-          points[2 * next]!,
-          points[2 * next + 1]!,
-          layer,
-        );
-      }
-    }
-  }
-  return { fill: Float32Array.from(fill), frame: Float32Array.from(frame) };
-}
 
 /** Width and height of a layer's bitmap; a row without pixels is left out. */
 export function patternSize(layer: MaskLayer): [number, number] {
@@ -102,67 +44,25 @@ export function patternAtlas(layers: MaskLayer[]): Uint8Array {
   return atlas;
 }
 
-/** What to draw of the placements for one view, relative to the anchor. */
-export interface Placements {
-  /** cell index → x, y, orientation code per placement drawn in full */
-  detailed: Map<number, Float32Array>;
-  /** x0, y0, x1, y1 per placement drawn as one box */
-  boxes: Float32Array;
-}
-/** The anchor every GPU coordinate is relative to: the centre of the layout. */
-export function anchor(masks: MaskData): [number, number] {
-  return [
-    Math.round((masks.box[0] + masks.box[2]) / 2),
-    Math.round((masks.box[1] + masks.box[3]) / 2),
-  ];
-}
-export function placements(
-  masks: MaskData,
-  camera: Camera,
-  size: { width: number; height: number },
-): Placements {
-  const [ax, ay] = anchor(masks);
-  const unit = camera.scale / masks.dbu;
-  const seen = visibleBox(camera, size.width, size.height).map(
-    (value) => value * masks.dbu,
-  ) as [number, number, number, number];
-  const detailed = new Map<number, number[]>();
-  const boxes: number[] = [];
-  for (const [index, x, y, code] of masks.instances) {
-    const cell = masks.cells[index];
-    if (!cell) continue;
-    const box = placedBox(cell.box, code, x, y);
-    if (!overlaps(box, seen)) continue;
-    if ((box[2] - box[0]) * unit < DETAIL_PIXELS)
-      boxes.push(box[0] - ax, box[1] - ay, box[2] - ax, box[3] - ay);
-    else {
-      let list = detailed.get(index);
-      if (!list) detailed.set(index, (list = []));
-      list.push(x - ax, y - ay, code);
-    }
-  }
-  return {
-    detailed: new Map(
-      [...detailed].map(([index, list]) => [index, Float32Array.from(list)]),
-    ),
-    boxes: Float32Array.from(boxes),
-  };
-}
-
 const SHAPE_VERTEX = `#version 300 es
-in vec2 a_position;
-in float a_layer;
-in vec3 a_place;
+layout(location=0) in vec4 a_position;
+layout(location=1) in float a_layer;
+layout(location=2) in vec4 a_place;
+layout(location=3) in float a_code;
 uniform mat2 u_orientation[8];
-uniform vec2 u_camera;
 uniform float u_scale;
 uniform vec2 u_viewport;
 uniform float u_layers;
 flat out int v_layer;
 void main() {
-  vec2 p = u_orientation[int(a_place.z)] * a_position + a_place.xy;
-  vec2 px = (p - u_camera) * u_scale;
-  gl_Position = vec4(px.x / u_viewport.x * 2.0 - 1.0, px.y / u_viewport.y * 2.0 + 1.0,
+  mat2 orientation = u_orientation[int(a_code)];
+  // Cancel the large parts before adding the remainders. The placement has
+  // already had the camera subtracted in double precision on the CPU.
+  vec2 high = orientation * a_position.xy + a_place.xy;
+  vec2 low = orientation * a_position.zw + a_place.zw;
+  vec2 px = (high + low) * u_scale;
+  gl_Position = vec4(px.x / u_viewport.x * 2.0 - 1.0,
+    px.y / u_viewport.y * 2.0 + 1.0,
     1.0 - (a_layer + 1.0) / (u_layers + 2.0), 1.0);
   v_layer = int(a_layer);
 }`;
@@ -177,7 +77,6 @@ uniform sampler2D u_atlas;
 uniform bool u_lines;
 out vec4 colour;
 void main() {
-  if (u_fill[v_layer].a < 0.5) discard;
   if (u_lines) {
     colour = vec4(u_frame[v_layer].rgb, 1.0);
     return;
@@ -189,22 +88,6 @@ void main() {
   if (texelFetch(u_atlas, ivec2(x, v_layer * ${PATTERN_SIZE} + y), 0).r < 0.5) discard;
   colour = vec4(u_fill[v_layer].rgb, 1.0);
 }`;
-const BOX_VERTEX = `#version 300 es
-in vec2 a_corner;
-in vec4 a_box;
-uniform vec2 u_camera;
-uniform float u_scale;
-uniform vec2 u_viewport;
-void main() {
-  vec2 p = mix(a_box.xy, a_box.zw, a_corner);
-  vec2 px = (p - u_camera) * u_scale;
-  gl_Position = vec4(px.x / u_viewport.x * 2.0 - 1.0, px.y / u_viewport.y * 2.0 + 1.0, 1.0, 1.0);
-}`;
-const BOX_FRAGMENT = `#version 300 es
-precision highp float;
-uniform vec4 u_colour;
-out vec4 colour;
-void main() { colour = u_colour; }`;
 
 function rgb(hex: string): [number, number, number] {
   const value = parseInt(hex.replace("#", ""), 16);
@@ -215,292 +98,431 @@ function rgb(hex: string): [number, number, number] {
   ];
 }
 
-interface CellBuffers {
+export interface Viewport {
+  width: number;
+  height: number;
+  pixelWidth: number;
+  pixelHeight: number;
+}
+export function viewportSize(
+  width: number,
+  height: number,
+  ratio: number,
+): Viewport {
+  return {
+    width,
+    height,
+    pixelWidth: Math.max(1, Math.round(width * ratio)),
+    pixelHeight: Math.max(1, Math.round(height * ratio)),
+  };
+}
+
+/** Only index buffers change when visibility changes; geometry stays on the GPU. */
+export function visibleIndices(
+  mesh: Geometry,
+  shown: boolean[],
+  lines: boolean,
+): Uint32Array {
+  const source = lines ? mesh.frame : mesh.fill;
+  const ranges = mesh.ranges.filter((range) => shown[range.layer]);
+  const count = ranges.reduce(
+    (n, r) => n + (lines ? r.frameCount : r.fillCount),
+    0,
+  );
+  const out = new Uint32Array(count);
+  let offset = 0;
+  for (const range of ranges) {
+    const start = lines ? range.frameStart : range.fillStart;
+    const size = lines ? range.frameCount : range.fillCount;
+    out.set(source.subarray(start, start + size), offset);
+    offset += size;
+  }
+  return out;
+}
+
+interface InstanceBuffer {
+  buffer: WebGLBuffer;
+  data: Float32Array;
+  count: number;
+  capacity: number;
+}
+interface MeshBuffer {
+  vao: WebGLVertexArrayObject;
+  vertices: WebGLBuffer;
   fill: WebGLBuffer;
-  fillCount: number;
   frame: WebGLBuffer;
+  fillCount: number;
   frameCount: number;
 }
 interface Loaded {
-  masks: MaskData;
-  top: CellBuffers;
-  cells: CellBuffers[];
+  scene: MaskScene;
+  cells: MeshBuffer[];
+  top: MeshBuffer[];
+  instances: InstanceBuffer[];
+  origin: InstanceBuffer;
   atlas: WebGLTexture;
-  fills: Float32Array;
-  frames: Float32Array;
-  patterns: Int32Array;
+  visibility: string;
 }
-
-/** Draws the masks of a layout on a WebGL2 canvas. */
 export interface LayoutRenderer {
   draw(
-    masks: MaskData,
+    scene: MaskScene,
     camera: Camera,
-    size: { width: number; height: number },
-    ratio: number,
-    hidden: Set<string>,
-    placed: Placements,
+    viewport: Viewport,
+    hidden: ReadonlySet<string>,
   ): void;
   dispose(): void;
 }
-/** `undefined` when the browser cannot give a WebGL2 context. */
+
+/** Allocation failure is a renderer error, never an apparently empty layout. */
+function allocated<T>(value: T | null): T {
+  if (value === null) throw new Error("Cannot allocate layout GPU resources");
+  return value;
+}
+
 export function createRenderer(
   canvas: HTMLCanvasElement,
+  onContextChange: (lost: boolean) => void = () => {},
 ): LayoutRenderer | undefined {
-  const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
-  if (!gl) return undefined;
-  const program = (vertex: string, fragment: string) => {
-    const linked = gl.createProgram();
-    for (const [kind, source] of [
-      [gl.VERTEX_SHADER, vertex],
-      [gl.FRAGMENT_SHADER, fragment],
-    ] as const) {
-      const shader = gl.createShader(kind)!;
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
-        throw new Error(
-          `Layout shader: ${gl.getShaderInfoLog(shader) ?? "did not compile"}`,
-        );
-      gl.attachShader(linked, shader);
-    }
-    gl.linkProgram(linked);
-    if (!gl.getProgramParameter(linked, gl.LINK_STATUS))
-      throw new Error(
-        `Layout shader: ${gl.getProgramInfoLog(linked) ?? "did not link"}`,
-      );
-    return linked;
-  };
-  const shapes = program(SHAPE_VERTEX, SHAPE_FRAGMENT);
-  const boxes = program(BOX_VERTEX, BOX_FRAGMENT);
-  const location = (p: WebGLProgram, name: string) =>
-    gl.getUniformLocation(p, name);
-  const attribute = (p: WebGLProgram, name: string) =>
-    gl.getAttribLocation(p, name);
-  const shapeAttributes = {
-    position: attribute(shapes, "a_position"),
-    layer: attribute(shapes, "a_layer"),
-    place: attribute(shapes, "a_place"),
-  };
-  const boxAttributes = {
-    corner: attribute(boxes, "a_corner"),
-    box: attribute(boxes, "a_box"),
-  };
-  const instances = gl.createBuffer();
-  const one = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, one);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 0]), gl.STATIC_DRAW);
-  const corners = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, corners);
-  gl.bufferData(
-    gl.ARRAY_BUFFER,
-    new Float32Array([0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1]),
-    gl.STATIC_DRAW,
-  );
-  gl.useProgram(shapes);
-  gl.uniformMatrix2fv(
-    location(shapes, "u_orientation"),
-    false,
-    Float32Array.from(
-      Array.from({ length: 8 }, (_, code) => orientation(code)).flat(),
-    ),
-  );
-  gl.uniform1i(location(shapes, "u_atlas"), 0);
-  gl.enable(gl.DEPTH_TEST);
-  gl.depthFunc(gl.LEQUAL);
-
-  let loaded: Loaded | undefined;
-  const upload = (data: Float32Array) => {
-    const buffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-    return buffer;
-  };
-  const buffers = (g: Geometry): CellBuffers => ({
-    fill: upload(g.fill),
-    fillCount: g.fill.length / 3,
-    frame: upload(g.frame),
-    frameCount: g.frame.length / 3,
+  const context = canvas.getContext("webgl2", {
+    antialias: true,
+    alpha: false,
   });
-  const unload = () => {
-    if (!loaded) return;
-    for (const cell of [loaded.top, ...loaded.cells]) {
-      gl.deleteBuffer(cell.fill);
-      gl.deleteBuffer(cell.frame);
+  if (!context) return undefined;
+  const gl = context;
+  let program: WebGLProgram | undefined;
+  let uniforms: Record<string, WebGLUniformLocation | null> = {};
+  let loaded: Loaded | undefined;
+  let lost = false;
+
+  function initialize() {
+    const linked = allocated(gl.createProgram());
+    try {
+      for (const [kind, source] of [
+        [gl.VERTEX_SHADER, SHAPE_VERTEX],
+        [gl.FRAGMENT_SHADER, SHAPE_FRAGMENT],
+      ] as const) {
+        const shader = allocated(gl.createShader(kind));
+        try {
+          gl.shaderSource(shader, source);
+          gl.compileShader(shader);
+          if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+            throw new Error(
+              `Layout shader: ${gl.getShaderInfoLog(shader) ?? "did not compile"}`,
+            );
+          gl.attachShader(linked, shader);
+        } finally {
+          gl.deleteShader(shader);
+        }
+      }
+      gl.linkProgram(linked);
+      if (!gl.getProgramParameter(linked, gl.LINK_STATUS))
+        throw new Error(
+          `Layout shader: ${gl.getProgramInfoLog(linked) ?? "did not link"}`,
+        );
+    } catch (error) {
+      gl.deleteProgram(linked);
+      throw error;
     }
+    program = linked;
+    uniforms = Object.fromEntries(
+      [
+        "orientation",
+        "scale",
+        "viewport",
+        "layers",
+        "fill",
+        "frame",
+        "pattern",
+        "atlas",
+        "lines",
+      ].map((name) => [name, gl.getUniformLocation(linked, `u_${name}`)]),
+    );
+    gl.useProgram(program);
+    gl.uniformMatrix2fv(
+      uniforms.orientation!,
+      false,
+      Float32Array.from(
+        Array.from({ length: 8 }, (_, code) => orientation(code)).flat(),
+      ),
+    );
+    gl.uniform1i(uniforms.atlas!, 0);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+  }
+  function unload() {
+    if (!loaded) return;
+    for (const mesh of [...loaded.cells, ...loaded.top]) {
+      gl.deleteVertexArray(mesh.vao);
+      gl.deleteBuffer(mesh.vertices);
+      gl.deleteBuffer(mesh.fill);
+      gl.deleteBuffer(mesh.frame);
+    }
+    for (const instances of [...loaded.instances, loaded.origin])
+      gl.deleteBuffer(instances.buffer);
     gl.deleteTexture(loaded.atlas);
     loaded = undefined;
-  };
-  const load = (masks: MaskData): Loaded => {
-    if (loaded?.masks === masks) return loaded;
-    unload();
-    if (masks.layers.length > MAX_LAYERS)
-      throw new Error(
-        `The layout has ${masks.layers.length} layers; the view draws at most ${MAX_LAYERS}`,
-      );
-    const [ax, ay] = anchor(masks);
-    const atlas = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, atlas);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.R8,
-      PATTERN_SIZE,
-      PATTERN_SIZE * Math.max(1, masks.layers.length),
-      0,
-      gl.RED,
-      gl.UNSIGNED_BYTE,
-      masks.layers.length ? patternAtlas(masks.layers) : null,
-    );
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    const fills = new Float32Array(MAX_LAYERS * 4);
-    const frames = new Float32Array(MAX_LAYERS * 4);
-    const patterns = new Int32Array(MAX_LAYERS * 4);
-    masks.layers.forEach((layer, index) => {
-      fills.set(rgb(layer.fill), index * 4);
-      frames.set(rgb(layer.frame), index * 4);
-      patterns.set([...patternSize(layer), layer.offset, 0], index * 4);
-    });
-    loaded = {
-      masks,
-      top: buffers(
-        geometry(
-          masks.shapes.map((shapes, layer): [number, MaskShapes] => [
-            layer,
-            shapes,
-          ]),
-          -ax,
-          -ay,
-        ),
-      ),
-      cells: masks.cells.map((cell) =>
-        buffers(
-          geometry(
-            Object.entries(cell.layers).map(([layer, shapes]) => [
-              Number(layer),
-              shapes,
-            ]),
-          ),
-        ),
-      ),
-      atlas,
-      fills,
-      frames,
-      patterns,
+  }
+  function instanceBuffer(): InstanceBuffer {
+    return {
+      buffer: allocated(gl.createBuffer()),
+      data: new Float32Array(5),
+      count: 0,
+      capacity: 0,
     };
-    return loaded;
-  };
-  const pointer = (
-    index: number,
-    buffer: WebGLBuffer,
-    size: number,
-    stride: number,
-    offset: number,
-    divisor: number,
-  ) => {
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.enableVertexAttribArray(index);
-    gl.vertexAttribPointer(
-      index,
-      size,
-      gl.FLOAT,
-      false,
-      stride * 4,
-      offset * 4,
+  }
+  function meshBuffer(mesh: Geometry, instances: InstanceBuffer): MeshBuffer {
+    const vao = allocated(gl.createVertexArray());
+    const buffers: WebGLBuffer[] = [];
+    const buffer = () => {
+      const value = allocated(gl.createBuffer());
+      buffers.push(value);
+      return value;
+    };
+    try {
+      gl.bindVertexArray(vao);
+      const vertices = buffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
+      gl.bufferData(gl.ARRAY_BUFFER, mesh.vertices, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 20, 0);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 20, 16);
+      gl.bindBuffer(gl.ARRAY_BUFFER, instances.buffer);
+      gl.enableVertexAttribArray(2);
+      gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 20, 0);
+      gl.vertexAttribDivisor(2, 1);
+      gl.enableVertexAttribArray(3);
+      gl.vertexAttribPointer(3, 1, gl.FLOAT, false, 20, 16);
+      gl.vertexAttribDivisor(3, 1);
+      const fill = buffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, fill);
+      gl.bufferData(
+        gl.ELEMENT_ARRAY_BUFFER,
+        mesh.fill.byteLength,
+        gl.STATIC_DRAW,
+      );
+      const frame = buffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, frame);
+      gl.bufferData(
+        gl.ELEMENT_ARRAY_BUFFER,
+        mesh.frame.byteLength,
+        gl.STATIC_DRAW,
+      );
+      return { vao, vertices, fill, frame, fillCount: 0, frameCount: 0 };
+    } catch (error) {
+      gl.deleteVertexArray(vao);
+      for (const value of buffers) gl.deleteBuffer(value);
+      throw error;
+    }
+  }
+  function load(scene: MaskScene): Loaded {
+    if (loaded?.scene === scene) return loaded;
+    unload();
+    if (scene.layers.length > MAX_LAYERS)
+      throw new Error(
+        `The layout has ${scene.layers.length} layers; the view draws at most ${MAX_LAYERS}`,
+      );
+    const origin = instanceBuffer();
+    const atlas = gl.createTexture();
+    if (!atlas) {
+      gl.deleteBuffer(origin.buffer);
+      throw new Error("Cannot allocate layout pattern texture");
+    }
+    const data: Loaded = {
+      scene,
+      cells: [],
+      top: [],
+      instances: [],
+      origin,
+      atlas,
+      visibility: "",
+    };
+    loaded = data;
+    try {
+      for (const cell of scene.cells) {
+        const instances = instanceBuffer();
+        data.instances.push(instances);
+        data.cells.push(meshBuffer(cell, instances));
+      }
+      for (const top of scene.top) data.top.push(meshBuffer(top, data.origin));
+      gl.bindVertexArray(null);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, data.atlas);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.R8,
+        PATTERN_SIZE,
+        PATTERN_SIZE * Math.max(1, scene.layers.length),
+        0,
+        gl.RED,
+        gl.UNSIGNED_BYTE,
+        scene.layers.length ? patternAtlas(scene.layers) : null,
+      );
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      const fills = new Float32Array(MAX_LAYERS * 4);
+      const frames = new Float32Array(MAX_LAYERS * 4);
+      const patterns = new Int32Array(MAX_LAYERS * 4);
+      scene.layers.forEach((layer, index) => {
+        fills.set(rgb(layer.fill), index * 4);
+        frames.set(rgb(layer.frame), index * 4);
+        patterns.set([...patternSize(layer), layer.offset, 0], index * 4);
+      });
+      gl.uniform4fv(uniforms.fill!, fills);
+      gl.uniform4fv(uniforms.frame!, frames);
+      gl.uniform4iv(uniforms.pattern!, patterns);
+      gl.uniform1f(uniforms.layers!, scene.layers.length);
+    } catch (error) {
+      unload();
+      throw error;
+    }
+    return data;
+  }
+  function append(
+    instances: InstanceBuffer,
+    x: number,
+    y: number,
+    code: number,
+  ) {
+    const offset = instances.count++ * 5;
+    if (offset + 5 > instances.data.length) {
+      const larger = new Float32Array(
+        Math.max(offset + 5, instances.data.length * 2),
+      );
+      larger.set(instances.data);
+      instances.data = larger;
+    }
+    const [xh, xl] = splitCoordinate(x),
+      [yh, yl] = splitCoordinate(y);
+    instances.data.set([xh, yh, xl, yl, code], offset);
+  }
+  function upload(instances: InstanceBuffer) {
+    if (!instances.count) return;
+    gl.bindBuffer(gl.ARRAY_BUFFER, instances.buffer);
+    if (instances.capacity < instances.data.byteLength) {
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        instances.data.byteLength,
+        gl.DYNAMIC_DRAW,
+      );
+      instances.capacity = instances.data.byteLength;
+    }
+    gl.bufferSubData(
+      gl.ARRAY_BUFFER,
+      0,
+      instances.data.subarray(0, instances.count * 5),
     );
-    gl.vertexAttribDivisor(index, divisor);
-  };
+  }
+  function lostContext(event: Event) {
+    event.preventDefault();
+    lost = true;
+    // WebGL invalidates all these handles; the CPU scene is retained by the owner.
+    loaded = undefined;
+    program = undefined;
+    uniforms = {};
+    onContextChange(true);
+  }
+  function restoredContext() {
+    lost = false;
+    onContextChange(false);
+  }
+  canvas.addEventListener("webglcontextlost", lostContext);
+  canvas.addEventListener("webglcontextrestored", restoredContext);
 
   return {
-    draw(masks, camera, size, ratio, hidden, placed) {
-      const data = load(masks);
-      const width = Math.max(1, Math.round(size.width * ratio));
-      const height = Math.max(1, Math.round(size.height * ratio));
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
-      }
-      gl.viewport(0, 0, width, height);
+    draw(scene, camera, viewport, hidden) {
+      if (lost) return;
+      if (!program) initialize();
+      gl.useProgram(program!);
+      const data = load(scene);
+      if (canvas.width !== viewport.pixelWidth)
+        canvas.width = viewport.pixelWidth;
+      if (canvas.height !== viewport.pixelHeight)
+        canvas.height = viewport.pixelHeight;
+      gl.viewport(0, 0, viewport.pixelWidth, viewport.pixelHeight);
       gl.clearColor(14 / 255, 23 / 255, 32 / 255, 1);
       gl.clearDepth(1);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-      const [ax, ay] = anchor(masks);
-      const view = {
-        camera: [camera.x * masks.dbu - ax, camera.y * masks.dbu - ay],
-        scale: (camera.scale / masks.dbu) * ratio,
-      };
-      // The layout's extent, then the placements too small to draw in full.
-      gl.useProgram(boxes);
-      gl.uniform2fv(location(boxes, "u_camera"), view.camera);
-      gl.uniform1f(location(boxes, "u_scale"), view.scale);
-      gl.uniform2f(location(boxes, "u_viewport"), width, height);
-      pointer(boxAttributes.corner, corners, 2, 2, 0, 0);
-      for (const [colour, list] of [
-        [
-          [20 / 255, 31 / 255, 42 / 255],
-          Float32Array.from([
-            masks.box[0] - ax,
-            masks.box[1] - ay,
-            masks.box[2] - ax,
-            masks.box[3] - ay,
-          ]),
-        ],
-        [[34 / 255, 50 / 255, 63 / 255], placed.boxes],
-      ] as const) {
-        if (!list.length) continue;
-        gl.uniform4f(location(boxes, "u_colour"), ...colour, 1);
-        gl.bindBuffer(gl.ARRAY_BUFFER, instances);
-        gl.bufferData(gl.ARRAY_BUFFER, list, gl.DYNAMIC_DRAW);
-        pointer(boxAttributes.box, instances, 4, 4, 0, 1);
-        gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, list.length / 4);
-      }
-      gl.useProgram(shapes);
-      gl.uniform2fv(location(shapes, "u_camera"), view.camera);
-      gl.uniform1f(location(shapes, "u_scale"), view.scale);
-      gl.uniform2f(location(shapes, "u_viewport"), width, height);
-      gl.uniform1f(location(shapes, "u_layers"), masks.layers.length);
-      const fills = Float32Array.from(data.fills);
-      masks.layers.forEach((layer, index) => {
-        fills[index * 4 + 3] = hidden.has(layer.source) ? 0 : 1;
-      });
-      gl.uniform4fv(location(shapes, "u_fill"), fills);
-      gl.uniform4fv(location(shapes, "u_frame"), data.frames);
-      gl.uniform4iv(location(shapes, "u_pattern"), data.patterns);
+      gl.uniform1f(uniforms.scale!, camera.scale / scene.dbu);
+      gl.uniform2f(uniforms.viewport!, viewport.width, viewport.height);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, data.atlas);
-      // Fills of every placed cell and of the top cell, then their frames on top.
-      for (const lines of [false, true]) {
-        gl.uniform1i(location(shapes, "u_lines"), lines ? 1 : 0);
-        const mode = lines ? gl.LINES : gl.TRIANGLES;
-        const stamp = (cell: CellBuffers, count: number) => {
-          const buffer = lines ? cell.frame : cell.fill;
-          const vertices = lines ? cell.frameCount : cell.fillCount;
-          if (!vertices) return;
-          pointer(shapeAttributes.position, buffer, 2, 3, 0, 0);
-          pointer(shapeAttributes.layer, buffer, 1, 3, 2, 0);
-          gl.drawArraysInstanced(mode, 0, vertices, count);
-        };
-        for (const [index, list] of placed.detailed) {
-          const cell = data.cells[index];
-          if (!cell) continue;
-          gl.bindBuffer(gl.ARRAY_BUFFER, instances);
-          gl.bufferData(gl.ARRAY_BUFFER, list, gl.DYNAMIC_DRAW);
-          pointer(shapeAttributes.place, instances, 3, 3, 0, 1);
-          stamp(cell, list.length / 3);
+      const shown = scene.layers.map((layer) => !hidden.has(layer.source));
+      const visibility = shown.map(Number).join("");
+      if (visibility !== data.visibility) {
+        for (const [meshes, buffers] of [
+          [scene.cells, data.cells],
+          [scene.top, data.top],
+        ] as const) {
+          meshes.forEach((mesh, i) => {
+            const target = buffers[i]!;
+            gl.bindVertexArray(target.vao);
+            const fill = visibleIndices(mesh, shown, false),
+              frame = visibleIndices(mesh, shown, true);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, target.fill);
+            gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, fill);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, target.frame);
+            gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, frame);
+            target.fillCount = fill.length;
+            target.frameCount = frame.length;
+          });
         }
-        pointer(shapeAttributes.place, one, 3, 3, 0, 1);
-        stamp(data.top, 1);
+        data.visibility = visibility;
       }
+      const seen = expandedBox(
+        visibleBox(camera, viewport.width, viewport.height),
+        1 / camera.scale,
+      ).map((value) => value * scene.dbu) as [number, number, number, number];
+      const cx = camera.x * scene.dbu,
+        cy = camera.y * scene.dbu;
+      for (const instances of data.instances) instances.count = 0;
+      for (const i of querySpatial(scene.placements, seen)) {
+        const offset = i * 4;
+        const cell = scene.instances[offset]!;
+        const mesh = data.cells[cell]!;
+        if (!mesh.fillCount && !mesh.frameCount) continue;
+        append(
+          data.instances[cell]!,
+          scene.instances[offset + 1]! - cx,
+          scene.instances[offset + 2]! - cy,
+          scene.instances[offset + 3]!,
+        );
+      }
+      for (const instances of data.instances) upload(instances);
+      data.origin.count = 0;
+      append(data.origin, -cx, -cy, 0);
+      upload(data.origin);
+      const top = querySpatial(scene.routing, seen);
+      for (const lines of [false, true]) {
+        gl.uniform1i(uniforms.lines!, Number(lines));
+        const draw = (mesh: MeshBuffer, count: number) => {
+          const indices = lines ? mesh.frameCount : mesh.fillCount;
+          if (!count || !indices) return;
+          gl.bindVertexArray(mesh.vao);
+          gl.bindBuffer(
+            gl.ELEMENT_ARRAY_BUFFER,
+            lines ? mesh.frame : mesh.fill,
+          );
+          gl.drawElementsInstanced(
+            lines ? gl.LINES : gl.TRIANGLES,
+            indices,
+            gl.UNSIGNED_INT,
+            0,
+            count,
+          );
+        };
+        data.cells.forEach((mesh, i) => draw(mesh, data.instances[i]!.count));
+        for (const i of top) draw(data.top[i]!, 1);
+      }
+      gl.bindVertexArray(null);
     },
     dispose() {
+      canvas.removeEventListener("webglcontextlost", lostContext);
+      canvas.removeEventListener("webglcontextrestored", restoredContext);
       unload();
-      gl.deleteBuffer(instances);
-      gl.deleteBuffer(one);
-      gl.deleteBuffer(corners);
-      gl.deleteProgram(shapes);
-      gl.deleteProgram(boxes);
-      gl.getExtension("WEBGL_lose_context")?.loseContext();
+      if (program) gl.deleteProgram(program);
+      program = undefined;
     },
   };
 }

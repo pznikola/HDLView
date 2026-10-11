@@ -1360,43 +1360,41 @@ function App() {
               </span>
             )}
         </div>
-        {centre === "layout" && (
-          <Physical
-            project={project}
-            snapshot={snapshot}
-            stale={working.stale}
-            error={error}
-            selectedNet={selectedSignal?.path.slice(1).join(".")}
-            onFloorplan={(floorplan) => {
-              if (!project?.physical) return;
-              const physical = { ...project.physical };
-              // Written only when fixed, so other project files stay as they are.
-              if (floorplan) physical.floorplan = floorplan;
-              else delete physical.floorplan;
-              void working.update({ ...project, physical }).catch(fail);
-            }}
-            onConfigure={() => working.setSettingsSection("physical")}
-            onPickNet={(name) => {
-              // A bit's net selects the vector signal it belongs to.
-              const base = name.replace(/\[\d+\]$/, "");
-              const signal = graph?.signals.find((candidate) => {
-                const local = candidate.path.slice(1).join(".");
-                return (
-                  local === name || (candidate.width > 1 && local === base)
-                );
-              });
-              if (signal) pickSignal([signal.id], undefined, "hierarchy");
-            }}
-            onPickCell={(name) => {
-              const node = graph?.nodes.find((n) => n.label === name);
-              if (node) {
-                setInspect(node);
-                setExplorer("inspector");
-              }
-            }}
-            fail={fail}
-          />
-        )}
+        <Physical
+          key={snapshot?.id ?? path}
+          active={centre === "layout"}
+          project={project}
+          snapshot={snapshot}
+          stale={working.stale}
+          error={error}
+          selectedNet={selectedSignal?.path.slice(1).join(".")}
+          onFloorplan={(floorplan) => {
+            if (!project?.physical) return;
+            const physical = { ...project.physical };
+            // Written only when fixed, so other project files stay as they are.
+            if (floorplan) physical.floorplan = floorplan;
+            else delete physical.floorplan;
+            void working.update({ ...project, physical }).catch(fail);
+          }}
+          onConfigure={() => working.setSettingsSection("physical")}
+          onPickNet={(name) => {
+            // A bit's net selects the vector signal it belongs to.
+            const base = name.replace(/\[\d+\]$/, "");
+            const signal = graph?.signals.find((candidate) => {
+              const local = candidate.path.slice(1).join(".");
+              return local === name || (candidate.width > 1 && local === base);
+            });
+            if (signal) pickSignal([signal.id], undefined, "hierarchy");
+          }}
+          onPickCell={(name) => {
+            const node = graph?.nodes.find((n) => n.label === name);
+            if (node) {
+              setInspect(node);
+              setExplorer("inspector");
+            }
+          }}
+          fail={fail}
+        />
         <EditorSchematic
           hidden={centre === "layout"}
           editorCollapsed={editorCollapsed}
