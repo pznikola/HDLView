@@ -28,6 +28,7 @@ import {
   sidePins,
   toScreen,
   toWorld,
+  visibleBox,
   zoomCamera,
 } from "../floorplan";
 import {
@@ -35,9 +36,22 @@ import {
   type LayoutRenderer,
   viewportSize,
 } from "../gl-layout";
+import {
+  createSolidRenderer,
+  dolly,
+  fitSolid,
+  highlightGeometry,
+  orbit,
+  pan,
+  type SolidCamera,
+  type SolidRenderer,
+  topView,
+} from "../gl-solid";
 import type { MaskScene } from "../mask-scene";
 import type { MaskResponse } from "../masks.worker";
 import { besideRouting } from "../masks";
+import type { SolidScene } from "../solid-scene";
+import type { SolidResponse } from "../solid.worker";
 import type {
   Check,
   Floorplan,
@@ -47,6 +61,7 @@ import type {
   Project,
   Side,
   Snapshot,
+  SolidData,
 } from "../types";
 
 type Drag =
@@ -54,6 +69,14 @@ type Drag =
   | { kind: "draw"; from: Point; to: Point }
   | { kind: "resize"; handle: Handle }
   | { kind: "pin"; port: string; at: Point };
+/** What the 3D view is built from: the Layout view's region or the whole design. */
+interface SolidRequest {
+  /** The Layout view's area in database units when the 3D tab was opened. */
+  region?: Box;
+  whole: boolean;
+  /** Mask layers hidden in the Layout tab; their materials start hidden too. */
+  hiddenSources: Set<string>;
+}
 
 function metric(snapshot: Snapshot | undefined, key: string) {
   const value = snapshot?.physical_run?.state.metrics?.[key];
@@ -112,7 +135,7 @@ export function Physical({
   useEffect(() => {
     if (active) setOpened(true);
   }, [active]);
-  const [view, setView] = useState<"plan" | "result">("plan");
+  const [view, setView] = useState<"plan" | "result" | "solid">("plan");
   const [layout, setLayout] = useState<LayoutData>();
   const [masks, setMasks] = useState<MaskData>();
   const [scene, setScene] = useState<MaskScene>();
@@ -120,6 +143,22 @@ export function Physical({
   const glCanvas = useRef<HTMLCanvasElement>(null);
   const renderer = useRef<LayoutRenderer>(undefined);
   const [unsupported, setUnsupported] = useState(false);
+  const [solidRequest, setSolidRequest] = useState<SolidRequest>();
+  const [solid, setSolid] = useState<SolidData>();
+  const [solidScene, setSolidScene] = useState<SolidScene>();
+  const solidCanvas = useRef<HTMLCanvasElement>(null);
+  const solidRenderer = useRef<SolidRenderer>(undefined);
+  const solidCamera = useRef<SolidCamera>(undefined);
+  const presentedSolid = useRef<SolidCamera>(undefined);
+  const [solidDrag, setSolidDrag] = useState<{
+    kind: "orbit" | "pan";
+    from: Point;
+    camera: SolidCamera;
+  }>();
+  const [hiddenMaterials, setHiddenMaterials] = useState<Set<string>>(
+    new Set(),
+  );
+  const [zScale, setZScale] = useState(1);
   const [checks, setChecks] = useState<Check[]>([]);
   const [shapes, setShapes] = useState<Record<number, LayoutShapes>>({});
   const [hidden, setHidden] = useState<Set<string>>(new Set());
@@ -127,6 +166,8 @@ export function Physical({
   const [draft, setDraft] = useState<Floorplan>();
   const [drawing, setDrawing] = useState(false);
   const [cell, setCell] = useState<string>();
+  // A wire clicked in the layout highlights only its net; a second click clears it.
+  const [picked, setPicked] = useState<{ net: string } | "none">();
   const [marker, setMarker] = useState<Box>();
   const [open, setOpen] = useState<string>();
 
@@ -155,6 +196,8 @@ export function Physical({
     opened && snapshot?.physical_run?.gds && snapshot.physical_run.layer_file
       ? snapshot.id
       : undefined;
+  const solidId =
+    masksId && snapshot?.physical_run?.stack_file ? snapshot.id : undefined;
 
   useEffect(() => {
     setLayout(undefined);
@@ -163,6 +206,7 @@ export function Physical({
     setMarker(undefined);
     setView(layoutId ? "result" : "plan");
     setCamera(undefined);
+    setSolidRequest(undefined);
     if (!layoutId) return;
     let active = true;
     api<LayoutData>("layout", { snapshot_id: layoutId })
@@ -238,6 +282,62 @@ export function Physical({
       worker.terminate();
     };
   }, [masks, fail]);
+  // The GDS extruded with the PDK's stack, built for each request; materials of
+  // layers hidden in the Layout tab start hidden, as in KLayout.
+  useEffect(() => {
+    setSolid(undefined);
+    if (!solidId || !solidRequest) return;
+    let active = true;
+    const box = solidRequest.whole ? undefined : solidRequest.region;
+    api<SolidData>("layout_solid", {
+      snapshot_id: solidId,
+      ...(box ? { box } : {}),
+    })
+      .then((data) => {
+        if (!active) return;
+        setSolid(data);
+        setHiddenMaterials(
+          new Set(
+            data.materials
+              .filter(
+                (material) =>
+                  material.source &&
+                  solidRequest.hiddenSources.has(material.source),
+              )
+              .map((material) => material.name),
+          ),
+        );
+      })
+      .catch((error: unknown) => {
+        if (active) fail(error);
+      });
+    return () => {
+      active = false;
+    };
+  }, [solidId, solidRequest, fail]);
+  useEffect(() => {
+    setSolidScene(undefined);
+    if (!solid) return;
+    const worker = new Worker(new URL("../solid.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    let current = true;
+    worker.onmessage = ({ data }: MessageEvent<SolidResponse>) => {
+      if (!current) return;
+      if ("error" in data) fail(data.error);
+      else setSolidScene(data.scene);
+      worker.terminate();
+    };
+    worker.onerror = (event) => {
+      if (current) fail(event.message);
+      worker.terminate();
+    };
+    worker.postMessage(solid);
+    return () => {
+      current = false;
+      worker.terminate();
+    };
+  }, [solid, fail]);
 
   // The flow's wire boxes supply names and selection overlays.
   const wanted = layout?.layers.findIndex(
@@ -245,7 +345,7 @@ export function Physical({
       !shapes[index] && (layout.wires[index] || layout.power[index]),
   );
   useEffect(() => {
-    if (!layoutId || view !== "result" || wanted === undefined || wanted < 0)
+    if (!layoutId || view === "plan" || wanted === undefined || wanted < 0)
       return;
     let active = true;
     api<LayoutShapes>("layout_shapes", { snapshot_id: layoutId, layer: wanted })
@@ -276,7 +376,7 @@ export function Physical({
   // Without a camera the view follows the outline; a drag fixes it first, so
   // resizing does not move the view under the pointer.
   const world: Box =
-    view === "result" && layout
+    view !== "plan" && layout
       ? [
           layout.die[0] / dbu,
           layout.die[1] / dbu,
@@ -293,16 +393,28 @@ export function Physical({
   );
   const currentCamera = () => camera.current ?? fitted;
   const presentedCamera = () => presented.current ?? currentCamera();
-  // A vector signal is the nets of its bits.
+  // A signal selected elsewhere replaces a wire picked here, unless it is that wire's vector.
+  useEffect(() => {
+    setPicked((known) =>
+      typeof known === "object" &&
+      selectedNet &&
+      (known.net === selectedNet || known.net.startsWith(selectedNet + "["))
+        ? known
+        : undefined,
+    );
+  }, [selectedNet]);
+  // A vector signal is the nets of its bits; a picked wire is its own net only.
   const highlighted = useMemo(() => {
     const nets = new Set<number>();
-    if (selectedNet)
+    if (picked === "none") return nets;
+    const wanted = picked ? picked.net : selectedNet;
+    if (wanted)
       layout?.nets.forEach((name, index) => {
-        if (name === selectedNet || name.startsWith(selectedNet + "["))
+        if (name === wanted || (!picked && name.startsWith(wanted + "[")))
           nets.add(index);
       });
     return nets;
-  }, [selectedNet, layout]);
+  }, [selectedNet, picked, layout]);
 
   // The masks are drawn by the GPU on the canvas under the overlay.
   const glShown = view === "result" && !!masks;
@@ -331,6 +443,93 @@ export function Physical({
       renderer.current = undefined;
     };
   }, [glShown, fail, schedule]);
+  // The 3D view has its own canvas; only one GL canvas is mounted at a time.
+  const solidShown = view === "solid" && !!solid;
+  useEffect(() => {
+    const element = solidCanvas.current;
+    if (!element) return;
+    let created: SolidRenderer | undefined;
+    try {
+      setUnsupported(false);
+      setContextLost(false);
+      created = createSolidRenderer(element, (lost) => {
+        setContextLost(lost);
+        schedule();
+      });
+    } catch (error) {
+      fail(error);
+      return;
+    }
+    if (!created) {
+      setUnsupported(true);
+      return;
+    }
+    solidRenderer.current = created;
+    return () => {
+      created.dispose();
+      solidRenderer.current = undefined;
+    };
+  }, [solidShown, fail, schedule]);
+  const fittedSolid = useMemo(
+    () =>
+      solidScene &&
+      fitSolid(
+        solidScene.box.map((v) => v / solidScene.dbu) as Box,
+        solidScene.zRange,
+        size.width / size.height,
+        zScale,
+      ),
+    [solidScene, size, zScale],
+  );
+  const currentSolidCamera = () =>
+    solidCamera.current && { ...solidCamera.current, zScale };
+  const presentedSolidCamera = () =>
+    presentedSolid.current ?? currentSolidCamera() ?? fittedSolid;
+  // The selected signal's wires on their routing materials, and the selected
+  // cell as a lid over the stack; names come from the flow, extents from the GDS.
+  const solidHighlight = useMemo(() => {
+    if (!solidScene || !layout) return undefined;
+    const boxes = new Map<number, number[]>();
+    // The part of a box inside the scene's area, which a region view cuts down.
+    const within = (b: readonly (number | string)[]): Box | undefined => {
+      const [x0, y0, x1, y1] = solidScene.box;
+      const cut: Box = [
+        Math.max(b[0] as number, x0),
+        Math.max(b[1] as number, y0),
+        Math.min(b[2] as number, x1),
+        Math.min(b[3] as number, y1),
+      ];
+      return cut[0] <= cut[2] && cut[1] <= cut[3] ? cut : undefined;
+    };
+    layout.layers.forEach((routing, index) => {
+      const data = shapes[index];
+      if (!data || !highlighted.size) return;
+      const sources = new Set(
+        masks?.layers
+          .filter((layer) => layer.name.split(".")[0] === routing)
+          .map((layer) => layer.source),
+      );
+      const material = solidScene.materials.findIndex(
+        (candidate) => candidate.source && sources.has(candidate.source),
+      );
+      if (material < 0) return;
+      solidScene.slabs.forEach((slab, number) => {
+        if (slab.material !== material) return;
+        for (const wire of data.wires)
+          if (highlighted.has(wire[4])) {
+            const cut = within(wire);
+            if (!cut) continue;
+            const flat = boxes.get(number) ?? [];
+            flat.push(...cut);
+            boxes.set(number, flat);
+          }
+      });
+    });
+    const chosen = layout.instances.find((instance) => instance[0] === cell);
+    const lid = chosen && within(chosen.slice(2, 6));
+    if (!boxes.size && !lid) return undefined;
+    return highlightGeometry(solidScene, boxes, lid);
+  }, [solidScene, layout, shapes, highlighted, masks, cell]);
 
   useEffect(() => {
     let query: MediaQueryList;
@@ -353,14 +552,34 @@ export function Physical({
   useLayoutEffect(() => {
     redraw.current = () => {
       if (!active || contextLost) return;
-      const element = canvas.current;
-      if (!element) return;
-      const shown = camera.current ?? fitted;
       const viewport = viewportSize(
         size.width,
         size.height,
         window.devicePixelRatio || 1,
       );
+      if (view === "solid") {
+        const shown = solidCamera.current
+          ? { ...solidCamera.current, zScale }
+          : fittedSolid;
+        if (!solidRenderer.current || !solidScene || !shown) return;
+        try {
+          solidRenderer.current.draw(
+            solidScene,
+            shown,
+            viewport,
+            hiddenMaterials,
+            solidHighlight,
+          );
+        } catch (error) {
+          fail(error);
+          return;
+        }
+        presentedSolid.current = shown;
+        return;
+      }
+      const element = canvas.current;
+      if (!element) return;
+      const shown = camera.current ?? fitted;
       if (renderer.current && scene && glShown) {
         try {
           renderer.current.draw(scene, shown, viewport, hidden);
@@ -566,6 +785,11 @@ export function Physical({
     highlighted,
     masks,
     dbu,
+    solidScene,
+    fittedSolid,
+    hiddenMaterials,
+    solidHighlight,
+    zScale,
   ]);
 
   const at = (event: { clientX: number; clientY: number }): Point => {
@@ -591,6 +815,11 @@ export function Physical({
       const net = wire && layout.nets[wire[4]];
       if (net) {
         setCell(undefined);
+        if (typeof picked === "object" && picked.net === net) {
+          setPicked("none");
+          return;
+        }
+        setPicked({ net });
         onPickNet(net);
         return;
       }
@@ -605,6 +834,50 @@ export function Physical({
       if (!next.delete(name)) next.add(name);
       return next;
     });
+  const toggleMaterial = (name: string) =>
+    setHiddenMaterials((known) => {
+      const next = new Set(known);
+      if (!next.delete(name)) next.add(name);
+      return next;
+    });
+  const setSolidCamera = (next: SolidCamera | undefined) => {
+    solidCamera.current = next;
+    schedule();
+  };
+  /** Open the 3D tab on what the Layout tab shows, or on the whole design. */
+  const openSolid = () => {
+    if (!layout) return;
+    let region: Box | undefined;
+    if (view === "result") {
+      const seen = visibleBox(presentedCamera(), size.width, size.height).map(
+        (v) => Math.round(v * dbu),
+      ) as Box;
+      const [x0, y0, x1, y1] = layout.die;
+      const covers =
+        seen[0] <= x0 && seen[1] <= y0 && seen[2] >= x1 && seen[3] >= y1;
+      if (!covers) region = seen;
+    }
+    setSolidRequest({ region, whole: !region, hiddenSources: new Set(hidden) });
+    setView("solid");
+    setSolidCamera(undefined);
+  };
+  const solidAt = (event: { clientX: number; clientY: number }): Point => {
+    const bounds = solidCanvas.current!.getBoundingClientRect();
+    return [event.clientX - bounds.left, event.clientY - bounds.top];
+  };
+  // Top material first, as the stack is seen.
+  const materials = solid
+    ? solid.materials
+        .map((material, index) => ({
+          ...material,
+          top: Math.max(
+            ...solid.slabs
+              .filter((slab) => slab.material === index)
+              .map((slab) => slab.zstop),
+          ),
+        }))
+        .sort((a, b) => b.top - a.top)
+    : [];
   const selected = layout?.instances.find((instance) => instance[0] === cell);
   const filled = cellArea && plan ? fill(cellArea, plan) : undefined;
   const density = project?.physical?.overrides.PL_TARGET_DENSITY_PCT;
@@ -630,13 +903,97 @@ export function Physical({
             layout ? undefined : "Run a Post-layout build to see the layout"
           }
           onClick={() => {
+            // Coming back from 3D keeps the Layout camera the 3D region came from.
+            if (view !== "solid") setCamera(undefined);
             setView("result");
-            setCamera(undefined);
           }}
         >
           Layout
         </button>
-        <button onClick={() => setCamera(undefined)}>Fit</button>
+        <button
+          aria-pressed={view === "solid"}
+          disabled={!layout || !solidId}
+          title={
+            !layout
+              ? "Run a Post-layout build to see the layout"
+              : solidId
+                ? "Extrude the layout with the PDK's layer stack"
+                : "This build has no 3D view"
+          }
+          onClick={openSolid}
+        >
+          3D
+        </button>
+        <button
+          onClick={() =>
+            view === "solid" ? setSolidCamera(undefined) : setCamera(undefined)
+          }
+        >
+          Fit
+        </button>
+        {view === "solid" && (
+          <>
+            <button
+              onClick={() => {
+                const current = presentedSolidCamera();
+                if (current) setSolidCamera(topView(current));
+              }}
+            >
+              Top
+            </button>
+            <button
+              aria-pressed={!solidRequest?.whole}
+              disabled={!solidRequest?.region}
+              title="The area the Layout tab showed when 3D was opened"
+              onClick={() => {
+                setSolidRequest((r) => r && { ...r, whole: false });
+                setSolidCamera(undefined);
+              }}
+            >
+              Region of the Layout view
+            </button>
+            <button
+              aria-pressed={!!solidRequest?.whole}
+              onClick={() => {
+                setSolidRequest((r) => r && { ...r, whole: true });
+                setSolidCamera(undefined);
+              }}
+            >
+              Whole design
+            </button>
+            <label>
+              Z scale
+              <input
+                aria-label="Z scale"
+                type="range"
+                min="1"
+                max="20"
+                step="1"
+                value={zScale}
+                onChange={(event) => {
+                  setZScale(Number(event.target.value));
+                  schedule();
+                }}
+              />
+              {zScale}×
+            </label>
+            {solidScene && (
+              <span>
+                {(
+                  (solidScene.box[2] - solidScene.box[0]) /
+                  solidScene.dbu
+                ).toFixed(1)}
+                {" × "}
+                {(
+                  (solidScene.box[3] - solidScene.box[1]) /
+                  solidScene.dbu
+                ).toFixed(1)}
+                {" µm · "}
+                {solidScene.triangles.toLocaleString()} triangles
+              </span>
+            )}
+          </>
+        )}
         {view === "plan" && project?.physical && (
           <>
             <button aria-pressed={drawing} onClick={() => setDrawing(!drawing)}>
@@ -710,7 +1067,7 @@ export function Physical({
             )}
           </>
         )}
-        {view === "result" && stale && (
+        {view !== "plan" && stale && (
           <span className="physical-dense">
             Settings or sources changed · this layout is from the last build
           </span>
@@ -733,6 +1090,76 @@ export function Physical({
               <p>A floorplan needs the Physical Design settings.</p>
               <button onClick={onConfigure}>Configure Physical Design…</button>
             </div>
+          ) : view === "solid" ? (
+            <>
+              {solidShown && (
+                <canvas
+                  className="physical-gl"
+                  ref={solidCanvas}
+                  aria-label="3D layout"
+                  style={{ width: size.width, height: size.height }}
+                  onContextMenu={(event) => event.preventDefault()}
+                  onWheel={(event) => {
+                    const current = presentedSolidCamera();
+                    if (current)
+                      setSolidCamera(
+                        dolly(current, event.deltaY > 0 ? 1.15 : 1 / 1.15),
+                      );
+                  }}
+                  onPointerDown={(event) => {
+                    const current = presentedSolidCamera();
+                    if (!current) return;
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    setSolidDrag({
+                      kind:
+                        event.button === 0 && !event.shiftKey ? "orbit" : "pan",
+                      from: solidAt(event),
+                      camera: current,
+                    });
+                  }}
+                  onPointerMove={(event) => {
+                    if (!solidDrag) return;
+                    const [x, y] = solidAt(event);
+                    const dx = x - solidDrag.from[0],
+                      dy = y - solidDrag.from[1];
+                    setSolidCamera(
+                      solidDrag.kind === "orbit"
+                        ? orbit(solidDrag.camera, dx, dy)
+                        : pan(
+                            solidDrag.camera,
+                            dx,
+                            dy,
+                            viewportSize(size.width, size.height, 1),
+                          ),
+                    );
+                  }}
+                  onPointerCancel={() => setSolidDrag(undefined)}
+                  onPointerUp={() => setSolidDrag(undefined)}
+                />
+              )}
+              {!solid && (
+                <div className="physical-empty" role="status">
+                  Building 3D view…
+                </div>
+              )}
+              {solidShown && contextLost && (
+                <div className="physical-empty" role="status">
+                  Layout graphics context lost. Waiting for recovery…
+                </div>
+              )}
+              {solidShown && !solidScene && !unsupported && (
+                <div className="physical-empty" role="status">
+                  Preparing 3D view…
+                </div>
+              )}
+              {solidShown && unsupported && (
+                <div className="physical-empty">
+                  <p>
+                    The 3D view needs WebGL2, which this window cannot provide.
+                  </p>
+                </div>
+              )}
+            </>
           ) : (
             <>
               {glShown && (
@@ -938,6 +1365,56 @@ export function Physical({
                   </li>
                 ))}
               </ul>
+            </>
+          ) : view === "solid" ? (
+            <>
+              <h3>Materials</h3>
+              {solid ? (
+                <>
+                  <div className="physical-layer-tools">
+                    <button onClick={() => setHiddenMaterials(new Set())}>
+                      Show all
+                    </button>
+                    <button
+                      onClick={() =>
+                        setHiddenMaterials(
+                          new Set(solid.materials.map((m) => m.name)),
+                        )
+                      }
+                    >
+                      Hide all
+                    </button>
+                  </div>
+                  <ul>
+                    {materials.map((material, index) => (
+                      <li key={`${material.name}:${index}`}>
+                        <label
+                          title={
+                            material.source
+                              ? `GDS ${material.source}`
+                              : undefined
+                          }
+                        >
+                          <input
+                            type="checkbox"
+                            checked={!hiddenMaterials.has(material.name)}
+                            onChange={() => toggleMaterial(material.name)}
+                          />
+                          <i
+                            style={{
+                              background: material.fill,
+                              border: `1px solid ${material.fill}`,
+                            }}
+                          />
+                          {material.name}
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p className="muted">Building the 3D view…</p>
+              )}
             </>
           ) : (
             <>

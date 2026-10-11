@@ -427,6 +427,13 @@ fn layer_properties(profile: &ToolchainProfile, p: &PhysicalConfig) -> PathBuf {
         _ => "sky130A/libs.tech/klayout/tech/sky130A.lyp",
     })
 }
+/// The heights, thicknesses and colours KLayout's 2.5D view gives a PDK's layers.
+fn layer_stack(profile: &ToolchainProfile, p: &PhysicalConfig) -> PathBuf {
+    pdk_root(profile).join(match p.pdk.as_str() {
+        "ihp-sg13g2" => "ihp-sg13g2/libs.tech/klayout/tech/d25/sg13g2_beol.lyd25",
+        _ => "sky130A/libs.tech/klayout/d25/sky130.lyd25",
+    })
+}
 pub fn model_files(profile: &ToolchainProfile, p: &PhysicalConfig) -> Result<Vec<PathBuf>> {
     let root = pdk_root(profile);
     match p.pdk.as_str() {
@@ -796,6 +803,7 @@ fn run_physical(
     let mut layout = None;
     let mut gds = None;
     let mut layer_file = None;
+    let mut stack_file = None;
     let mut checks = None;
     if !synthesis_only {
         let file = |name: &str| r.workspace.join(name).to_string_lossy().into_owned();
@@ -856,6 +864,19 @@ fn run_physical(
             (None, _) => unavailable("Mask view", anyhow::anyhow!("the flow left no GDS")),
             (_, Err(error)) => unavailable("Mask view", error),
         }
+        if gds.is_some() {
+            let stack = layer_stack(&r.profile, cfg);
+            match r.run(
+                "cp",
+                &[stack.to_string_lossy().into(), file("stack.lyd25")],
+                &r.workspace,
+                "stack-file",
+            ) {
+                Ok(_) => stack_file = Some(r.workspace.join("stack.lyd25")),
+                Err(error) => unavailable("3D view", error),
+            }
+            r.cancel.check()?;
+        }
         fs::write(
             r.workspace.join("collect_checks.py"),
             include_str!("../../../tools/collect_checks.py"),
@@ -891,6 +912,7 @@ fn run_physical(
         layout,
         gds,
         layer_file,
+        stack_file,
         checks,
     })
 }

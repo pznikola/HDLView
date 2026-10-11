@@ -436,7 +436,7 @@ fn bounds(points: &[i32]) -> Option<[i32; 4]> {
     ])
 }
 /// A four-point axis-parallel ring is a box; anything else stays a polygon.
-fn polygon(points: Vec<i32>) -> Geometry {
+pub(crate) fn polygon(points: Vec<i32>) -> Geometry {
     if let [x0, y0, x1, y1, x2, y2, x3, y3] = points[..] {
         let upright = x0 == x1 && y1 == y2 && x2 == x3 && y3 == y0;
         let flat = y0 == y1 && x1 == x2 && y2 == y3 && x3 == x0;

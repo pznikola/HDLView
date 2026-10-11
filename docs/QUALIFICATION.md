@@ -130,6 +130,43 @@ minimap and **Show selection**.
   cell opened `_5_ · sky130_fd_sc_hd__dfrtp_2` and `_7_ · sg13g2_dfrbpq_1` in the
   Inspector; **Routing only** kept the same layers as before. The Tauri window on this
   machine (WebKitGTK 2.50) created a WebGL2 context and drew a test triangle.
+- **3D view (11 October 2026).** The 2.5D script reader parsed both PDK scripts verbatim
+  (`sky130.lyd25`: 18 inputs, the `licon` block, 16 materials in 17 slabs after dropping
+  the unused `sub`/`dnw`; `sg13g2_beol.lyd25`: 22 materials with the resistor booleans). On
+  fresh Docker Post-layout builds of `01_simpleRegister` (SKY130 and IHP) and `17_afifo`
+  (SKY130, schema 6, no warnings) the boolean materials were compared with KLayout 0.28.8
+  computing the same expressions on the same GDS (`pya.Region`, merged): SKY130 `licon`
+  over poly 352 polygons / 10,172,800 dbu² and beside poly 1,054 / 30,460,600, identical;
+  IHP `Cont->Gatpoly` 337 / 8,627,200 and `GatPoly` 326,753,125 dbu², identical areas.
+  IHP `Cont->Activ` differs by exactly 600 contacts (ours 69,504,000 dbu², KLayout
+  54,144,000): the GDS holds 3,252 raw contact shapes of which 2,452 remain after merging,
+  and the 600 that coincide across neighbouring placements are merged by KLayout's
+  flattened region but kept by the per-cell evaluation (documented; they draw as one).
+  Materials shown as plain layers keep their raw shapes, so their summed areas exceed
+  KLayout's merged areas where rails overlap. The 3D view request takes 54 to 84 ms on the
+  registers and 744 ms for the whole `17_afifo` (2.9 MB, 16,330 placements of 54 cells,
+  36,756 top shapes, 8.68 M triangles with every placement drawn) through the line RPC.
+  Browser harness, headed Chromium on the NVIDIA GPU: after clicking **3D** the register
+  views appeared in 1.2 to 1.3 s and the whole `17_afifo` in 7.0 s (of which the worker's
+  extrusion takes 0.9 s in the benchmark and the first frame 216 ms; the rest is the
+  harness moving the JSON); a 161 × 118 µm region of it (2.3 M triangles) in 2.5 s. Orbit
+  and dolly steps driven through Playwright completed in a median of 50 ms, which is the
+  harness's own floor. `tools/benchmark-solid.mjs` on the whole `17_afifo`: 8.68 M
+  triangles per frame at fit, 16.7 ms frame interval (p50 and p95), 5.9 ms GPU p50 and
+  13.5 ms p95, 4.6 ms CPU p50, 567 draw calls; a close oblique view culls to 1.47 M
+  triangles (1.0 ms GPU); the top view 8.0 M (4.1 ms). The 100 µm region (1.23 M
+  triangles) stays at 16.7 ms with under 2 ms of GPU time. No level of detail was needed.
+  Headless Chromium's software GL (SwiftShader) is not practical for this view: the 100 µm
+  region took 1.5 s per frame at fit and 0.5 s close up, and the whole `17_afifo` did not
+  finish the benchmark's 195 frames within 15 minutes; the region mode keeps such a machine
+  usable only for small areas.
+  Screenshots of the register beside KLayout's own 2.5D window (`klayout -rr sky130.lyd25`)
+  show the same stack order and the layer file's colours; the selected cell appeared as a
+  white lid and **Region of the Layout view** produced a 25.9 × 19.0 µm view after
+  zooming the Layout tab, with the top cell's wires and the highlight cut at its edges
+  (unit tests cover a box and an L-shaped polygon crossing the edge). The region request on a stack with no shapes in it lists no
+  materials. The 3D tab of the e2e fixture (`tests/workspace.spec.ts`) shows the two
+  materials, draws frames on its own canvas, and returns to the Layout tab with its layers.
 - **Editor (browser test).** Draw a rectangle, set 80 × 60, give three ports sides, see
   the same values in Project Settings, change the width there to 90 and see it in the
   view, drag `fast` above `slow` on the right side, save: the project file holds the
@@ -142,7 +179,11 @@ KLayout render by eye); KLayout's built-in stipples other than solid and hollow,
 neither PDK uses; a GDS with magnified or non-quarter-turn placements (the reader reports
 them as errors by design) or with arrays (none in a place-and-route GDS; covered by unit
 tests only); a layout larger than `17_afifo` in the view; a flow stopped by pin slots or by
-routing congestion. The later GDS viewer qualification below covers the actual Tauri layout pane.
+routing congestion; the 3D tab inside the Tauri window (no desktop automation; the WebGL2
+probe of the layout view stands), a 2.5D script using DRC operations outside the subset
+(reported as unavailable by design), booleans across the hierarchy, GF180 (no 2.5D script),
+and the 3D view's z ranges against KLayout's beyond the by-eye comparison. The later GDS
+viewer qualification below covers the actual Tauri layout pane.
 
 ## GDS viewer precision, lifecycle and performance
 

@@ -64,6 +64,7 @@ export function physicalSnapshot(base: string, suffix = "fixture"): string {
   cpSync(base, directory, { recursive: true });
   const gds = join(directory, "fixture.gds"),
     layers = join(directory, "fixture.lyp"),
+    stack = join(directory, "fixture.lyd25"),
     layout = join(directory, "layout.json");
   writeFileSync(
     gds,
@@ -99,6 +100,10 @@ export function physicalSnapshot(base: string, suffix = "fixture"): string {
     `<layer-properties>${[68, 69].map((layer, i) => `<properties><name>met${i + 1}.${suffix}</name><source>${layer}/20@1</source><fill-color>${i ? "#ffff00" : "#0000ff"}</fill-color><frame-color>#ffffff</frame-color><dither-pattern>I0</dither-pattern></properties>`).join("")}</layer-properties>`,
   );
   writeFileSync(
+    stack,
+    `<klayout-macro><text>met1 = input(68, 20)\nmet2 = input(69, 20)\nz(met1, zstart: 1.2, height: 0.3)\nz(met2, height: 0.3, color: 0xffff00)\n</text></klayout-macro>`,
+  );
+  writeFileSync(
     layout,
     JSON.stringify({
       dbu: 1000,
@@ -131,6 +136,7 @@ export function physicalSnapshot(base: string, suffix = "fixture"): string {
     layout,
     gds,
     layer_file: layers,
+    stack_file: stack,
     checks: null,
   };
   const path = join(directory, "snapshot.json");

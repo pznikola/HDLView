@@ -3083,7 +3083,10 @@ test("GDS masks and overlays share frames, stay loaded across panes, and ignore 
       ...args
     ) {
       records.push({
-        kind: "mask",
+        kind:
+          this.canvas.getAttribute("aria-label") === "3D layout"
+            ? "solid"
+            : "mask",
         frame,
         width: this.canvas.width,
         height: this.canvas.height,
@@ -3217,6 +3220,28 @@ test("GDS masks and overlays share frames, stay loaded across panes, and ignore 
   await pane.getByRole("button", { name: "Hide all", exact: true }).click();
   await expect(pane.getByLabel("met1.first")).not.toBeChecked();
   await pane.getByRole("button", { name: "Show all", exact: true }).click();
+  await expect(pane.getByLabel("met1.first")).toBeChecked();
+  // The 3D tab extrudes the same GDS; a fitted Layout view means the whole design.
+  await pane.getByRole("button", { name: "3D", exact: true }).click();
+  await expect(pane.getByLabel("3D layout")).toBeVisible();
+  await expect(
+    pane.getByRole("button", { name: "Whole design", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(pane.getByLabel("met1.first")).toBeChecked();
+  await expect(pane.getByLabel("met2.first")).toBeChecked();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.maskFrames.filter((r) => r.kind === "solid").length,
+      ),
+    )
+    .toBeGreaterThan(0);
+  await expect(pane.locator(".physical-tools")).toContainText("triangles");
+  await pane.getByLabel("met1.first").uncheck();
+  await pane.getByRole("button", { name: "Top", exact: true }).click();
+  await page.getByLabel("Z scale").fill("4");
+  await pane.getByRole("button", { name: "Layout", exact: true }).click();
+  await expect(pane.getByLabel("Layout", { exact: true })).toBeVisible();
   await expect(pane.getByLabel("met1.first")).toBeChecked();
   // Delay a real CLI response across another snapshot activation.
   holdMasks = true;

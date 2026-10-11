@@ -89,6 +89,38 @@ export interface MaskData {
   /** layer index, x, y, text */
   labels: [number, number, number, string][];
 }
+/** Flat boxes and polygons as `[points, holeStarts]`, in database units. */
+export interface SolidShapes {
+  boxes: number[];
+  polygons: [number[], number[]][];
+}
+export interface SolidMaterial {
+  name: string;
+  fill: string;
+  /** GDS layer/datatype when the material shows one layer. */
+  source: string | null;
+}
+/** Shapes of a material between two heights in µm. */
+export interface SolidSlab {
+  material: number;
+  zstart: number;
+  zstop: number;
+}
+/** The final GDS extruded with the PDK's 2.5D stack script. */
+export interface SolidData {
+  dbu: number;
+  top: string;
+  box: LayoutBox;
+  /** In script order. */
+  materials: SolidMaterial[];
+  slabs: SolidSlab[];
+  /** A cell with its shapes by slab index, in its own coordinates. */
+  cells: { name: string; box: LayoutBox; slabs: Record<string, SolidShapes> }[];
+  /** cell index, x, y, KLayout orientation code */
+  instances: [number, number, number, number][];
+  /** The top cell's own shapes, per slab. */
+  shapes: SolidShapes[];
+}
 export interface Check {
   id: string;
   title: string;
@@ -193,6 +225,7 @@ export interface Snapshot {
     layout?: string | null;
     gds?: string | null;
     layer_file?: string | null;
+    stack_file?: string | null;
     checks?: string | null;
   };
 }

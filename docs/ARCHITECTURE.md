@@ -201,8 +201,18 @@ outline passes reuse each frame's placement upload. Culling includes an outline 
 never clips polygons or substitutes cell boxes at small scales. PDK colors, patterns and depth
 ordering are retained; bitmap patterns sample device pixels independently of world geometry.
 
+`solid.rs` builds the 3D view on request from the GDS, the layer file and the PDK's 2.5D script
+(`layer_stack.rs`): each material's parts are evaluated per placed cell and for the top cell
+(booleans through `i_overlay`, within one cell only), optionally limited to a region that clips
+the top cell's shapes and keeps placed cells whole. `solid.worker.ts` runs `solid-scene.ts` once per view: every shape becomes caps and
+walls with int8 normals, cells stay local, top batches are relative to their own origin, and
+the same BVHs index placements and batches. `gl-solid.ts` owns the orbit camera (pivot,
+azimuth, elevation, distance, z scale), the matrices in anchor-relative database units, the
+frustum footprint used for culling, and one instanced draw per cell mesh and batch, with
+index buffers filtered by material visibility and a white override for highlights.
+
 One animation-frame callback in `Physical.tsx` takes the camera ref, viewport and display scale
-and draws both WebGL masks and 2D overlays. Both canvases use the same rounded backing size;
+and draws both WebGL masks and 2D overlays, or the 3D canvas when that tab is active. Both canvases use the same rounded backing size;
 picking uses the last presented camera. Display-scale changes schedule a redraw. Context loss
 pauses drawing with a visible status; restoration recreates GPU resources from the CPU scene.
 Unmounting cancels scheduled frames and releases worker and GPU resources.
@@ -212,7 +222,7 @@ Unmounting cancels scheduled frames and releases worker and GPU resources.
 1. Extend schema contracts and validators together. Do not add shell-interpolated commands.
 2. Preserve unsupported/ambiguous data as explicit diagnostics; never invent signal connectivity or values.
 3. Keep generated model interfaces separate from simulation models. Blackbox interfaces are for graph import only.
-4. A physical run can publish complete artifacts and still fail DRC/LVS/timing checks. Preserve `PhysicalRun.status` and metrics independently from simulation status. The layout and check views are read from the flow's own database and report files by `tools/layout_dump.py` (names and connectivity, from OpenROAD) and `tools/collect_checks.py`, and the mask view from the final GDS and the PDK's KLayout layer file by the core's own readers (`gds.rs`, `layer_properties.rs`, `masks.rs`) when the view is requested; a check without a result is "not run", never clean, and a build whose views cannot be produced is still complete, with a warning.
+4. A physical run can publish complete artifacts and still fail DRC/LVS/timing checks. Preserve `PhysicalRun.status` and metrics independently from simulation status. The layout and check views are read from the flow's own database and report files by `tools/layout_dump.py` (names and connectivity, from OpenROAD) and `tools/collect_checks.py`, and the mask and 3D views from the final GDS, the PDK's KLayout layer file and its 2.5D script by the core's own readers (`gds.rs`, `layer_properties.rs`, `layer_stack.rs`, `masks.rs`, `solid.rs`) when the view is requested; a check without a result is "not run", never clean, and a build whose views cannot be produced is still complete, with a warning.
 5. Compiler/simulator failures retain logs and never switch backends automatically.
 6. Test instance/bit identity and connectivity, not exact compiler-generated names or layout coordinates.
 7. Keep optional upstream reference checkouts separate from application code; add fixtures under `examples/` or tests.

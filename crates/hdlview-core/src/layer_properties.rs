@@ -281,7 +281,7 @@ fn collect_leaves<'a>(node: Node<'a, 'a>, leaves: &mut Vec<Node<'a, 'a>>) {
     }
 }
 /// `layer/datatype`, with an optional `@cellview` suffix.
-fn pair(source: &str) -> Option<(u16, u16)> {
+pub(crate) fn pair(source: &str) -> Option<(u16, u16)> {
     let (layer, datatype) = source.split('@').next()?.split_once('/')?;
     Some((layer.trim().parse().ok()?, datatype.trim().parse().ok()?))
 }

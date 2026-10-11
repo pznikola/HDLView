@@ -13,6 +13,8 @@ Application dependencies are resolved by committed `Cargo.lock` and `package-loc
 | TypeScript          | 5.9.2                                                                                                     | Apache-2.0 — https://github.com/microsoft/TypeScript                |
 | elkjs               | 0.11.0                                                                                                    | EPL-2.0 — https://github.com/kieler/elkjs/tree/0.11.0               |
 | Wellen              | 0.25.6                                                                                                    | BSD-3-Clause — https://github.com/ekiwi/wellen                      |
+| i_overlay           | 9.0.1                                                                                                     | MIT OR Apache-2.0 — https://github.com/iShape-Rust/iOverlay         |
+| roxmltree           | 0.21                                                                                                      | MIT OR Apache-2.0 — https://github.com/RazrFalcon/roxmltree         |
 | Vitest              | 4.1.11                                                                                                    | MIT — https://github.com/vitest-dev/vitest                          |
 | Playwright          | 1.55.1                                                                                                    | Apache-2.0 — https://github.com/microsoft/playwright                |
 | Prettier            | 3.6.2                                                                                                     | MIT — https://github.com/prettier/prettier                          |

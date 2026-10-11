@@ -1,6 +1,6 @@
 use crate::{
     editor_lint, file_management, masks, model::*, pipeline, project::*, runner::*, simulation,
-    waveform, waveprocess::WaveProcess, workspace,
+    solid, waveform, waveprocess::WaveProcess, workspace,
 };
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -833,6 +833,35 @@ impl Service {
                     .context("This snapshot has no mask view")?;
                 Ok(serde_json::to_value(masks::view(gds, layers)?)?)
             }
+            // The final GDS extruded with the PDK's 2.5D stack, whole or within a box
+            // of database units.
+            "layout_solid" => {
+                let snapshot = self.snapshot(string("snapshot_id")?)?;
+                let run = snapshot.physical_run.as_ref();
+                let (gds, layers, stack) = run
+                    .and_then(|run| {
+                        Some((
+                            run.gds.as_ref()?,
+                            run.layer_file.as_ref()?,
+                            run.stack_file.as_ref()?,
+                        ))
+                    })
+                    .context("This snapshot has no 3D view")?;
+                let region = match &v["box"] {
+                    Value::Null => None,
+                    value => {
+                        let region: [i32; 4] = serde_json::from_value(value.clone())
+                            .context("box must be four database-unit coordinates")?;
+                        if region[0] > region[2] || region[1] > region[3] {
+                            bail!("box must be x0, y0, x1, y1 with x0 <= x1 and y0 <= y1");
+                        }
+                        Some(region)
+                    }
+                };
+                Ok(serde_json::to_value(solid::view(
+                    gds, layers, stack, region,
+                )?)?)
+            }
             "source" => {
                 let snapshot = self.snapshot(string("snapshot_id")?)?;
                 let raw = string("source")?;
@@ -946,7 +975,9 @@ mod lint_tests {
         .unwrap();
         let layers = temp.path().join("layers.lyp");
         fs::write(&layers, "<layer-properties><properties><fill-color>#0000ff</fill-color><frame-color>#0000ff</frame-color><dither-pattern>I0</dither-pattern><name>met1</name><source>68/20@1</source></properties></layer-properties>").unwrap();
-        let run = |layout: Value, masks: bool| json!({"status":"complete","flow_error":null,"directory":temp.path(),"state":{},"reports":[],"layout":layout,"gds":masks.then(|| gds.clone()),"layer_file":masks.then(|| layers.clone()),"checks":null});
+        let stack = temp.path().join("stack.lyd25");
+        fs::write(&stack, "<klayout-macro><text>z(input(68, 20), zstart: 1.2, height: 0.3)</text></klayout-macro>").unwrap();
+        let run = |layout: Value, masks: bool| json!({"status":"complete","flow_error":null,"directory":temp.path(),"state":{},"reports":[],"layout":layout,"gds":masks.then(|| gds.clone()),"layer_file":masks.then(|| layers.clone()),"stack_file":masks.then(|| stack.clone()),"checks":null});
         for (id, run) in [
             ("routed", run(json!(layout), true)),
             ("bare", run(Value::Null, false)),
@@ -989,7 +1020,33 @@ mod lint_tests {
         assert_eq!(masks["layers"][0]["name"], "met1");
         assert_eq!(masks["layers"][0]["pattern"], json!(["*"]));
         assert_eq!(masks["shapes"][0]["boxes"], json!([0, 0, 10, 5]));
-        for action in ["layout", "checks", "layout_masks"] {
+        let solid = service
+            .request("layout_solid", json!({"snapshot_id":"routed"}))
+            .unwrap();
+        assert_eq!(
+            solid["materials"],
+            json!([{"name":"met1","fill":"#0000ff","source":"68/20"}])
+        );
+        assert_eq!(
+            solid["slabs"],
+            json!([{"material":0,"zstart":1.2,"zstop":1.5}])
+        );
+        assert_eq!(solid["shapes"][0]["boxes"], json!([0, 0, 10, 5]));
+        let outside = service
+            .request(
+                "layout_solid",
+                json!({"snapshot_id":"routed","box":[20,20,30,30]}),
+            )
+            .unwrap();
+        assert_eq!(outside["materials"], json!([]));
+        let error = service
+            .request(
+                "layout_solid",
+                json!({"snapshot_id":"routed","box":[5,0,0,0]}),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("x0 <= x1"));
+        for action in ["layout", "checks", "layout_masks", "layout_solid"] {
             let error = service
                 .request(action, json!({"snapshot_id":"bare"}))
                 .unwrap_err();

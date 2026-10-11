@@ -5,6 +5,7 @@ import {
   querySpatial,
   splitCoordinate,
   type Geometry,
+  type IndexRange,
   type MaskScene,
 } from "./mask-scene";
 import type { MaskLayer } from "./types";
@@ -119,25 +120,26 @@ export function viewportSize(
 
 /** Only index buffers change when visibility changes; geometry stays on the GPU. */
 export function visibleIndices(
-  mesh: Geometry,
+  source: Uint32Array,
+  ranges: IndexRange[],
   shown: boolean[],
-  lines: boolean,
 ): Uint32Array {
-  const source = lines ? mesh.frame : mesh.fill;
-  const ranges = mesh.ranges.filter((range) => shown[range.layer]);
-  const count = ranges.reduce(
-    (n, r) => n + (lines ? r.frameCount : r.fillCount),
-    0,
-  );
-  const out = new Uint32Array(count);
+  const kept = ranges.filter((range) => shown[range.layer]);
+  const out = new Uint32Array(kept.reduce((n, r) => n + r.count, 0));
   let offset = 0;
-  for (const range of ranges) {
-    const start = lines ? range.frameStart : range.fillStart;
-    const size = lines ? range.frameCount : range.fillCount;
-    out.set(source.subarray(start, start + size), offset);
-    offset += size;
+  for (const range of kept) {
+    out.set(source.subarray(range.start, range.start + range.count), offset);
+    offset += range.count;
   }
   return out;
+}
+/** The fill or outline part of a mesh's layer ranges. */
+export function meshRanges(mesh: Geometry, lines: boolean): IndexRange[] {
+  return mesh.ranges.map((range) => ({
+    layer: range.layer,
+    start: lines ? range.frameStart : range.fillStart,
+    count: lines ? range.frameCount : range.fillCount,
+  }));
 }
 
 interface InstanceBuffer {
@@ -458,8 +460,12 @@ export function createRenderer(
           meshes.forEach((mesh, i) => {
             const target = buffers[i]!;
             gl.bindVertexArray(target.vao);
-            const fill = visibleIndices(mesh, shown, false),
-              frame = visibleIndices(mesh, shown, true);
+            const fill = visibleIndices(
+                mesh.fill,
+                meshRanges(mesh, false),
+                shown,
+              ),
+              frame = visibleIndices(mesh.frame, meshRanges(mesh, true), shown);
             gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, target.fill);
             gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, fill);
             gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, target.frame);

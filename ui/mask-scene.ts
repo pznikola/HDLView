@@ -9,6 +9,12 @@ export function splitCoordinate(value: number): [number, number] {
   return [high, value - high];
 }
 
+/** A run of indices belonging to one layer or slab. */
+export interface IndexRange {
+  layer: number;
+  start: number;
+  count: number;
+}
 export interface LayerRange {
   layer: number;
   fillStart: number;

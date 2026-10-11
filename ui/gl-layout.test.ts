@@ -3,6 +3,7 @@ import { geometry } from "./mask-scene";
 import {
   patternAtlas,
   patternBit,
+  meshRanges,
   patternSize,
   viewportSize,
   visibleIndices,
@@ -62,15 +63,19 @@ describe("viewport and layer indices", () => {
       [1, { boxes: [], polygons: [[0, 0, 2, 0, 2, 2]] }],
     ]);
     const original = mesh.vertices.slice();
-    expect(visibleIndices(mesh, [false, true], false).length).toBe(3);
-    expect(visibleIndices(mesh, [false, true], true).length).toBe(6);
+    const fill = (shown: boolean[]) =>
+      visibleIndices(mesh.fill, meshRanges(mesh, false), shown);
+    const frame = (shown: boolean[]) =>
+      visibleIndices(mesh.frame, meshRanges(mesh, true), shown);
+    expect(fill([false, true]).length).toBe(3);
+    expect(frame([false, true]).length).toBe(6);
     expect(
-      [...visibleIndices(mesh, [false, true], false)].every(
+      [...fill([false, true])].every(
         (index) => mesh.vertices[index * 5 + 4] === 1,
       ),
     ).toBe(true);
-    expect(visibleIndices(mesh, [false, false], true).length).toBe(0);
-    expect(visibleIndices(mesh, [true, true], false)).toEqual(mesh.fill);
+    expect(frame([false, false]).length).toBe(0);
+    expect(fill([true, true])).toEqual(mesh.fill);
     expect(mesh.vertices).toEqual(original);
   });
 });

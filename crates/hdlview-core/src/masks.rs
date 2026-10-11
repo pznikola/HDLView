@@ -68,14 +68,14 @@ fn transform(code: u8, dx: i32, dy: i32, x: i32, y: i32) -> (i32, i32) {
         (dx + cos * x + sin * y, dy + sin * x - cos * y)
     }
 }
-fn transformed_box(code: u8, dx: i32, dy: i32, b: [i32; 4]) -> [i32; 4] {
+pub(crate) fn transformed_box(code: u8, dx: i32, dy: i32, b: [i32; 4]) -> [i32; 4] {
     let (p, q) = (
         transform(code, dx, dy, b[0], b[1]),
         transform(code, dx, dy, b[2], b[3]),
     );
     [p.0.min(q.0), p.1.min(q.1), p.0.max(q.0), p.1.max(q.1)]
 }
-fn union(a: Option<[i32; 4]>, b: [i32; 4]) -> Option<[i32; 4]> {
+pub(crate) fn union(a: Option<[i32; 4]>, b: [i32; 4]) -> Option<[i32; 4]> {
     Some(match a {
         Some(a) => [
             a[0].min(b[0]),
@@ -86,7 +86,7 @@ fn union(a: Option<[i32; 4]>, b: [i32; 4]) -> Option<[i32; 4]> {
         None => b,
     })
 }
-fn polygon_bounds(points: &[i32]) -> [i32; 4] {
+pub(crate) fn polygon_bounds(points: &[i32]) -> [i32; 4] {
     let xs = points.iter().step_by(2);
     let ys = points.iter().skip(1).step_by(2);
     [
@@ -98,7 +98,7 @@ fn polygon_bounds(points: &[i32]) -> [i32; 4] {
 }
 
 /// Shapes by GDS layer.
-type ByLayer = HashMap<(u16, u16), MaskShapes>;
+pub(crate) type ByLayer = HashMap<(u16, u16), MaskShapes>;
 
 /// The shapes of a cell and everything below it, in the cell's coordinates.
 fn flatten(library: &Library, cell: usize, code: u8, dx: i32, dy: i32, out: &mut ByLayer) {
@@ -128,7 +128,7 @@ fn flatten(library: &Library, cell: usize, code: u8, dx: i32, dy: i32, out: &mut
         flatten(library, placement.cell, composed, x, y, out);
     }
 }
-fn bounds_of(shapes: &MaskShapes) -> Option<[i32; 4]> {
+pub(crate) fn bounds_of(shapes: &MaskShapes) -> Option<[i32; 4]> {
     let mut b = None;
     for part in shapes.boxes.chunks_exact(4) {
         b = union(b, [part[0], part[1], part[2], part[3]]);
@@ -139,18 +139,26 @@ fn bounds_of(shapes: &MaskShapes) -> Option<[i32; 4]> {
     b
 }
 
-fn build(library: &Library, styles: &[LayerStyle]) -> Result<MaskView> {
+/// The top cell's placements with each placed cell flattened once, and the
+/// top cell's own shapes.
+pub(crate) struct Flattened {
+    /// GDS cell index and its shapes, numbered as the placements first refer to them.
+    pub cells: Vec<(usize, ByLayer)>,
+    /// cell number, x, y, orientation code
+    pub instances: Vec<[i32; 4]>,
+    pub own: ByLayer,
+}
+pub(crate) fn flatten_top(library: &Library) -> Flattened {
     let top = &library.cells[library.top];
-    // Each cell the top places, flattened once; the placements refer to it by number.
     let mut numbers: HashMap<usize, usize> = HashMap::new();
-    let mut flattened: Vec<(usize, ByLayer)> = Vec::new();
+    let mut cells: Vec<(usize, ByLayer)> = Vec::new();
     let mut instances = Vec::with_capacity(top.placements.len());
     for placement in &top.placements {
         let number = *numbers.entry(placement.cell).or_insert_with(|| {
             let mut shapes = HashMap::new();
             flatten(library, placement.cell, 0, 0, 0, &mut shapes);
-            flattened.push((placement.cell, shapes));
-            flattened.len() - 1
+            cells.push((placement.cell, shapes));
+            cells.len() - 1
         });
         instances.push([
             number as i32,
@@ -167,6 +175,20 @@ fn build(library: &Library, styles: &[LayerStyle]) -> Result<MaskView> {
             Geometry::Polygon(points) => layer.polygons.push(points.clone()),
         }
     }
+    Flattened {
+        cells,
+        instances,
+        own,
+    }
+}
+
+fn build(library: &Library, styles: &[LayerStyle]) -> Result<MaskView> {
+    let top = &library.cells[library.top];
+    let Flattened {
+        cells: flattened,
+        instances,
+        own,
+    } = flatten_top(library);
     // Layers with anything on them, in the file's order; unlisted ones after, by number.
     let mut used: Vec<(u16, u16)> = own.keys().copied().collect();
     used.extend(top.texts.iter().map(|text| text.layer));

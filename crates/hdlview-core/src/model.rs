@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
-pub const SCHEMA: u32 = 5;
+pub const SCHEMA: u32 = 6;
 pub const PROJECT_SCHEMA: u32 = 3;
 fn std_sv() -> String {
     "1800-2017".into()
@@ -417,6 +417,8 @@ pub struct PhysicalRun {
     /// The final GDS and the PDK's KLayout layer file, read for the mask view.
     pub gds: Option<PathBuf>,
     pub layer_file: Option<PathBuf>,
+    /// The PDK's KLayout 2.5D script, read with the GDS for the 3D view.
+    pub stack_file: Option<PathBuf>,
     /// DRC markers and the LVS result, written by `tools/collect_checks.py`.
     pub checks: Option<PathBuf>,
 }
