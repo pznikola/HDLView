@@ -4,32 +4,33 @@
 
 ## Boundaries
 
-| Module                             | Responsibility                                                                                       |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `model.rs`                         | Versioned project/profile/snapshot/run/graph contracts                                               |
-| `project.rs`                       | Validation, input capture, fingerprints, atomic publication                                          |
-| `workspace.rs`                     | Original file references, transactional import previews, scans/filelists, revision-checked documents |
-| `runner.rs`                        | Native/Docker execution, image resolution, manifests, cancellation                                   |
-| `pipeline.rs`                      | Frontends, representations, LibreLane, exact-netlist import, cache                                   |
-| `graph.rs`                         | Module/occurrence identity, connectivity, bounded views                                              |
-| `library.rs`                       | Library cell functions decoded from Liberty gate networks                                            |
-| `simulation.rs`                    | Icarus/Verilator harnesses, models, SDF diagnostics                                                  |
-| `waveform.rs`                      | Wellen storage and conservative declaration/range binding                                            |
-| `waveprocess.rs`                   | Killable parser subprocess and bounded waveform queries                                              |
-| `service.rs`                       | Application jobs, draft/project state, frontend requests                                             |
-| `editor_lint.rs`                   | Working-source context validation, temporary overlays, engine results, normalized UTF-16 ranges      |
-| `tools/editor_lint.py`             | Pinned pyslang diagnostic extraction, original macro/include locations and related notes             |
-| `ui/editor-lint.ts`                | Debounce, latest-request coordination, contexts and project-local lint preferences                   |
-| `tools/library_interfaces.py`      | Slang-derived blackbox interfaces from simulation models                                             |
-| `tools/collect_physical.py`        | Strict JSON conversion of non-finite physical metrics                                                |
-| `tools/gate_simulation_context.py` | Built parameter values of the design top and package-only design sources, for gate simulations       |
-| `ui/components/Schematic.tsx`      | SVG renderer and view-scoped layout cache                                                            |
-| `ui/layout.worker.ts`              | Cancellable ELK layout                                                                               |
-| `ui/components/Waveform.tsx`       | Canvas rendering, row virtualization, bus expansion                                                  |
-| `ui/components/Workspace.tsx`      | Shared sidebar, full-width panel and constrained presentation sizing                                 |
-| `ui/project-workspace.tsx`         | Project wizard/imports, editor tabs, file operations, save and transition prompts                    |
-| `ui/components/SourceEditor.tsx`   | Minimal CodeMirror extensions and per-tab editing history                                            |
-| `ui/projects.ts`                   | Typed core service requests and native picker boundary                                               |
+| Module                             | Responsibility                                                                                         |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `model.rs`                         | Versioned project/profile/snapshot/run/graph contracts                                                 |
+| `project.rs`                       | Validation, input capture, fingerprints, atomic publication                                            |
+| `workspace.rs`                     | Original file references, transactional import previews, scans/filelists, revision-checked documents   |
+| `runner.rs`                        | Native/Docker execution, setup status, host/container paths, image resolution, manifests, cancellation |
+| `pipeline.rs`                      | Frontends, representations, LibreLane, exact-netlist import, cache                                     |
+| `graph.rs`                         | Module/occurrence identity, connectivity, bounded views                                                |
+| `library.rs`                       | Library cell functions decoded from Liberty gate networks                                              |
+| `simulation.rs`                    | Icarus/Verilator harnesses, models, SDF diagnostics                                                    |
+| `waveform.rs`                      | Wellen storage and conservative declaration/range binding                                              |
+| `waveprocess.rs`                   | Killable parser subprocess and bounded waveform queries                                                |
+| `service.rs`                       | Application jobs, draft/project state, frontend requests                                               |
+| `editor_lint.rs`                   | Working-source context validation, temporary overlays, engine results, normalized UTF-16 ranges        |
+| `tools/editor_lint.py`             | Pinned pyslang diagnostic extraction, original macro/include locations and related notes               |
+| `ui/editor-lint.ts`                | Debounce, latest-request coordination, contexts and project-local lint preferences                     |
+| `tools/library_interfaces.py`      | Slang-derived blackbox interfaces from simulation models                                               |
+| `tools/collect_physical.py`        | Strict JSON conversion of non-finite physical metrics                                                  |
+| `tools/gate_simulation_context.py` | Built parameter values of the design top and package-only design sources, for gate simulations         |
+| `ui/components/Schematic.tsx`      | SVG renderer and view-scoped layout cache                                                              |
+| `ui/layout.worker.ts`              | Cancellable ELK layout                                                                                 |
+| `ui/components/Waveform.tsx`       | Canvas rendering, row virtualization, bus expansion                                                    |
+| `ui/components/Workspace.tsx`      | Shared sidebar, full-width panel and constrained presentation sizing                                   |
+| `ui/project-workspace.tsx`         | Project wizard/imports, editor tabs, file operations, save and transition prompts                      |
+| `ui/components/SourceEditor.tsx`   | Minimal CodeMirror extensions and per-tab editing history                                              |
+| `ui/components/ToolchainSetup.tsx` | Install steps for a missing Docker or tools image; tool version table                                  |
+| `ui/projects.ts`                   | Typed core service requests and native picker boundary                                                 |
 
 `settings.rs` owns shared field validation, readiness warnings and non-publishing picker-reference resolution. `validate_project_settings` optionally compares a candidate with a snapshot's original project fingerprint. `resolve_settings_inputs` returns a normalized settings draft and references without writing or publishing them. The existing project update/save operations enforce shared validation; project-bound simulation rejects settings that differ from its captured snapshot before launching tools.
 

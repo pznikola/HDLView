@@ -50,9 +50,9 @@ when compatibility or claimed tool coverage matters.
 - For LibreLane steps or final artifact collection, read [physical-flow.md](references/physical-flow.md).
 
 For Docker execution, verify the selected image exists locally and inspect the
-resolved immutable image identity. Start from [the qualified profile](../../../tools/profiles/docker.json)
-and [derived image](../../../tools/Dockerfile), rather than assuming the base image
-contains all dependencies. Preserve tool-specific library paths and writable caches.
+resolved immutable image identity. Start from [the qualified profile](../../../tools/profiles/docker.json),
+which names the unmodified IIC-OSIC-TOOLS release HDLView is qualified with, rather
+than assuming another release contains compatible tools. Preserve tool-specific library paths and writable caches.
 Keep captured inputs and external PDK mounts read-only, output directories writable,
 and flow execution inside the configured container without nested Docker.
 

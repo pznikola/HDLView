@@ -158,6 +158,10 @@ export const projects = {
     }),
   job: (id: string) => api<Job>("job", { id }),
 };
+/** The folder of an absolute path, which Windows writes with backslashes. */
+export function parentDirectory(path: string): string {
+  return path.slice(0, Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")));
+}
 export function fileLabel(file: FileRef): string {
   return typeof file === "string"
     ? file.startsWith("@")

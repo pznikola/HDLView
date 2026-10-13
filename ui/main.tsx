@@ -22,6 +22,8 @@ import type {
   Run,
   Graph,
   Profile,
+  ToolchainReport,
+  ToolchainStatus,
   Representation,
   Binding,
   WaveInfo,
@@ -44,10 +46,15 @@ import { SourceEditor } from "./components/SourceEditor";
 import { EditorProblems } from "./components/EditorProblems";
 import { useEditorLint } from "./editor-lint";
 import { fileKey } from "./projects";
+import {
+  ToolchainSetup,
+  ToolchainTools,
+  toolchainProblem,
+} from "./components/ToolchainSetup";
 const defaultProfile: Profile = {
   provider: "docker",
-  image: "hdlview-tools:2025.12",
-  executables: { librelane: "/usr/local/bin/librelane" },
+  image: "hpretl/iic-osic-tools:2026.09",
+  executables: {},
   plugins: {},
   env: {},
   pdk_root: "/foss/pdks",
@@ -124,6 +131,21 @@ function App() {
     ? [...run.dut_scope, ...(selection?.scope || scope).slice(1)]
     : [];
   const fail = useCallback((e: unknown) => setError(String(e)), []);
+  const [toolchain, setToolchain] = useState<ToolchainStatus>();
+  const [report, setReport] = useState<ToolchainReport>();
+  const checkToolchain = useCallback(
+    () =>
+      api<ToolchainStatus>("toolchain_status", { profile })
+        .then((status) => {
+          setToolchain(status);
+          return status;
+        })
+        .catch(() => undefined),
+    [profile],
+  );
+  useEffect(() => {
+    void checkToolchain();
+  }, [checkToolchain]);
   const [explorer, setExplorer] = useState<"sources" | "design" | "inspector">(
     "sources",
   );
@@ -342,6 +364,12 @@ function App() {
           if (j.status === "failed") {
             fail(j.error);
             setRestoring(false);
+            // A failure caused by the setup is explained there, with its fix.
+            const status = await checkToolchain();
+            if (status && status.state !== "ready") {
+              setError("");
+              setModal("Toolchain setup");
+            }
           }
           if (j.status === "complete") {
             if (j.kind === "build") {
@@ -351,8 +379,14 @@ function App() {
               await acceptRun(j.result as Run);
               if (current === generation.current) setRestoring(false);
             } else if (j.kind === "probe") {
-              setText(JSON.stringify(j.result, null, 2));
-              setModal("Probe results");
+              const result = j.result as ToolchainReport;
+              setToolchain(result.status);
+              setReport(result);
+              setModal(
+                result.status.state === "ready"
+                  ? "Probe results"
+                  : "Toolchain setup",
+              );
             }
           }
         })
@@ -369,7 +403,16 @@ function App() {
       active = false;
       clearInterval(id);
     };
-  }, [job, panelOpen, panelTab, acceptSnapshot, acceptRun, fail, markBuilt]);
+  }, [
+    job,
+    panelOpen,
+    panelTab,
+    acceptSnapshot,
+    acceptRun,
+    fail,
+    markBuilt,
+    checkToolchain,
+  ]);
   const checkpoint = useCallback(async () => {
     if (!path || !snapshot || snapshot.project_path !== path || restoring)
       return;
@@ -954,7 +997,7 @@ function App() {
                             .catch(fail)
                         }
                       >
-                        {p.split("/").slice(-2).join("/")}
+                        {p.split(/[\\/]/).slice(-2).join("/")}
                       </button>
                     ))}
                   </details>
@@ -1593,6 +1636,12 @@ function App() {
                     Explore RTL structure, follow signals, and inspect
                     simulation results in one workspace.
                   </p>
+                  {toolchain && toolchain.state !== "ready" && (
+                    <ToolchainSetup
+                      status={toolchain}
+                      onCheck={() => void checkToolchain()}
+                    />
+                  )}
                   <div className="welcome-actions">
                     <button
                       onClick={() => {
@@ -1634,11 +1683,21 @@ function App() {
           </button>
         )}
         <span className="footer-spacer" />
-        <span>
-          {profile.provider === "docker"
-            ? "Docker toolchain"
-            : "Native toolchain"}
-        </span>
+        {toolchainProblem(toolchain) ? (
+          <button
+            className="toolchain-problem"
+            onClick={() => setModal("Toolchain setup")}
+          >
+            {profile.provider === "docker" ? "Docker" : "Native"} toolchain:{" "}
+            {toolchainProblem(toolchain)}
+          </button>
+        ) : (
+          <span>
+            {profile.provider === "docker"
+              ? "Docker toolchain"
+              : "Native toolchain"}
+          </span>
+        )}
       </footer>
       <ProjectDialogs
         controller={working}
@@ -1675,7 +1734,22 @@ function App() {
                 </select>
               </>
             )}
-            {modal !== "Manual binding" && (
+            {modal === "Toolchain setup" && toolchain && (
+              <ToolchainSetup
+                status={toolchain}
+                onCheck={() =>
+                  void checkToolchain().then((status) => {
+                    if (status?.state === "ready") setModal(undefined);
+                  })
+                }
+              />
+            )}
+            {modal === "Probe results" && report && (
+              <ToolchainTools report={report} />
+            )}
+            {!["Manual binding", "Toolchain setup", "Probe results"].includes(
+              modal,
+            ) && (
               <textarea
                 aria-label={`${modal} input`}
                 rows={
@@ -1683,7 +1757,6 @@ function App() {
                     "Toolchain",
                     "Project configuration",
                     "Source",
-                    "Probe results",
                     "Report",
                   ].includes(modal)
                     ? 18
@@ -1691,7 +1764,7 @@ function App() {
                 }
                 value={text}
                 onChange={(e) => setText(e.target.value)}
-                readOnly={["Source", "Probe results", "Report"].includes(modal)}
+                readOnly={["Source", "Report"].includes(modal)}
                 spellCheck={false}
               />
             )}
@@ -1701,7 +1774,9 @@ function App() {
                 <input value={aux} onChange={(e) => setAux(e.target.value)} />
               </>
             )}
-            {!["Source", "Probe results", "Report"].includes(modal) && (
+            {!["Source", "Probe results", "Report", "Toolchain setup"].includes(
+              modal,
+            ) && (
               <button
                 className="primary"
                 onClick={() => {

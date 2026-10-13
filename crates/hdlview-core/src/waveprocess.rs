@@ -10,7 +10,7 @@ use std::{
     fs::File,
     io::{BufRead, BufReader, Write},
     path::Path,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, ChildStdin, Stdio},
     sync::mpsc::{self, Receiver},
     thread,
     time::{Duration, Instant},
@@ -29,7 +29,7 @@ impl Drop for WaveProcess {
 }
 impl WaveProcess {
     pub fn open(path: &Path, cancel: &CancelToken) -> Result<Self> {
-        let mut child = Command::new(std::env::current_exe()?)
+        let mut child = crate::runner::command(std::env::current_exe()?)
             .arg("--wave-worker")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

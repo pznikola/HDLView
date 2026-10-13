@@ -704,6 +704,69 @@ footer button {
   color: #91a9bb;
   font-size: 12px;
 }
+.setup {
+  width: min(560px, 100%);
+  text-align: left;
+  font-size: 13px;
+}
+.setup ol {
+  padding-left: 20px;
+  margin: 0 0 12px;
+}
+.setup li {
+  margin: 8px 0;
+  color: #7f95a6;
+}
+.setup li.done {
+  color: #80c9aa;
+}
+.setup li.current {
+  color: #ecc17d;
+}
+.setup p,
+.welcome .setup p {
+  max-width: none;
+  margin: 6px 0;
+  color: #c8d6e0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.setup-command {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 6px 0;
+}
+.setup-command code {
+  flex: 1;
+  padding: 6px 8px;
+  background: #0e1821;
+  border: 1px solid #30404f;
+  color: #dbe6ee;
+  font-size: 12px;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+.setup-tools {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.setup-tools th,
+.setup-tools td {
+  text-align: left;
+  vertical-align: top;
+  padding: 5px 10px 5px 0;
+  border-bottom: 1px solid #30404f;
+  white-space: pre-wrap;
+}
+.setup-tools .missing td {
+  color: #e1a397;
+}
+footer .toolchain-problem {
+  color: #ecc17d;
+  border-color: #8a6f3f;
+}
 .error {
   color: #e1a397;
   padding: 4px 10px;

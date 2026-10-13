@@ -52,7 +52,7 @@ Pin dependencies and retain licenses/notices. In particular, inspect ELK's EPL t
 
 The originally supplied image is `hpretl/iic-osic-tools:2025.12`, digest `sha256:92961478ad3c4f508efb42d9ccdba12ab262eb42a14926d2bd49862230ba8521`. Initial research identified Yosys 0.60 with the Slang plugin, Slang 9.1.204, Icarus 13 development, Verilator 5.042, LibreLane 2.4.10, and both PDKs. Basic frontend, mapping, and synthetic SDF feasibility did not establish full flow qualification.
 
-**Implementation finding:** the original image's IHP PDK and LibreLane generations differ. `tools/Dockerfile` now specifies the derived compatibility stack. Read the qualification ledger before changing versions. Preserve tool-specific environments, including vvp library search paths and the correct OpenROAD/OpenSTA generation for the chosen LibreLane version.
+**Implementation finding:** the original image's IHP PDK and LibreLane generations differ. HDLView therefore requires an unmodified IIC-OSIC-TOOLS release with LibreLane 3 (2026.08 or later; qualified with 2026.09). Read the qualification ledger before changing versions. Preserve tool-specific environments, including vvp library search paths and the correct OpenROAD/OpenSTA generation for the chosen LibreLane version.
 
 ## 3. Projects, immutable artifacts, and execution
 

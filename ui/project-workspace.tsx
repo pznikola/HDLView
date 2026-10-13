@@ -5,6 +5,7 @@ import { api } from "./api";
 import {
   fileKey,
   fileLabel,
+  parentDirectory,
   pick,
   projects,
   sourceGroups,
@@ -425,8 +426,7 @@ export function useProjectWorkspace(
         group,
         paths: selected,
         working_directory:
-          working_directory ??
-          selected[0]?.slice(0, selected[0].lastIndexOf("/")),
+          working_directory ?? (selected[0] && parentDirectory(selected[0])),
       });
       setModal("filelist");
       return;
@@ -573,7 +573,7 @@ export function useProjectWorkspace(
         group,
         directory:
           directory ??
-          `${workspace.path.slice(0, workspace.path.lastIndexOf("/"))}/${group === "design" ? "rtl" : "sim"}`,
+          `${parentDirectory(workspace.path)}/${group === "design" ? "rtl" : "sim"}`,
         name: folder ? "new-folder" : "untitled.sv",
       },
     });
@@ -1230,7 +1230,7 @@ function NewProjectForm({
 }) {
   const [name, setName] = useState(c.draft?.project.name ?? "");
   const [directory, setDirectory] = useState(
-    c.draft?.path.slice(0, c.draft.path.lastIndexOf("/")) ?? "",
+    c.draft ? parentDirectory(c.draft.path) : "",
   );
   const [technology, setTechnology] = useState<Technology | "">(
     c.draft?.project.technology ?? "",

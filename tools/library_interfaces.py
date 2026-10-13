@@ -4,7 +4,8 @@ import shlex
 import sys
 import pyslang as sv
 output = pathlib.Path(sys.argv[1])
-driver = sv.Driver()
+# pyslang 11 moved Driver into a submodule.
+driver = getattr(sv, "driver", sv).Driver()
 driver.addStandardArgs()
 args = ["-D", "FUNCTIONAL"]
 for filename in sys.argv[2:]:

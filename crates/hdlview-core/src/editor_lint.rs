@@ -203,8 +203,11 @@ pub fn lint(
         fs::remove_dir_all(&directory)?;
     }
     fs::create_dir_all(&directory)?;
-    let directory = directory.canonicalize()?;
+    let directory = directory.canonical()?;
     let _scratch = Scratch(&directory);
+    let mut profile = request.profile;
+    profile.timeout_seconds = profile.timeout_seconds.min(10);
+    let runner = Runner::new(profile, directory.clone(), cancel.clone());
     let mut project = workspace.project.clone();
     let configuration = match &request.context {
         LintContext::Design => None,
@@ -279,24 +282,22 @@ pub fn lint(
             }
         }
         fs::write(&path, &text)?;
-        files.insert(
-            path.to_string_lossy().into_owned(),
-            LintFile { reference, text },
-        );
+        // The engines report files by the paths they were given.
+        files.insert(runner.tool_path(&path), LintFile { reference, text });
     }
     let inputs = directory.join("inputs");
     let mut units: Vec<String> = captured
         .project
         .sources
         .iter()
-        .map(|s| inputs.join(&s.path).to_string_lossy().into_owned())
+        .map(|s| runner.tool_path(&inputs.join(&s.path)))
         .collect();
     units.extend(
         captured
             .project
             .simulation_sources
             .iter()
-            .map(|f| inputs.join(f).to_string_lossy().into_owned()),
+            .map(|f| runner.tool_path(&inputs.join(f))),
     );
     let mut top = captured.project.top.clone();
     if let Some(config) = &configuration {
@@ -310,7 +311,7 @@ pub fn lint(
                     config.top, config.top
                 ),
             )?;
-            units.push(harness.to_string_lossy().into_owned());
+            units.push(runner.tool_path(&harness));
             top = "hdlview_lint".into();
         }
     }
@@ -329,9 +330,6 @@ pub fn lint(
         limited: top.is_empty(),
         truncated: false,
     };
-    let mut profile = request.profile;
-    profile.timeout_seconds = profile.timeout_seconds.min(10);
-    let runner = Runner::new(profile, directory.clone(), cancel.clone());
     let helper = directory.join("editor_lint.py");
     fs::write(&helper, include_str!("../../../tools/editor_lint.py"))?;
     let parameters = directory.join("lint-request.json");
@@ -340,7 +338,7 @@ pub fn lint(
         &parameters,
         &serde_json::json!({
             "files":units,"top":top,"standard":captured.project.standard,
-            "include_dirs":captured.project.include_dirs.iter().map(|p| inputs.join(p)).collect::<Vec<_>>(),
+            "include_dirs":captured.project.include_dirs.iter().map(|p| runner.tool_path(&inputs.join(p))).collect::<Vec<_>>(),
             "defines":captured.project.defines,"parameters":captured.project.parameters,
         }),
     )?;
@@ -354,9 +352,9 @@ pub fn lint(
             .run(
                 "python3",
                 &[
-                    helper.to_string_lossy().into_owned(),
-                    parameters.to_string_lossy().into_owned(),
-                    output.to_string_lossy().into_owned(),
+                    runner.tool_path(&helper),
+                    runner.tool_path(&parameters),
+                    runner.tool_path(&output),
                 ],
                 &directory,
                 "pyslang",
@@ -370,7 +368,7 @@ pub fn lint(
             let included = raw
                 .files
                 .iter()
-                .any(|file| Path::new(file) == inputs.join(&active));
+                .any(|file| *file == runner.tool_path(&inputs.join(&active)));
             let header = request
                 .active_file
                 .path()
@@ -475,7 +473,7 @@ pub fn lint(
             if rules.exists() {
                 let copy = directory.join("rules.verible_lint");
                 fs::copy(&rules, &copy)?;
-                args.push(format!("--rules_config={}", copy.display()));
+                args.push(format!("--rules_config={}", runner.tool_path(&copy)));
             } else {
                 args.push(format!("--rules={RULES}"));
             }

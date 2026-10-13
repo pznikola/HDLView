@@ -2,6 +2,82 @@
 
 This file records exercised workflows separately from proposed release targets. Version 0.1.0 is an engineering preview; it is not a claim of complete HDL-language coverage or signoff-quality timing simulation.
 
+## Stock image qualification
+
+Measured 13 October 2026. HDLView now runs the unmodified
+`hpretl/iic-osic-tools:2026.09` image
+(`sha256:b87b3f1af9ba72d9486466ea777cf4248e96e20d9dba76d67259bc185db3859c`) instead of
+a derived image; `tools/Dockerfile` is removed. The image reports Yosys 0.69,
+pyslang 11.0.0, Icarus 14.0 development build, Verilator 5.052, Verible
+`v0.0-4294-gc1d8f5e8`, LibreLane 3.1.0.dev3, Magic 8.3.684 and OpenROAD
+`26Q3-2443-g50432012f`.
+
+Two changes were needed:
+
+- pyslang 11 moved `Driver` and `SyntaxKind` into submodules. The three helper scripts
+  accept both layouts, and the version check accepts pyslang 10 and 11.
+- The image's IHP PDK keeps its sequential primitives in `sg13g2_udp.v`, which gate
+  simulation now compiles before `sg13g2_stdcell.v`.
+
+With the default Docker profile and no derived image in use:
+
+| Check                                                    | Result                              |
+| -------------------------------------------------------- | ----------------------------------- |
+| `tools/qualify.py --schematics`                          | 86 records, none failing            |
+| `tools/qualify.py --mapped`, SKY130 and IHP              | builds and gate simulations pass    |
+| `tools/qualify.py --physical`, SKY130 and IHP            | both flows complete, 117 s and 95 s |
+| Layout, mask layers, 3D stack and check results          | produced for both PDKs, no warnings |
+| RTL and SDF timing simulation of the Post-layout netlist | pass on both PDKs                   |
+| `tools/qualify-editor-lint.py`                           | all cases pass                      |
+| `npm run test:e2e`                                       | 32 passed                           |
+
+The 35 course projects of lectures 01 to 03 and exercises 01 and 02 build as Elaborated
+RTL and their 46 simulations run. The browser suite passed in three of five full runs.
+In the other two, the 3D test that expects half resolution after slow frames failed
+(it depends on rendering speed and passes alone), and once the source-explorer rename
+test failed; that failure was not reproduced alone or in two later full runs, and its
+cause is not known.
+
+The setup status was exercised from the CLI on this host: a profile naming
+`hpretl/iic-osic-tools:2025.12` is reported as too old with the pull command for the
+qualified release, an absent tag as not downloaded with its pull command, and an
+unreachable daemon as not running. `probe` now also reports `vvp`, `openroad` and the
+two PDK liberty files. Docker absent, stopped and image states of the setup panel are
+covered by unit tests with a substitute `docker` and by four browser tests against a
+mocked service; the panel was not exercised in the packaged desktop window.
+
+`tools/package-linux.sh` built `hdlview_0.1.0_amd64.deb` (version taken from
+`Cargo.toml`, 124 example files and both profiles under `/usr/share/hdlview`) and
+`tools/smoke-package.py` passed on it. The package was not installed on a clean
+system, and the GitHub workflows (`ci.yml`, `release.yml`) have not been run.
+
+## Windows port
+
+Prepared 13 October 2026 on the Linux host. **HDLView has not been run on Windows.**
+What was checked here, and what was not:
+
+- `cargo check -p hdlview-core -p hdlview --tests --target x86_64-pc-windows-gnu`
+  passes. The host has no Windows linker or resource compiler, so no Windows test was
+  run and the desktop crate was not checked for Windows.
+- On Windows a Docker tool sees the workspace at `/hdlview/work`, because a Linux
+  container cannot mount `C:\…` at the same path. Every path given to a tool and
+  every path read back from one is translated. With that mapping forced on by
+  `HDLVIEW_CONTAINER_PATHS=1` on Linux, `tools/qualify.py --schematics` (86 records),
+  `--physical` on SKY130 and IHP (123 s and 101 s, layout, masks, 3D stack and checks
+  produced), `tools/qualify-editor-lint.py` and `npm run test:e2e` (32 tests) pass.
+  The mapping itself has unit tests for a Windows-style root.
+- Written for Windows and compiled only: rename without replacement (`MoveFileExW`),
+  the Recycle Bin (`trash` crate), child processes without a console window, canonical
+  paths without the `\\?\` form, project file references stored with `/`, and
+  parent-folder handling of `C:\…` paths in the interface.
+- Not checked at all: the NSIS installer and the Windows jobs of the two workflows,
+  Docker Desktop bind-mount speed, file ownership without `--user`, WebView2 rendering
+  of the layout and 3D views, and cancelling a running build.
+
+Qualification on a Windows 11 machine with Docker Desktop remains a release gate: the
+setup panel in each state, `tools/qualify.py` at the three levels, the browser suite,
+and the manual window workflow.
+
 ## Large gate schematics
 
 Measured 9 October 2026 on the saved Post-layout snapshot of `examples/17_afifo`
@@ -882,7 +958,9 @@ The waveform-height amendment passed all seven native browser workflows, followe
 
 ## Toolchain qualification findings
 
-The base `hpretl/iic-osic-tools:2025.12` image is pinned by digest in `tools/Dockerfile`. It contains mismatched generations of some flow tools. The derived image pins:
+HDLView now runs the unmodified `hpretl/iic-osic-tools:2026.09` image (see "Stock image qualification" below); the derived image described here is no longer built.
+
+The base `hpretl/iic-osic-tools:2025.12` image was pinned by digest in `tools/Dockerfile`. It contains mismatched generations of some flow tools. The derived image pinned:
 
 - pyslang 10.0.0;
 - LibreLane 3.0.0, invoked as `/usr/local/bin/librelane`;
@@ -904,6 +982,8 @@ The same trace converted to a 113 MiB FST opened in **1.77 seconds**, with **408
 The synthetic 100,000-cell graph test limits the returned view to the 2,000 cells it asks for; the service default is 5,000. Selection does not request layout, and cursor queries are capped at 200 visible schematic signals. A real Chromium worker laid out a synthetic 1,000-node/999-edge graph in **1.75 seconds**. The initial default layout took 12.30 seconds; views above 400 nodes now use lighter layered placement and crossing heuristics. Cached 200-signal queries over parser-worker IPC measured **3.45 ms median**, **3.84 ms p95** over 50 queries. These are worker measurements, not full Tauri-to-screen latency. [Raw performance results](performance-results.json).
 
 ## Remaining limitations and release gates
+
+- Windows support is unqualified; see "Windows port". On Windows only the Docker toolchain with the image's own PDKs is supported.
 
 - Gate-level views and gate simulation need a PDK flow (the Docker toolchain); there is no technology-independent gate stage.
 - RTL DUT overrides are generated as `defparam` assignments in an isolated harness. Gate simulation uses the already-specialized netlist; hierarchy probes and explicit parameter overrides inside a shared testbench may require user adjustments after synthesis.

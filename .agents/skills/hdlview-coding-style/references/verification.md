@@ -14,6 +14,16 @@ cargo clippy --workspace --exclude hdlview-desktop --all-targets -- -D warnings
 cargo test --workspace --exclude hdlview-desktop
 ```
 
+The core must also compile for Windows, where a Docker tool sees the workspace under
+`/hdlview/work` instead of its host path. After changing how a path reaches a tool
+or comes back from one, check the Windows target and run the affected real-tool
+checks with that mapping forced on:
+
+```bash
+cargo check -p hdlview-core -p hdlview --tests --target x86_64-pc-windows-gnu
+HDLVIEW_CONTAINER_PATHS=1 python3 tools/qualify.py --schematics --profile tools/profiles/docker.json
+```
+
 For desktop changes, include `hdlview-desktop` in Clippy/tests on a host with the
 required GTK/WebKit development packages, or use the documented desktop build
 container. An excluded desktop package is not a verified desktop package.

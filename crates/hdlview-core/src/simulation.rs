@@ -151,21 +151,21 @@ pub fn simulate(
             .map(|p| {
                 format!(
                     "$sdf_annotate({}, {target});",
-                    verilog_string(&p.to_string_lossy())
+                    verilog_string(&r.tool_path(p))
                 )
             })
             .unwrap_or_default();
-        let harness=format!("`timescale 1ns/1ps\nmodule hdlview_sim;\n  {} {}();\n{specialization}  initial begin\n    $dumpfile({});\n    $dumpvars(0, {});\n    {}\n    #({}) $finish;\n  end\nendmodule\n",cfg.top,cfg.top,verilog_string(&trace.to_string_lossy()),target,annotation,cfg.stop_time);
+        let harness=format!("`timescale 1ns/1ps\nmodule hdlview_sim;\n  {} {}();\n{specialization}  initial begin\n    $dumpfile({});\n    $dumpvars(0, {});\n    {}\n    #({}) $finish;\n  end\nendmodule\n",cfg.top,cfg.top,verilog_string(&r.tool_path(&trace)),target,annotation,cfg.stop_time);
         let harnesspath = dir.join("hdlview_sim.sv");
         fs::write(&harnesspath, harness)?;
         files.push(harnesspath);
         let mut incargs = Vec::new();
         for d in &snapshot.project.include_dirs {
-            incargs.push(format!("-I{}", inputs.join(d).display()));
+            incargs.push(format!("-I{}", r.tool_path(&inputs.join(d))));
         }
         for m in &models {
             if let Some(d) = m.parent() {
-                incargs.push(format!("-I{}", d.display()));
+                incargs.push(format!("-I{}", r.tool_path(d)));
             }
         }
         for (k, v) in &defines {
@@ -178,7 +178,7 @@ pub fn simulate(
                 "-s".into(),
                 "hdlview_sim".into(),
                 "-o".into(),
-                dir.join("sim.vvp").to_string_lossy().into(),
+                r.tool_path(&dir.join("sim.vvp")),
             ];
             if sdf.is_some() {
                 args.extend(["-gspecify".into(), "-ginterconnect".into()]);
@@ -193,12 +193,12 @@ pub fn simulate(
             // Sources that set no time unit share the harness's, not Icarus's one second.
             let timescale = dir.join("timescale.f");
             fs::write(&timescale, "+timescale+1ns/1ps\n")?;
-            args.extend(["-c".into(), timescale.to_string_lossy().into()]);
+            args.extend(["-c".into(), r.tool_path(&timescale)]);
             args.extend(incargs);
-            args.extend(files.iter().map(|p| p.to_string_lossy().into_owned()));
+            args.extend(files.iter().map(|p| r.tool_path(p)));
             let compile = r.run("iverilog", &args, &dir, "iverilog-compile")?;
             diagnostics.extend(diagnostics_from_log(&compile));
-            let mut args = vec![dir.join("sim.vvp").to_string_lossy().into_owned()];
+            let mut args = vec![r.tool_path(&dir.join("sim.vvp"))];
             if sdf.is_some() {
                 args.push("-sdf-verbose".into());
             }
@@ -213,17 +213,17 @@ pub fn simulate(
                 "--top-module".into(),
                 "hdlview_sim".into(),
                 "--Mdir".into(),
-                dir.join("obj").to_string_lossy().into(),
+                r.tool_path(&dir.join("obj")),
                 "-Wno-fatal".into(),
                 "--timescale".into(),
                 "1ns/1ps".into(),
             ];
             args.extend(incargs);
-            args.extend(files.iter().map(|p| p.to_string_lossy().into_owned()));
+            args.extend(files.iter().map(|p| r.tool_path(p)));
             let log = r.run("verilator", &args, &dir, "verilator-compile")?;
             diagnostics.extend(diagnostics_from_log(&log));
             r.run(
-                &dir.join("obj/Vhdlview_sim").to_string_lossy(),
+                &r.tool_path(&dir.join("obj/Vhdlview_sim")),
                 &cfg.args,
                 &dir,
                 "verilator-simulate",
@@ -283,7 +283,7 @@ fn collect_trace(
     cancel: &CancelToken,
 ) -> Result<PathBuf> {
     cancel.check()?;
-    let root = fs::canonicalize(dir)?;
+    let root = dunce::canonicalize(dir)?;
     fn validate(path: &std::path::Path, root: &std::path::Path, dut: &[String]) -> Result<()> {
         if !fs::symlink_metadata(path)?.is_file() {
             bail!(
@@ -291,7 +291,7 @@ fn collect_trace(
                 path.display()
             )
         }
-        if !fs::canonicalize(path)?.starts_with(root) {
+        if !dunce::canonicalize(path)?.starts_with(root) {
             bail!(
                 "Waveform path is outside the simulation directory: {}",
                 path.display()
@@ -399,15 +399,15 @@ fn gate_design_files(
     let declarations = dir.join("top-parameters.vh");
     let packages = dir.join("packages.json");
     let mut args = vec![
-        script.to_string_lossy().into_owned(),
-        declarations.to_string_lossy().into_owned(),
-        packages.to_string_lossy().into_owned(),
+        r.tool_path(&script),
+        r.tool_path(&declarations),
+        r.tool_path(&packages),
         format!("--std={}", project.standard),
         "--top".into(),
         identifier(&project.top)?.into(),
     ];
     for directory in &project.include_dirs {
-        args.extend(["-I".into(), inputs.join(directory).to_string_lossy().into()]);
+        args.extend(["-I".into(), r.tool_path(&inputs.join(directory))]);
     }
     for (key, value) in &project.defines {
         args.extend(["-D".into(), format!("{key}={value}")]);
@@ -419,10 +419,11 @@ fn gate_design_files(
         project
             .sources
             .iter()
-            .map(|source| inputs.join(&source.path).to_string_lossy().into_owned()),
+            .map(|source| r.tool_path(&inputs.join(&source.path))),
     );
     r.run("python3", &args, dir, "gate-simulation-context")?;
-    let mut files: Vec<PathBuf> = read_json(&packages)?;
+    let packages: Vec<String> = read_json(&packages)?;
+    let mut files: Vec<PathBuf> = packages.iter().map(|path| r.host_path(path)).collect();
     let declarations = fs::read_to_string(declarations)?;
     if declarations.is_empty() {
         files.push(netlist.into());
@@ -578,6 +579,7 @@ mod tests {
             .to_string()
             .contains("Malformed waveform"));
     }
+    #[cfg(unix)]
     #[test]
     fn missing_wrong_scope_symlinks_and_cancellation_fail_safely() {
         let dir = tempfile::tempdir().unwrap();

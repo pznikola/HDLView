@@ -15,7 +15,8 @@ import sys
 import pyslang as sv
 output = pathlib.Path(sys.argv[1])
 packages = pathlib.Path(sys.argv[2])
-driver = sv.Driver()
+# pyslang 11 moved Driver into a submodule.
+driver = getattr(sv, "driver", sv).Driver()
 driver.addStandardArgs()
 if not driver.parseCommandLine("slang " + shlex.join(sys.argv[3:])) or not driver.processOptions() or not driver.parseAllSources():
     raise RuntimeError("Could not parse the design sources")
@@ -43,6 +44,6 @@ package_files = set()
 for tree in driver.syntaxTrees:
     members = list(tree.root.members)
     # A file that also declares modules would redefine what the netlist defines.
-    if members and all(member.kind == sv.SyntaxKind.PackageDeclaration for member in members):
+    if members and all(member.kind == getattr(sv, "syntax", sv).SyntaxKind.PackageDeclaration for member in members):
         package_files.add(str(tree.sourceManager.getFullPath(tree.root.sourceRange.start.buffer)))
 packages.write_text(json.dumps([name for name in sys.argv[3:] if name in package_files]))

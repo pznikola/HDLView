@@ -8,8 +8,8 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-fn q(path: &Path) -> Result<String> {
-    yosys_quote(&path.to_string_lossy())
+fn q(r: &Runner, path: &Path) -> Result<String> {
+    yosys_quote(&r.tool_path(path))
 }
 /// Whether Yosys has a command built in, asked once per toolchain identity.
 static BUILT_IN: Mutex<BTreeMap<(String, String), bool>> = Mutex::new(BTreeMap::new());
@@ -51,12 +51,7 @@ fn yosys(r: &Runner, script: &str, plugins: Vec<String>, label: &str) -> Result<
     let path = r.workspace.join(format!("{label}.ys"));
     fs::write(&path, script)?;
     let mut args = plugins;
-    args.extend([
-        "-Q".into(),
-        "-T".into(),
-        "-s".into(),
-        path.to_string_lossy().into(),
-    ]);
+    args.extend(["-Q".into(), "-T".into(), "-s".into(), r.tool_path(&path)]);
     r.run("yosys", &args, &r.workspace, label)
 }
 fn frontend(r: &Runner, p: &ProjectConfig) -> Result<(String, Vec<String>)> {
@@ -71,7 +66,7 @@ fn frontend(r: &Runner, p: &ProjectConfig) -> Result<(String, Vec<String>)> {
             identifier(&p.top)?
         ));
         for dir in &p.include_dirs {
-            script.push_str(&format!("-I {} ", q(&inputs.join(dir))?));
+            script.push_str(&format!("-I {} ", q(r, &inputs.join(dir))?));
         }
         for (k, v) in &p.defines {
             script.push_str(&format!("-D {} ", yosys_quote(&format!("{k}={v}"))?));
@@ -80,7 +75,7 @@ fn frontend(r: &Runner, p: &ProjectConfig) -> Result<(String, Vec<String>)> {
             script.push_str(&format!("-G {} ", yosys_quote(&format!("{k}={v}"))?));
         }
         for s in &p.sources {
-            script.push_str(&format!("{} ", q(&inputs.join(&s.path))?));
+            script.push_str(&format!("{} ", q(r, &inputs.join(&s.path))?));
         }
         fs::write(r.workspace.join("frontend.f"), &script)?;
         script = "read_slang -F frontend.f\n".into();
@@ -123,7 +118,7 @@ pub fn compile(
     compile_directory(project_path, profile, representation, store, cancel, None)
 }
 pub fn resume_physical(directory: &Path, cancel: CancelToken) -> Result<DesignSnapshot> {
-    let directory = directory.canonicalize()?;
+    let directory = directory.canonical()?;
     if directory.join("snapshot.json").exists() {
         bail!("Snapshot already published; open it instead")
     }
@@ -164,7 +159,7 @@ fn compile_directory(
         read_json(&origin_file)?
     } else {
         (
-            Some(project_path.canonicalize()?),
+            Some(project_path.canonical()?),
             Some(hash(serde_json::to_vec(&project)?)),
         )
     };
@@ -275,20 +270,20 @@ fn compile_directory(
             let libs = library_files(&runner.profile, pdk)?;
             let mut script = String::new();
             for lib in &libs {
-                script.push_str(&format!("read_liberty -lib {}\n", q(lib)?));
+                script.push_str(&format!("read_liberty -lib {}\n", q(&runner, lib)?));
             }
             fs::write(
                 dir.join("library_interfaces.py"),
                 include_str!("../../../tools/library_interfaces.py"),
             )?;
             let mut args = vec![
-                dir.join("library_interfaces.py").to_string_lossy().into(),
-                dir.join("library_interfaces.v").to_string_lossy().into(),
+                runner.tool_path(&dir.join("library_interfaces.py")),
+                runner.tool_path(&dir.join("library_interfaces.v")),
             ];
             args.extend(
                 model_files(&runner.profile, pdk)?
                     .iter()
-                    .map(|p| p.to_string_lossy().into_owned()),
+                    .map(|p| runner.tool_path(p)),
             );
             runner.run("python3", &args, &dir, "library-interfaces")?;
             script.push_str("read_verilog -lib -overwrite library_interfaces.v\n");
@@ -301,7 +296,7 @@ fn compile_directory(
             }
             script.push_str(&format!(
                 "read_verilog {}\nhierarchy -check -top {}\nwrite_json graph.json\n",
-                q(&finalfile)?,
+                q(&runner, &finalfile)?,
                 project.top
             ));
             diagnostics.extend(diagnostics_from_log(&yosys(
@@ -398,7 +393,7 @@ fn library_functions(r: &Runner, libs: &[PathBuf]) -> Result<BTreeMap<String, Ce
     for lib in libs {
         script.push_str(&format!(
             "read_liberty -overwrite -ignore_miss_func -ignore_miss_dir -ignore_miss_data_latch -ignore_buses {}\n",
-            q(lib)?
+            q(r, lib)?
         ));
     }
     script.push_str("write_json library-functions.json\n");
@@ -406,20 +401,33 @@ fn library_functions(r: &Runner, libs: &[PathBuf]) -> Result<BTreeMap<String, Ce
     let json: Value = read_json(&r.workspace.join("library-functions.json"))?;
     Ok(library::functions(&graph::modules_from_yosys(&json)?))
 }
-fn pdk_root(profile: &ToolchainProfile) -> PathBuf {
+pub(crate) fn pdk_root(profile: &ToolchainProfile) -> PathBuf {
     profile
         .pdk_root
         .clone()
         .unwrap_or_else(|| "/foss/pdks".into())
 }
+/// The supported PDK and library presets with their liberty file under the PDK root.
+pub(crate) const LIBERTY: [(&str, &str, &str); 2] = [
+    (
+        "sky130A",
+        "sky130_fd_sc_hd",
+        "sky130A/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib",
+    ),
+    (
+        "ihp-sg13g2",
+        "sg13g2_stdcell",
+        "ihp-sg13g2/libs.ref/sg13g2_stdcell/lib/sg13g2_stdcell_typ_1p20V_25C.lib",
+    ),
+];
 fn library_files(profile: &ToolchainProfile, p: &PhysicalConfig) -> Result<Vec<PathBuf>> {
-    let root = pdk_root(profile);
-    let lib=match(p.pdk.as_str(),p.library.as_str()) {
-  ("sky130A","sky130_fd_sc_hd")=>root.join("sky130A/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib"),
-  ("ihp-sg13g2","sg13g2_stdcell")=>root.join("ihp-sg13g2/libs.ref/sg13g2_stdcell/lib/sg13g2_stdcell_typ_1p20V_25C.lib"),
-  _=>bail!("Unsupported PDK/library preset; use sky130A/sky130_fd_sc_hd or ihp-sg13g2/sg13g2_stdcell"),
- };
-    Ok(vec![lib])
+    let Some((_, _, file)) = LIBERTY
+        .iter()
+        .find(|(pdk, library, _)| *pdk == p.pdk && *library == p.library)
+    else {
+        bail!("Unsupported PDK/library preset; use sky130A/sky130_fd_sc_hd or ihp-sg13g2/sg13g2_stdcell")
+    };
+    Ok(vec![pdk_root(profile).join(file)])
 }
 /// The layer names, colours and fill patterns KLayout shows for a PDK.
 fn layer_properties(profile: &ToolchainProfile, p: &PhysicalConfig) -> PathBuf {
@@ -442,11 +450,10 @@ pub fn model_files(profile: &ToolchainProfile, p: &PhysicalConfig) -> Result<Vec
             root.join("sky130A/libs.ref/sky130_fd_sc_hd/verilog/primitives.v"),
             root.join("sky130A/libs.ref/sky130_fd_sc_hd/verilog/sky130_fd_sc_hd.v"),
         ]),
-        "ihp-sg13g2" => {
-            Ok(vec![root.join(
-                "ihp-sg13g2/libs.ref/sg13g2_stdcell/verilog/sg13g2_stdcell.v",
-            )])
-        }
+        "ihp-sg13g2" => Ok(vec![
+            root.join("ihp-sg13g2/libs.ref/sg13g2_stdcell/verilog/sg13g2_udp.v"),
+            root.join("ihp-sg13g2/libs.ref/sg13g2_stdcell/verilog/sg13g2_stdcell.v"),
+        ]),
         _ => bail!("Unsupported PDK model preset"),
     }
 }
@@ -560,7 +567,7 @@ fn librelane_args(r: &Runner, cfg: &PhysicalConfig, tag: &str, to: Option<&str>)
     let mut args = vec![
         "--manual-pdk".into(),
         "--pdk-root".into(),
-        pdk_root(&r.profile).to_string_lossy().into(),
+        r.tool_path(&pdk_root(&r.profile)),
         "--pdk".into(),
         cfg.pdk.clone(),
         "--scl".into(),
@@ -573,7 +580,7 @@ fn librelane_args(r: &Runner, cfg: &PhysicalConfig, tag: &str, to: Option<&str>)
     if let Some(step) = to {
         args.extend(["--to".into(), step.into()]);
     }
-    args.push(r.workspace.join("librelane.json").to_string_lossy().into());
+    args.push(r.tool_path(&r.workspace.join("librelane.json")));
     args
 }
 fn run_physical(
@@ -607,7 +614,7 @@ fn run_physical(
     config.insert("DESIGN_NAME".into(), json!(p.top));
     config.insert(
         "VERILOG_FILES".into(),
-        json!([r.workspace.join("normalized.v")]),
+        json!([r.tool_path(&r.workspace.join("normalized.v"))]),
     );
     // No port: LibreLane times the design against a virtual clock of the period.
     config.insert(
@@ -643,8 +650,8 @@ fn run_physical(
         None => None,
     };
     if let Some(sdc) = sdc {
-        config.insert("PNR_SDC_FILE".into(), json!(sdc));
-        config.insert("SIGNOFF_SDC_FILE".into(), json!(sdc));
+        config.insert("PNR_SDC_FILE".into(), json!(r.tool_path(&sdc)));
+        config.insert("SIGNOFF_SDC_FILE".into(), json!(r.tool_path(&sdc)));
     }
     if synthesis_only && !cfg.flatten_mapped {
         // Place and route flattens whatever it is given, so only the Mapped
@@ -670,7 +677,7 @@ fn run_physical(
         if let Some(order) = crate::floorplan::pin_order(plan, &p.top, ports)? {
             let path = r.workspace.join("pins.cfg");
             fs::write(&path, order)?;
-            config.insert("IO_PIN_ORDER_CFG".into(), json!(path));
+            config.insert("IO_PIN_ORDER_CFG".into(), json!(r.tool_path(&path)));
             config.insert("ERRORS_ON_UNMATCHED_IO".into(), json!("both"));
         }
     }
@@ -787,27 +794,23 @@ fn run_physical(
     r.run(
         "python3",
         &[
-            r.workspace
-                .join("collect_physical.py")
-                .to_string_lossy()
-                .into(),
-            statepath.to_string_lossy().into(),
-            r.workspace
-                .join("physical-state.json")
-                .to_string_lossy()
-                .into(),
+            r.tool_path(&r.workspace.join("collect_physical.py")),
+            r.tool_path(statepath),
+            r.tool_path(&r.workspace.join("physical-state.json")),
         ],
         &r.workspace,
         "collect-physical",
     )?;
-    let state: Value = read_json(&r.workspace.join("physical-state.json"))?;
+    // The flow names its artifacts by the paths the tools saw.
+    let mut state: Value = read_json(&r.workspace.join("physical-state.json"))?;
+    r.host_paths(&mut state);
     let mut layout = None;
     let mut gds = None;
     let mut layer_file = None;
     let mut stack_file = None;
     let mut checks = None;
     if !synthesis_only {
-        let file = |name: &str| r.workspace.join(name).to_string_lossy().into_owned();
+        let file = |name: &str| r.tool_path(&r.workspace.join(name));
         // The views are extras: a build without them is still a complete build.
         let mut unavailable = |view: &str, error: anyhow::Error| {
             diagnostics.push(Diagnostic {
@@ -831,7 +834,7 @@ fn run_physical(
                     "-no_splash".into(),
                     "-python".into(),
                     file("layout_dump.py"),
-                    odb.into(),
+                    r.tool_path(Path::new(odb)),
                     file("layout.json"),
                 ],
                 &r.workspace,
@@ -849,7 +852,7 @@ fn run_physical(
         let layers = layer_properties(&r.profile, cfg);
         let copied = r.run(
             "cp",
-            &[layers.to_string_lossy().into(), file("layers.lyp")],
+            &[r.tool_path(&layers), file("layers.lyp")],
             &r.workspace,
             "layer-file",
         );
@@ -869,7 +872,7 @@ fn run_physical(
             let stack = layer_stack(&r.profile, cfg);
             match r.run(
                 "cp",
-                &[stack.to_string_lossy().into(), file("stack.lyd25")],
+                &[r.tool_path(&stack), file("stack.lyd25")],
                 &r.workspace,
                 "stack-file",
             ) {
@@ -886,7 +889,7 @@ fn run_physical(
             "python3",
             &[
                 file("collect_checks.py"),
-                run.to_string_lossy().into(),
+                r.tool_path(&run),
                 file("physical-state.json"),
                 file("checks.json"),
             ],

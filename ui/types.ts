@@ -8,6 +8,22 @@ export interface Profile {
   pdk_root?: string | null;
   timeout_seconds?: number;
 }
+export interface ToolchainStatus {
+  state:
+    | "ready"
+    | "docker_missing"
+    | "docker_stopped"
+    | "image_missing"
+    | "image_old"
+    | "unsupported";
+  message: string;
+  commands: string[];
+  link: string | null;
+}
+export interface ToolchainReport {
+  status: ToolchainStatus;
+  tools: Record<string, string>;
+}
 export type SourceGroup = "design" | "simulation";
 export type Technology = "sky130" | "ihp_sg13g2";
 export interface PhysicalConfig {

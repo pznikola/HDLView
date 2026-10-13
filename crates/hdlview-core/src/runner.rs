@@ -17,14 +17,188 @@ use std::{
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Probe results per toolchain identity; starting six tools costs more than a small build.
 static VERSIONS: Mutex<BTreeMap<String, BTreeMap<String, String>>> = Mutex::new(BTreeMap::new());
-const PROBED: [&str; 6] = [
+const PROBED: [&str; 8] = [
     "yosys",
     "iverilog",
+    "vvp",
     "verilator",
     "verible-verilog-lint",
     "python3",
     "librelane",
+    "openroad",
 ];
+/// The IIC-OSIC-TOOLS release HDLView is qualified with.
+pub const QUALIFIED_IMAGE: &str = "hpretl/iic-osic-tools:2026.09";
+/// Where a container sees the workspace when the host path is not a valid path there.
+const CONTAINER_ROOT: &str = "/hdlview/work";
+/// The path a container is given for a host path: one under `root` moves under
+/// the container's workspace, any other path only gets forward slashes.
+fn container_path(root: &Path, path: &Path) -> String {
+    match path.strip_prefix(root) {
+        Ok(inside) if inside.as_os_str().is_empty() => CONTAINER_ROOT.into(),
+        Ok(inside) => format!(
+            "{CONTAINER_ROOT}/{}",
+            inside.to_string_lossy().replace('\\', "/")
+        ),
+        Err(_) => path.to_string_lossy().replace('\\', "/"),
+    }
+}
+/// The host path of a path a tool wrote, where `root` is the workspace it ran in.
+pub fn host_path(root: &Path, text: &str) -> PathBuf {
+    match text.strip_prefix(CONTAINER_ROOT) {
+        Some("") => root.into(),
+        Some(inside) if inside.starts_with('/') => root.join(&inside[1..]),
+        _ => text.into(),
+    }
+}
+/// The first IIC-OSIC-TOOLS release with LibreLane 3.
+const OLDEST_IMAGE: &str = "2026.08";
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolchainState {
+    Ready,
+    DockerMissing,
+    DockerStopped,
+    ImageMissing,
+    ImageOld,
+    Unsupported,
+}
+/// Whether the profile's tools can be started, and what the user must do when they cannot.
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolchainStatus {
+    pub state: ToolchainState,
+    pub message: String,
+    pub commands: Vec<String>,
+    pub link: Option<String>,
+    /// The immutable identity of a Docker profile's image.
+    #[serde(skip)]
+    image: Option<String>,
+}
+impl ToolchainStatus {
+    fn new(state: ToolchainState, message: &str, commands: &[String], link: Option<&str>) -> Self {
+        Self {
+            state,
+            message: message.into(),
+            commands: commands.to_vec(),
+            link: link.map(Into::into),
+            image: None,
+        }
+    }
+    fn error(&self) -> anyhow::Error {
+        let mut text = self.message.clone();
+        for command in &self.commands {
+            text.push_str(&format!("\n  {command}"));
+        }
+        anyhow::anyhow!(text)
+    }
+}
+/// A command that opens no console window when the desktop application starts it.
+pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[allow(unused_mut)]
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW
+        command.creation_flags(0x0800_0000);
+    }
+    command
+}
+pub fn toolchain_status(profile: &ToolchainProfile) -> ToolchainStatus {
+    use ToolchainState::*;
+    if matches!(profile.provider, Provider::Native) {
+        return if cfg!(windows) {
+            ToolchainStatus::new(
+                Unsupported,
+                "Only the Docker toolchain is supported on Windows. Select a Docker profile in Toolchain.",
+                &[],
+                None,
+            )
+        } else {
+            ToolchainStatus::new(Ready, "", &[], None)
+        };
+    }
+    let docker = |args: &[&str]| {
+        command(profile.exe("docker"))
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+    };
+    let Ok(daemon) = docker(&["version", "--format", "{{.Server.Version}}"]) else {
+        return ToolchainStatus::new(
+            DockerMissing,
+            "Docker is not installed.",
+            &[],
+            Some(if cfg!(windows) {
+                "https://docs.docker.com/desktop/setup/install/windows-install/"
+            } else {
+                "https://docs.docker.com/engine/install/"
+            }),
+        );
+    };
+    if !daemon.status.success() {
+        return if cfg!(windows) {
+            ToolchainStatus::new(
+                DockerStopped,
+                "Docker Desktop is not running. Start it and wait until it reports that it is running.",
+                &[],
+                None,
+            )
+        } else {
+            ToolchainStatus::new(
+                DockerStopped,
+                "The Docker service is not running, or your user may not use it. Start the service; if that is not enough, add your user to the docker group, then log out and in.",
+                &[
+                    "sudo systemctl start docker".into(),
+                    "sudo usermod -aG docker $USER".into(),
+                ],
+                None,
+            )
+        };
+    }
+    let image = profile.image.clone().unwrap_or_default();
+    let found = docker(&[
+        "image",
+        "inspect",
+        "--format",
+        "{{.Id}} {{index .Config.Labels \"org.opencontainers.image.version\"}}",
+        &image,
+    ])
+    .ok()
+    .filter(|output| output.status.success())
+    .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    .filter(|text| text.starts_with("sha256:"));
+    let Some(found) = found else {
+        return if image.is_empty() {
+            ToolchainStatus::new(
+                ImageMissing,
+                "The Docker profile names no image. Set one in Toolchain.",
+                &[],
+                None,
+            )
+        } else {
+            ToolchainStatus::new(
+                ImageMissing,
+                &format!("The tools image {image} is not downloaded. The download is about 4 GB and needs about 20 GB of free disk space."),
+                &[format!("docker pull {image}")],
+                None,
+            )
+        };
+    };
+    let (id, release) = found.split_once(' ').unwrap_or((&found, ""));
+    // Releases are named year.month, so they order as text. An image without the label is not judged.
+    if !release.is_empty() && release < OLDEST_IMAGE {
+        return ToolchainStatus::new(
+            ImageOld,
+            &format!("The IIC-OSIC-TOOLS image {image} (release {release}) is too old for HDLView. Download the qualified release and select it in Toolchain."),
+            &[format!("docker pull {QUALIFIED_IMAGE}")],
+            None,
+        );
+    }
+    let mut status = ToolchainStatus::new(Ready, "", &[], None);
+    status.image = Some(id.into());
+    status
+}
 #[derive(Clone, Default)]
 pub struct CancelToken(pub Arc<AtomicBool>);
 impl CancelToken {
@@ -53,23 +227,12 @@ pub struct Runner {
     pub cancel: CancelToken,
 }
 pub fn resolve_profile(mut profile: ToolchainProfile) -> Result<ToolchainProfile> {
+    let status = toolchain_status(&profile);
+    if status.state != ToolchainState::Ready {
+        return Err(status.error());
+    }
     if matches!(profile.provider, Provider::Docker) {
-        let image = profile
-            .image
-            .clone()
-            .context("A Docker profile needs an image")?;
-        let output = Command::new(profile.exe("docker"))
-            .args(["image", "inspect", "--format", "{{.Id}}", &image])
-            .output()
-            .context("Cannot inspect configured Docker image")?;
-        if !output.status.success() {
-            bail!("Docker image is not available locally: {image}")
-        }
-        let id = String::from_utf8(output.stdout)?.trim().to_owned();
-        if !id.starts_with("sha256:") {
-            bail!("Docker returned an invalid image identity")
-        }
-        profile.image = Some(id);
+        profile.image = status.image;
     } else {
         for name in ["PATH", "LD_LIBRARY_PATH", "YOSYS_DATDIR"] {
             if let Ok(value) = std::env::var(name) {
@@ -107,19 +270,21 @@ impl Runner {
         let (program, arguments) = match self.profile.provider {
             Provider::Native => (exe, args.to_vec()),
             Provider::Docker => {
-                env.entry("PATH".into()).or_insert("/opt/hdlview/magic/bin:/foss/tools/bin:/foss/tools/klayout:/foss/tools/sak:/usr/local/bin:/usr/bin:/bin".into());
+                env.entry("PATH".into()).or_insert("/foss/tools/bin:/foss/tools/klayout:/foss/tools/sak:/usr/local/bin:/usr/bin:/bin".into());
                 env.entry("LD_LIBRARY_PATH".into()).or_insert(
                     "/foss/tools/iverilog/lib:/foss/tools/gtkwave/lib/x86_64-linux-gnu".into(),
                 );
-                env.entry("CCACHE_DIR".into()).or_insert_with(|| {
-                    self.workspace
-                        .join("tool-cache/ccache")
-                        .to_string_lossy()
-                        .into()
-                });
+                env.entry("CCACHE_DIR".into())
+                    .or_insert_with(|| self.tool_path(&self.workspace.join("tool-cache/ccache")));
                 env.entry("XDG_CACHE_HOME".into())
-                    .or_insert_with(|| self.workspace.join("tool-cache").to_string_lossy().into());
-                let root = self.workspace.to_string_lossy();
+                    .or_insert_with(|| self.tool_path(&self.workspace.join("tool-cache")));
+                let mount = |path: &Path, access: &str| {
+                    format!(
+                        "type=bind,src={},dst={}{access}",
+                        path.display(),
+                        self.tool_path(path)
+                    )
+                };
                 let mut a = vec![
                     "run".into(),
                     "--rm".into(),
@@ -127,36 +292,28 @@ impl Runner {
                     "--network=none".into(),
                     "--name".into(),
                     container.clone(),
+                ];
+                // Docker Desktop on Windows gives the files to the host user itself.
+                #[cfg(unix)]
+                a.extend([
                     "--user".into(),
                     format!("{}:{}", unsafe { libc::getuid() }, unsafe {
                         libc::getgid()
                     }),
+                ]);
+                a.extend([
                     "--workdir".into(),
-                    cwd.to_string_lossy().into(),
+                    self.tool_path(cwd),
                     "--mount".into(),
-                    format!("type=bind,src={root},dst={root}"),
-                ];
+                    mount(&self.workspace, ""),
+                ]);
                 let inputs = self.workspace.join("inputs");
                 if inputs.exists() {
-                    a.extend([
-                        "--mount".into(),
-                        format!(
-                            "type=bind,src={},dst={},readonly",
-                            inputs.display(),
-                            inputs.display()
-                        ),
-                    ]);
+                    a.extend(["--mount".into(), mount(&inputs, ",readonly")]);
                 }
                 if let Some(pdk) = &self.profile.pdk_root {
                     if pdk.exists() && !pdk.starts_with(&self.workspace) {
-                        a.extend([
-                            "--mount".into(),
-                            format!(
-                                "type=bind,src={},dst={},readonly",
-                                pdk.display(),
-                                pdk.display()
-                            ),
-                        ]);
+                        a.extend(["--mount".into(), mount(pdk, ",readonly")]);
                     }
                 }
                 for (k, v) in &env {
@@ -184,7 +341,7 @@ impl Runner {
         };
         let recordpath = log.with_extension("command.json");
         fs::write(&recordpath, serde_json::to_vec_pretty(&record)?)?;
-        let mut cmd = Command::new(&program);
+        let mut cmd = command(&program);
         cmd.args(&arguments)
             .current_dir(cwd)
             .stdin(Stdio::null())
@@ -198,16 +355,22 @@ impl Runner {
             use std::os::unix::process::CommandExt;
             cmd.process_group(0);
         }
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("Cannot start {tool} ({program}); check toolchain profile"))?;
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                self.setup()?;
+                return Err(error).with_context(|| {
+                    format!("Cannot start {tool} ({program}); check toolchain profile")
+                });
+            }
+        };
         let started = Instant::now();
         let status = loop {
             if self.cancel.check().is_err()
                 || started.elapsed() > Duration::from_secs(self.profile.timeout_seconds)
             {
                 if matches!(self.profile.provider, Provider::Docker) {
-                    let _ = Command::new(self.profile.exe("docker"))
+                    let _ = command(self.profile.exe("docker"))
                         .args(["kill", &container])
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
@@ -234,6 +397,10 @@ impl Runner {
         fs::write(recordpath, serde_json::to_vec_pretty(&record)?)?;
         let text = fs::read_to_string(&log).unwrap_or_default();
         if !status.success() {
+            // Docker reports its own failures, such as a missing image, with this code.
+            if matches!(self.profile.provider, Provider::Docker) && status.code() == Some(125) {
+                self.setup()?;
+            }
             bail!(
                 "{tool} failed ({status}); log: {}\n{}",
                 log.display(),
@@ -247,6 +414,45 @@ impl Runner {
             );
         }
         Ok(text)
+    }
+    /// Whether tools see the workspace under another path than the host does. A
+    /// Linux container cannot mount a Windows path at itself; the variable lets
+    /// that mapping be qualified on Linux.
+    fn container_paths(&self) -> bool {
+        matches!(self.profile.provider, Provider::Docker)
+            && (cfg!(windows) || std::env::var_os("HDLVIEW_CONTAINER_PATHS").is_some())
+    }
+    /// The path to give a tool, in an argument or a generated file, for a host path.
+    pub fn tool_path(&self, path: &Path) -> String {
+        if self.container_paths() {
+            container_path(&self.workspace, path)
+        } else {
+            path.to_string_lossy().into()
+        }
+    }
+    /// The host path of a path a tool wrote.
+    pub fn host_path(&self, text: &str) -> PathBuf {
+        host_path(&self.workspace, text)
+    }
+    /// Replaces every path a tool wrote in a JSON document by its host path.
+    pub fn host_paths(&self, value: &mut serde_json::Value) {
+        use serde_json::Value;
+        match value {
+            Value::String(text) if text.starts_with(CONTAINER_ROOT) => {
+                *text = self.host_path(text).to_string_lossy().into()
+            }
+            Value::Array(items) => items.iter_mut().for_each(|item| self.host_paths(item)),
+            Value::Object(fields) => fields.values_mut().for_each(|item| self.host_paths(item)),
+            _ => {}
+        }
+    }
+    /// Fails with the setup instructions when the toolchain itself cannot be started.
+    fn setup(&self) -> Result<()> {
+        let status = toolchain_status(&self.profile);
+        if status.state != ToolchainState::Ready {
+            return Err(status.error());
+        }
+        Ok(())
     }
     /// Identifies the tools behind a resolved profile: a Docker image digest is
     /// already part of the profile; native executables add their size and
@@ -280,14 +486,39 @@ impl Runner {
         let known = VERSIONS.lock().unwrap().get(&self.toolchain_key()).cloned();
         known.unwrap_or_else(|| self.probe())
     }
+    /// The setup status and, when the tools can be started, what each one reports.
+    pub fn check(&self) -> serde_json::Value {
+        let status = toolchain_status(&self.profile);
+        let mut tools = BTreeMap::new();
+        if status.state == ToolchainState::Ready {
+            tools = self.probe();
+            let root = crate::pipeline::pdk_root(&self.profile);
+            for (pdk, _, file) in crate::pipeline::LIBERTY {
+                let found = self.run(
+                    "ls",
+                    &[self.tool_path(&root.join(file))],
+                    &self.workspace,
+                    "probe-pdk",
+                );
+                let state = match found {
+                    Ok(_) => "installed".into(),
+                    Err(_) => format!("unavailable: not found under {}", root.display()),
+                };
+                tools.insert(format!("PDK {pdk}"), state);
+            }
+        }
+        serde_json::json!({ "status": status, "tools": tools })
+    }
     pub fn probe(&self) -> BTreeMap<String, String> {
         let versions: BTreeMap<String, String> = [
             ("yosys", vec!["-V"]),
             ("iverilog", vec!["-V"]),
+            ("vvp", vec!["-V"]),
             ("verilator", vec!["--version"]),
             ("verible-verilog-lint", vec!["--version"]),
-            ("python3", vec!["-c", "import pyslang; from importlib.metadata import version; installed = version('pyslang'); assert installed == '10.0.0', f'Configured Python has pyslang {installed}; HDLView requires 10.0.0. Update the selected tools image or native Python environment.'; assert hasattr(pyslang.Driver, 'runAnalysis') and hasattr(pyslang.SourceManager, 'getFullyOriginalLoc'); print('pyslang', installed)"]),
+            ("python3", vec!["-c", "import pyslang; from importlib.metadata import version; installed = version('pyslang'); assert installed.split('.')[0] in ('10', '11'), f'Configured Python has pyslang {installed}; HDLView requires 10 or 11. Update the selected tools image or native Python environment.'; assert hasattr(getattr(pyslang, 'driver', pyslang).Driver, 'runAnalysis') and hasattr(pyslang.SourceManager, 'getFullyOriginalLoc'); print('pyslang', installed)"]),
             ("librelane", vec!["--version"]),
+            ("openroad", vec!["-version"]),
         ]
         .into_iter()
         .map(|(tool, args)| {
@@ -345,6 +576,33 @@ mod tests {
         assert!(identifier("x; exec bad").is_err());
     }
     #[test]
+    fn container_paths_round_trip() {
+        for root in [
+            Path::new("/home/user/store/design"),
+            Path::new("C:\\store\\design"),
+        ] {
+            assert_eq!(container_path(root, root), "/hdlview/work");
+            let inside = container_path(root, &root.join("inputs").join("top.sv"));
+            assert_eq!(inside, "/hdlview/work/inputs/top.sv");
+            assert_eq!(host_path(root, &inside), root.join("inputs/top.sv"));
+            assert_eq!(host_path(root, "/hdlview/work"), root);
+        }
+        let root = Path::new("/home/user/store/design");
+        assert_eq!(
+            container_path(root, Path::new("/foss/pdks\\sky130A")),
+            "/foss/pdks/sky130A"
+        );
+        assert_eq!(
+            host_path(root, "/foss/pdks/a.lib"),
+            Path::new("/foss/pdks/a.lib")
+        );
+        assert_eq!(
+            host_path(root, "/hdlview/workshop"),
+            Path::new("/hdlview/workshop")
+        );
+    }
+    #[cfg(unix)]
+    #[test]
     fn versions_are_probed_once_per_toolchain_identity() {
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
@@ -366,6 +624,44 @@ mod tests {
         fs::write(&tool, "#!/bin/sh\necho changed\n").unwrap();
         fs::create_dir(d.path().join("third")).unwrap();
         assert_eq!(runner("third").versions()["yosys"], "changed");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn setup_status_names_what_is_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let state = |script: Option<&str>| {
+            let docker = d.path().join("docker");
+            let _ = fs::remove_file(&docker);
+            if let Some(script) = script {
+                fs::write(&docker, format!("#!/bin/sh\n{script}\n")).unwrap();
+                fs::set_permissions(&docker, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let mut profile = ToolchainProfile {
+                provider: Provider::Docker,
+                image: Some("tools:1".into()),
+                ..Default::default()
+            };
+            profile
+                .executables
+                .insert("docker".into(), docker.to_string_lossy().into());
+            (toolchain_status(&profile), resolve_profile(profile))
+        };
+        assert_eq!(state(None).0.state, ToolchainState::DockerMissing);
+        assert_eq!(state(Some("exit 1")).0.state, ToolchainState::DockerStopped);
+        let (missing, resolved) = state(Some("[ \"$1\" = version ]"));
+        assert_eq!(missing.state, ToolchainState::ImageMissing);
+        assert_eq!(missing.commands, ["docker pull tools:1"]);
+        assert!(format!("{:#}", resolved.unwrap_err()).contains("docker pull tools:1"));
+        let image = |release: &str| format!("[ \"$1\" = version ] || echo sha256:abc {release}");
+        let old = state(Some(&image("2025.12"))).0;
+        assert_eq!(old.state, ToolchainState::ImageOld);
+        assert_eq!(old.commands, [format!("docker pull {QUALIFIED_IMAGE}")]);
+        for release in ["2026.09", ""] {
+            let (ready, resolved) = state(Some(&image(release)));
+            assert_eq!(ready.state, ToolchainState::Ready);
+            assert_eq!(resolved.unwrap().image.as_deref(), Some("sha256:abc"));
+        }
     }
     #[test]
     fn cancelled_before_spawn() {

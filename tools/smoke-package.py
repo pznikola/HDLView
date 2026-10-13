@@ -3,6 +3,7 @@
 import hashlib
 import json
 import pathlib
+import re
 import subprocess
 import time
 
@@ -36,7 +37,8 @@ result = subprocess.run(base + ['bash', '-c', command], capture_output=True, tex
 assert result.returncode == 124, (result.returncode, result.stderr)
 checks['desktop_virtual_display_seconds'] = round(time.monotonic() - start, 2)
 checks['desktop_stderr'] = result.stderr
-package = root / 'target/packages/hdlview_0.1.0_amd64.deb'
+version = re.search(r'^version = "(.*)"', (root / 'src-tauri/Cargo.toml').read_text(), re.M).group(1)
+package = root / f'target/packages/hdlview_{version}_amd64.deb'
 checks['package_sha256'] = hashlib.sha256(package.read_bytes()).hexdigest()
 (root / '.hdlview/package-smoke-results.json').write_text(json.dumps(checks, indent=2))
 print(json.dumps(checks, indent=2))

@@ -1,6 +1,6 @@
 # HDLView
 
-Linux desktop HDL schematic and waveform explorer, with a Rust core and headless CLI.
+Desktop HDL schematic and waveform explorer for Linux and Windows, with a Rust core and headless CLI.
 
 - Elaborated RTL, PDK-mapped gate, and post-layout views with hardware symbols.
 - Verilog/SystemVerilog projects, using existing open-source compilers.
@@ -15,7 +15,59 @@ Linux desktop HDL schematic and waveform explorer, with a Rust core and headless
 
 This is version 0.1.0. Read [qualification and remaining limitations](docs/QUALIFICATION.md) before interpreting timing or physical results. Icarus does not provide complete timing-check coverage. A successful simulation does not imply clean DRC, LVS, or STA.
 
-## Setup
+## Install
+
+HDLView is installed in three steps. The desktop application and the HDL tools are
+separate downloads.
+
+1. Install Docker: [Docker Engine](https://docs.docker.com/engine/install/) on Linux,
+   [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)
+   with the WSL 2 backend on Windows. On Linux, allow your user to run it, then log
+   out and in:
+
+   ```sh
+   sudo usermod -aG docker $USER
+   ```
+
+2. Download the tools image (about 4 GB; it needs about 20 GB of free disk space):
+
+   ```sh
+   docker pull hpretl/iic-osic-tools:2026.09
+   ```
+
+3. Download HDLView from the
+   [Releases page](https://github.com/pznikola/HDLView/releases). On Ubuntu 22.04 or
+   later install the `.deb` package:
+
+   ```sh
+   sudo apt install ./hdlview_0.1.0_amd64.deb
+   ```
+
+   On Windows 10 or 11 run the setup `.exe`. It installs for the current user and
+   needs no administrator rights. The installer is not signed, so Windows asks for
+   confirmation the first time.
+
+Start **HDLView** from the application menu. The package installs the bundled
+examples read-only under `/usr/share/hdlview/examples`; copy them to your home
+directory before opening one:
+
+```sh
+cp -r /usr/share/hdlview/examples ~/hdlview-examples
+```
+
+The image is the unmodified [IIC-OSIC-TOOLS](https://github.com/iic-jku/IIC-OSIC-TOOLS)
+release; HDLView neither changes nor distributes it. Each HDLView version is qualified with one release of that image, named in the
+default profile. Releases before 2026.08 lack LibreLane 3 and are rejected. Newer
+releases may work; **Check toolchain** lists the tool versions found. When Docker is
+not installed, not running, or the image is absent, the start panel and the footer
+say which step is missing and show the command for it.
+
+On Windows only the Docker toolchain is supported, with the PDKs inside the image.
+The Windows build compiles and its path handling is qualified on Linux, but it has
+**not yet been run on a Windows machine**; see the
+[qualification notes](docs/QUALIFICATION.md#windows-port).
+
+## Development
 
 Install Node.js 22.12+ and Rust 1.90 (selected by `rust-toolchain.toml`). For native desktop development on Ubuntu 22.04/24.04:
 
@@ -51,14 +103,6 @@ differently in the native picker. The Docker directory remains protected.
 The Rust `tauri` crate and JavaScript `@tauri-apps/api` must share a major/minor
 version. Keep their pins aligned when updating dependencies.
 
-The tools are separate from the desktop application. Build the qualified derived image:
-
-```sh
-docker build -f tools/Dockerfile -t hdlview-tools:2025.12 .
-```
-
-The base image alone supports many compilation tasks, but **does not provide the complete qualified physical toolchain**. The derived image pins pyslang, LibreLane 3, and Magic. Its LibreLane profile intentionally bypasses the base image's legacy LibreLane 2 wrapper to use the matching newer OpenROAD and OpenSTA binaries.
-
 Open `examples/00_mux/hdlview.project.json` for a small first design, or
 `examples/04_adder_N/hdlview.project.json` for a hierarchical adder. All 18
 [SystemVerilog examples](examples/README.md) have ready-to-run project and simulation
@@ -91,7 +135,7 @@ Use **Sources**, **Design**, and **Inspector** to choose the left sidebar view. 
 
 Registered external roots appear as `@root/path`; include settings accept project-relative paths or that notation. Folder rescans preserve manual compilation order; filelist reimports apply reviewed order and retain source/header roles. Project files use schema 3 only; a file of another schema version or with unknown fields is rejected, and opening it leaves the current workspace intact. Schematics and waveforms built by an earlier HDLView version are not read: the project opens without a schematic until the design is built again.
 
-For a native installation, adapt [native.example.json](tools/profiles/native.example.json) in the Toolchain editor. Set plugin paths and relevant environment variables as well as executables. The Python environment must contain `pyslang==10.0.0`, which live editor diagnostics and standard-cell interface extraction use. A Docker profile must name its image.
+For a native installation, adapt [native.example.json](tools/profiles/native.example.json) in the Toolchain editor. Set plugin paths and relevant environment variables as well as executables. The Python environment must contain pyslang 10 or 11, which live editor diagnostics and standard-cell interface extraction use. A Docker profile must name its image.
 
 ## Schematic workspace
 
@@ -205,7 +249,7 @@ The names and checks need `openroad` and `python3` on the toolchain's PATH, and 
 ## Live editor diagnostics
 
 Working Verilog/SystemVerilog files are checked after 750 ms without typing, using
-pyslang 10.0.0 for project correctness and Verible for style. Unsaved buffers,
+pyslang for project correctness and Verible for style. Unsaved buffers,
 including open headers, are analyzed in temporary copies. Typing and linting do
 not change originals, create snapshots, or mark the schematic for rebuilding.
 Checks pause during other jobs. Captured snapshot and auxiliary tabs are excluded.
@@ -231,7 +275,7 @@ A `.rules.verible_lint` beside `hdlview.project.json` replaces this preset using
 [Verible's configuration syntax](https://github.com/chipsalliance/verible/blob/dec56671f8aa63a77b687b4df9753de451582b53/verible/verilog/tools/lint/README.md).
 Existing inline waivers work; formatting and automatic fixes are not enabled.
 
-The qualified Docker image includes Verible `v0.0-3724-gdec56671`. Native users set
+The qualified Docker image includes Verible `v0.0-4294-gc1d8f5e8`. Native users set
 `verible-verilog-lint` and Python executable paths in Toolchain. Probe checks both
 the binary and the actual pyslang API. Missing tools or invalid rule files are
 reported as engine failures and do not prevent editing or building. Each engine
@@ -247,9 +291,8 @@ Live linting and new builds use the configured Toolchain profile. Opening or
 restoring a schematic does not replace that profile; simulation of an existing
 snapshot retains its recorded toolchain. **Correctness checks unavailable** means
 Slang failed to run, so syntax and name errors cannot be checked. For a pyslang
-version mismatch, select `hdlview-tools:2025.12` in Toolchain and rebuild that image
-from `tools/Dockerfile` if needed. Native users install `pyslang==10.0.0` into the
-Python environment selected by their profile.
+version mismatch, select `hpretl/iic-osic-tools:2026.09` in Toolchain. Native users
+install pyslang 10 or 11 into the Python environment selected by their profile.
 
 ## Headless workflows
 

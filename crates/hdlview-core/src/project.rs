@@ -9,6 +9,16 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+/// Canonical paths without Windows' `\\?\` form, which Docker and the tools reject.
+pub trait Canonical {
+    fn canonical(&self) -> std::io::Result<PathBuf>;
+}
+impl Canonical for Path {
+    fn canonical(&self) -> std::io::Result<PathBuf> {
+        dunce::canonicalize(self)
+    }
+}
+
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     serde_json::from_slice(&fs::read(path).with_context(|| format!("Read {}", path.display()))?)
         .with_context(|| format!("Parse {}", path.display()))
@@ -46,7 +56,7 @@ pub fn unique_dir(store: &Path, prefix: &str) -> Result<PathBuf> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let path = store.join(format!("{prefix}-{}-{now}", std::process::id()));
     fs::create_dir(&path)?;
-    Ok(path.canonicalize()?)
+    Ok(path.canonical()?)
 }
 pub fn load_project(path: &Path) -> Result<ProjectConfig> {
     let mut project = decode_project(read_json(path)?)
@@ -99,7 +109,7 @@ pub(crate) fn deduplicate_simulation_files(path: &Path, project: &mut ProjectCon
     let directory = path
         .parent()
         .context("Project has no directory")?
-        .canonicalize()?;
+        .canonical()?;
     for files in [
         &mut project.simulation_sources,
         &mut project.simulation_headers,
@@ -110,10 +120,10 @@ pub(crate) fn deduplicate_simulation_files(path: &Path, project: &mut ProjectCon
                 FileRef::Local(_) => directory.clone(),
                 FileRef::Rooted { root, .. } => directory.join(&project.source_roots[root]),
             };
-            let root = root.canonicalize().unwrap_or(root);
+            let root = root.canonical().unwrap_or(root);
             let input = root.join(file.path());
             // Missing files remain visible; existing aliases resolve to one membership entry.
-            let identity = input.canonicalize().unwrap_or_else(|_| {
+            let identity = input.canonical().unwrap_or_else(|_| {
                 input
                     .components()
                     .filter(|c| !matches!(c, Component::CurDir))
@@ -266,7 +276,7 @@ pub fn resolve_reference(
     let directory = project_path
         .parent()
         .context("Project configuration needs a directory")?
-        .canonicalize()?;
+        .canonical()?;
     let root = match reference {
         FileRef::Local(_) => directory,
         FileRef::Rooted { root, .. } => directory
@@ -276,11 +286,11 @@ pub fn resolve_reference(
                     .get(root)
                     .context("Unknown source root")?,
             )
-            .canonicalize()?,
+            .canonical()?,
     };
     let path = root
         .join(reference.path())
-        .canonicalize()
+        .canonical()
         .with_context(|| format!("Missing input {}", root.join(reference.path()).display()))?;
     if !path.starts_with(root) {
         bail!("Input symlink escapes its registered source root")
@@ -312,7 +322,7 @@ fn copy_tree(
     relative(rel)?;
     let src = root.join(rel);
     let canonical = src
-        .canonicalize()
+        .canonical()
         .with_context(|| format!("Missing input {}", src.display()))?;
     if !canonical.starts_with(root) {
         bail!("Input symlink escapes project: {}", src.display())
@@ -387,7 +397,7 @@ fn capture_inputs(
     cancel: &crate::runner::CancelToken,
     hdl_only: bool,
 ) -> Result<CapturedInputs> {
-    let project_path = project_path.canonicalize()?;
+    let project_path = project_path.canonical()?;
     let root = project_path.parent().context("Missing project directory")?;
     let output = directory.join("inputs");
     fs::create_dir_all(&output)?;
@@ -399,9 +409,7 @@ fn capture_inputs(
         let logical = reference.logical();
         let source_root = match reference {
             FileRef::Local(_) => root.to_path_buf(),
-            FileRef::Rooted { root: name, .. } => {
-                root.join(&p.source_roots[name]).canonicalize()?
-            }
+            FileRef::Rooted { root: name, .. } => root.join(&p.source_roots[name]).canonical()?,
         };
         let namespace = match reference {
             FileRef::Local(_) => output.clone(),
@@ -435,17 +443,14 @@ fn capture_inputs(
                     )?;
                 }
             } else {
-                let key = FileRef::Local(logical.to_path_buf())
-                    .logical()
-                    .to_string_lossy()
-                    .into_owned();
+                let key = portable(&FileRef::Local(logical.to_path_buf()).logical());
                 hashes.insert(
                     key.clone(),
                     file_hash(&output.join(logical)).with_context(|| {
                         format!("Hash captured input {}", output.join(logical).display())
                     })?,
                 );
-                origins.insert(key, src.canonicalize()?);
+                origins.insert(key, src.canonical()?);
             }
             Ok(())
         }
@@ -526,7 +531,7 @@ pub fn read_snapshot(path: &Path) -> Result<DesignSnapshot> {
         bail!("Unsupported snapshot schema; rebuild the design")
     }
     let s: DesignSnapshot = serde_json::from_value(value)?;
-    let actual = path.canonicalize()?.parent().unwrap().to_path_buf();
+    let actual = path.canonical()?.parent().unwrap().to_path_buf();
     if s.directory != actual {
         bail!("Snapshot was moved; reopen it at its original artifact directory")
     }

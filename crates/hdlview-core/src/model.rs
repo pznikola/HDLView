@@ -34,8 +34,28 @@ impl Representation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(untagged)]
 pub enum FileRef {
-    Local(PathBuf),
-    Rooted { root: String, path: PathBuf },
+    Local(#[serde(serialize_with = "portable_path")] PathBuf),
+    Rooted {
+        root: String,
+        #[serde(serialize_with = "portable_path")]
+        path: PathBuf,
+    },
+}
+/// A relative path as project files and the tools write it: with `/` on every
+/// system. Elsewhere a backslash may be part of a file name.
+pub fn portable(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy();
+    if cfg!(windows) {
+        text.replace('\\', "/")
+    } else {
+        text.into_owned()
+    }
+}
+fn portable_path<S: serde::Serializer>(
+    path: &std::path::Path,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&portable(path))
 }
 impl FileRef {
     pub fn path(&self) -> &std::path::Path {

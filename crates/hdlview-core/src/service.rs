@@ -547,7 +547,8 @@ impl Service {
                 let snapshot = self.snapshot(string("snapshot_id")?)?;
                 let project = self.working_project(string("path")?)?;
                 let (file, _, _) = source_location(string("source")?);
-                let captured = Path::new(file);
+                let captured = crate::runner::host_path(&snapshot.directory, file);
+                let captured = captured.as_path();
                 let relative = if captured.is_absolute() {
                     captured.strip_prefix(snapshot.directory.join("inputs"))?
                 } else {
@@ -555,7 +556,7 @@ impl Service {
                 };
                 let original = snapshot
                     .source_origins
-                    .get(&relative.to_string_lossy().into_owned())
+                    .get(&portable(relative))
                     .context("No original source mapping for this snapshot")?;
                 for reference in workspace::project_files(&project.project) {
                     if resolve_reference(&project.path, &project.project, &reference)
@@ -566,10 +567,14 @@ impl Service {
                 }
                 bail!("Original source is not registered in the current working project")
             }
+            "toolchain_status" => {
+                let p: ToolchainProfile = serde_json::from_value(v["profile"].clone())?;
+                Ok(json!(crate::runner::toolchain_status(&p)))
+            }
             "probe" => {
                 let p: ToolchainProfile = serde_json::from_value(v["profile"].clone())?;
                 let dir = unique_dir(&self.store, "probe")?;
-                self.launch("probe", move |c| Ok(json!(Runner::new(p, dir, c).probe())))
+                self.launch("probe", move |c| Ok(Runner::new(p, dir, c).check()))
             }
             "build" => {
                 let path = PathBuf::from(string("path")?);
@@ -866,14 +871,14 @@ impl Service {
                 let snapshot = self.snapshot(string("snapshot_id")?)?;
                 let raw = string("source")?;
                 let (file, line, col) = source_location(raw);
-                let path = PathBuf::from(file);
+                let path = crate::runner::host_path(&snapshot.directory, file);
                 let path = if path.is_absolute() {
                     path
                 } else {
                     let path = path.strip_prefix("inputs").unwrap_or(&path);
                     snapshot.directory.join("inputs").join(path)
                 };
-                let canonical = path.canonicalize()?;
+                let canonical = path.canonical()?;
                 if !canonical.starts_with(snapshot.directory.join("inputs")) {
                     bail!("Source reference is outside captured inputs")
                 }

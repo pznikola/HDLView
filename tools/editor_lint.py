@@ -9,15 +9,16 @@ from importlib.metadata import version
 
 def analyze(request):
     installed = version("pyslang")
-    if installed != "10.0.0":
+    if installed.split(".")[0] not in ("10", "11"):
         raise RuntimeError(
-            f"Live linting requires pyslang 10.0.0; configured Python has {installed}. "
-            "Select the current HDLView tools image in Toolchain, or install "
-            "pyslang==10.0.0 into the configured native Python environment."
+            f"Live linting requires pyslang 10 or 11; configured Python has {installed}. "
+            "Select the qualified IIC-OSIC-TOOLS image in Toolchain, or install "
+            "pyslang==11.0.0 into the configured native Python environment."
         )
     import pyslang as sv
 
-    driver = sv.Driver()
+    # pyslang 11 moved Driver into a submodule.
+    driver = getattr(sv, "driver", sv).Driver()
     driver.addStandardArgs()
     driver.diagEngine.clearClients()
     args = ["--std", request["standard"], "-Wextra"]

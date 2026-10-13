@@ -1,7 +1,7 @@
 {
   "provider": "docker",
-  "image": "hdlview-tools:2025.12",
-  "executables": { "librelane": "/usr/local/bin/librelane" },
+  "image": "hpretl/iic-osic-tools:2026.09",
+  "executables": {},
   "plugins": {},
   "env": {},
   "pdk_root": "/foss/pdks",

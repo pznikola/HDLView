@@ -33,7 +33,7 @@ pub fn validate_run(path: &Path, snapshot: &DesignSnapshot) -> Result<Simulation
         bail!("Run is bound to another schematic snapshot")
     }
     let actual = path
-        .canonicalize()?
+        .canonical()?
         .parent()
         .context("Run has no directory")?
         .to_path_buf();
@@ -63,8 +63,8 @@ pub fn save(
         &ProjectState {
             schema_version: 1,
             project_path: workspace.path.clone(),
-            snapshot_path: snapshot_path.canonicalize()?,
-            run_path: run_path.map(Path::canonicalize).transpose()?,
+            snapshot_path: snapshot_path.canonical()?,
+            run_path: run_path.map(Path::canonical).transpose()?,
         },
     )
 }

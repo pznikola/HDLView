@@ -1,2 +1,4 @@
 # Preserve whitespace in verbatim upstream license notices.
 docs/THIRD_PARTY_NOTICES.md -whitespace
+# Tools and tests read these files byte for byte, also on Windows.
+* text=auto eol=lf

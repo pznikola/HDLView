@@ -85,7 +85,7 @@ pub enum SaveResult {
 
 pub fn open(path: &Path) -> Result<WorkspaceProject> {
     let path = path
-        .canonicalize()
+        .canonical()
         .with_context(|| format!("Open project {}", path.display()))?;
     Ok(WorkspaceProject {
         draft_id: None,
@@ -98,7 +98,7 @@ pub fn draft(path: &Path, name: String, technology: Technology) -> Result<Worksp
     let path = path
         .parent()
         .context("Choose a project directory")?
-        .canonicalize()?
+        .canonical()?
         .join(path.file_name().context("Missing configuration filename")?);
     let project = serde_json::from_value(
         serde_json::json!({"schema_version":PROJECT_SCHEMA,"name":name,"top":"","sources":[],"technology":technology,"standard":"1800-2017"}),
@@ -152,7 +152,7 @@ pub fn create(path: &Path, name: String, overwrite: bool) -> Result<WorkspacePro
     let parent = path
         .parent()
         .context("Choose a project directory")?
-        .canonicalize()?;
+        .canonical()?;
     let path = parent.join(path.file_name().context("Missing configuration filename")?);
     let project: ProjectConfig = serde_json::from_value(
         serde_json::json!({"schema_version":PROJECT_SCHEMA,"name":name,"top":"","sources":[],"standard":"1800-2017"}),
@@ -210,12 +210,12 @@ pub(crate) fn register(
     directory: bool,
 ) -> Result<FileRef> {
     let path = path
-        .canonicalize()
+        .canonical()
         .with_context(|| format!("Missing input {}", path.display()))?;
     let home = config_path
         .parent()
         .context("Missing project directory")?
-        .canonicalize()?;
+        .canonical()?;
     if let Ok(local) = path.strip_prefix(&home) {
         return Ok(FileRef::Local(if local.as_os_str().is_empty() {
             PathBuf::from(".")
@@ -224,7 +224,7 @@ pub(crate) fn register(
         }));
     }
     for (name, root) in &project.source_roots {
-        let root = home.join(root).canonicalize()?;
+        let root = home.join(root).canonical()?;
         if let Ok(local) = path.strip_prefix(root) {
             return Ok(FileRef::Rooted {
                 root: name.clone(),
@@ -476,7 +476,7 @@ impl Filelist {
     ) -> Result<()> {
         cancel.check()?;
         let path = path
-            .canonicalize()
+            .canonical()
             .with_context(|| format!("Open filelist {}", path.display()))?;
         if !stack.insert(path.clone()) {
             bail!("Recursive filelist cycle at {}", path.display())
@@ -516,7 +516,7 @@ impl Filelist {
                         };
                         self.includes.push(
                             base.join(dir)
-                                .canonicalize()
+                                .canonical()
                                 .with_context(|| format!("Missing include directory {dir}"))?,
                         );
                     }
@@ -536,7 +536,7 @@ impl Filelist {
                 } else {
                     let file = base
                         .join(&value)
-                        .canonicalize()
+                        .canonical()
                         .with_context(|| format!("Missing source {value}"))?;
                     if language(&file).is_none() {
                         bail!("Unsupported RTL file {value}")
@@ -589,7 +589,7 @@ pub fn preview(
         if locations.len() != 1 {
             bail!("Select one folder")
         };
-        let root = locations[0].canonicalize()?;
+        let root = locations[0].canonical()?;
         let location = register(&root, &workspace.path, &mut project, true)?;
         scan(&root, &mut files, &mut warnings, cancel)?;
         record = Some(ImportRecord {
@@ -607,13 +607,13 @@ pub fn preview(
         if locations.len() != 1 {
             bail!("Select one filelist")
         };
-        let list = locations[0].canonicalize()?;
+        let list = locations[0].canonical()?;
         let working = request
             .working_directory
             .clone()
             .or_else(|| previous.as_ref().and_then(|p| p.working_directory.clone()))
             .unwrap_or_else(|| list.parent().unwrap_or(Path::new(".")).into())
-            .canonicalize()?;
+            .canonical()?;
         let mut parsed = Filelist {
             files: Vec::new(),
             includes: Vec::new(),
@@ -665,7 +665,7 @@ pub fn preview(
     let mut seen = BTreeSet::new();
     for file in files {
         cancel.check()?;
-        let canonical = file.canonicalize()?;
+        let canonical = file.canonical()?;
         if !seen.insert(canonical.clone()) {
             continue;
         }

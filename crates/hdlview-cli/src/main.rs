@@ -69,7 +69,7 @@ fn main() -> Result<()> {
         )?)?,
         Commands::Probe => {
             let dir = unique_dir(&cli.store, "probe")?;
-            serde_json::to_value(Runner::new(profile, dir, CancelToken::default()).probe())?
+            Runner::new(profile, dir, CancelToken::default()).check()
         }
         Commands::Build {
             project,

@@ -11,7 +11,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Component, Path, PathBuf},
-    process::Command,
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -84,7 +83,7 @@ fn reference_location(
         FileRef::Rooted { root, .. } => base.join(&project.source_roots[root]),
     };
     let root = normalize(&root)?;
-    let root = root.canonicalize().unwrap_or(root);
+    let root = root.canonical().unwrap_or(root);
     Ok(root
         .join(file.path())
         .components()
@@ -149,7 +148,7 @@ fn no_links(path: &Path) -> Result<()> {
     Ok(())
 }
 fn protected(workspace: &WorkspaceProject, path: &Path, store: &Path) -> bool {
-    let Ok(store) = store.canonicalize().or_else(|_| std::path::absolute(store)) else {
+    let Ok(store) = store.canonical().or_else(|_| std::path::absolute(store)) else {
         return true;
     };
     workspace.path.starts_with(path)
@@ -574,6 +573,7 @@ pub fn preview(
     if request.kind != ChangeKind::Trash {
         blocked.clear();
     }
+    #[cfg(not(windows))]
     if request.kind == ChangeKind::Trash && !Path::new("/usr/bin/gio").is_file() {
         blocked.push("System GIO is unavailable; install libglib2.0-bin".into());
     }
@@ -677,19 +677,7 @@ pub fn apply(
                 .location
                 .with_file_name(current.request.name.as_deref().context("Missing name")?),
         )?,
-        ChangeKind::Trash => {
-            let output = Command::new("/usr/bin/gio")
-                .args(["trash", "--"])
-                .arg(&current.location)
-                .output()
-                .context("Launch system Trash")?;
-            if !output.status.success() {
-                bail!(
-                    "Trash failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                )
-            }
-        }
+        ChangeKind::Trash => trash(&current.location)?,
     }
     let mut next = workspace.clone();
     next.project = current.project;
@@ -698,6 +686,25 @@ pub fn apply(
         affected: current.affected,
         created: None,
     })
+}
+#[cfg(not(windows))]
+fn trash(path: &Path) -> Result<()> {
+    let output = std::process::Command::new("/usr/bin/gio")
+        .args(["trash", "--"])
+        .arg(path)
+        .output()
+        .context("Launch system Trash")?;
+    if !output.status.success() {
+        bail!(
+            "Trash failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    }
+    Ok(())
+}
+#[cfg(windows)]
+fn trash(path: &Path) -> Result<()> {
+    trash::delete(path).context("Move to the Recycle Bin")
 }
 #[cfg(target_os = "linux")]
 fn rename_exclusive(from: &Path, to: &Path) -> Result<()> {
@@ -719,9 +726,23 @@ fn rename_exclusive(from: &Path, to: &Path) -> Result<()> {
     }
     Ok(())
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+fn rename_exclusive(from: &Path, to: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide = |path: &Path| -> Vec<u16> { path.as_os_str().encode_wide().chain([0]).collect() };
+    let (from, to) = (wide(from), wide(to));
+    // Both NUL-terminated paths live through the call. No flags: an existing destination is an error.
+    let moved = unsafe {
+        windows_sys::Win32::Storage::FileSystem::MoveFileExW(from.as_ptr(), to.as_ptr(), 0)
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error()).context("Rename without replacement");
+    }
+    Ok(())
+}
+#[cfg(not(any(target_os = "linux", windows)))]
 fn rename_exclusive(_from: &Path, _to: &Path) -> Result<()> {
-    bail!("File renaming is currently supported on Linux")
+    bail!("File renaming is supported on Linux and Windows")
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { fileLabel, pick } from "../projects";
+import { fileLabel, parentDirectory, pick } from "../projects";
 import type { ProjectController } from "../project-workspace";
 import type { SourceGroup } from "../types";
 export function FileManagementDialog({
@@ -126,10 +126,8 @@ export function FileManagementDialog({
                       event.target.value === "simulation"
                         ? "simulation"
                         : "design";
-                    const base = c.workspace?.path.slice(
-                      0,
-                      c.workspace.path.lastIndexOf("/"),
-                    );
+                    const base =
+                      c.workspace && parentDirectory(c.workspace.path);
                     if (
                       base &&
                       directory ===

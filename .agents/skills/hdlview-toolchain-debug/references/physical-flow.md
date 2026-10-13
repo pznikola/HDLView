@@ -7,8 +7,8 @@ original flow log, structured state, and reports.
 1. Check normalized Verilog, top, clock/SDC configuration, PDK/library, and effective
    flow overrides. Compare the resolved tool/profile environment with
    [qualification findings](../../../../docs/QUALIFICATION.md#toolchain-qualification-findings).
-   The qualified derived image uses `/usr/local/bin/librelane` and compatible
-   OpenROAD/OpenSTA/Magic; the base image's legacy wrapper is not equivalent.
+   The qualified image provides LibreLane 3 with compatible OpenROAD/OpenSTA/Magic;
+   releases before 2026.08 carry LibreLane 2 and are not equivalent.
 2. Find the first failing flow step and distinguish tool/configuration failure from
    a completed run with failed checks. Preserve STA, DRC, and LVS results and
    `PhysicalRun.status` independently. The documented IHP Magic DRC violations
