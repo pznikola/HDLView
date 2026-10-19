@@ -33,9 +33,15 @@ function Copyable({ text }: { text: string }) {
 export function ToolchainSetup({
   status,
   onCheck,
+  onDefault,
+  checkedAt,
 }: {
   status: ToolchainStatus;
+  /** When the status was last asked for, so a repeated check shows it ran. */
+  checkedAt?: string;
   onCheck: () => void;
+  /** Present when the selected profile is not the default one. */
+  onDefault?: () => void;
 }) {
   const current = steps.findIndex((s) => s.states.includes(status.state));
   const detail = (
@@ -69,7 +75,15 @@ export function ToolchainSetup({
           ))}
         </ol>
       )}
-      <button onClick={onCheck}>Check again</button>
+      <div className="setup-actions">
+        <button onClick={onCheck}>Check again</button>
+        {onDefault && (
+          <button onClick={onDefault}>Use the default profile</button>
+        )}
+        {checkedAt && (
+          <span className="setup-checked">Checked {checkedAt}</span>
+        )}
+      </div>
     </section>
   );
 }

@@ -731,6 +731,15 @@ footer button {
   font-size: 12px;
   line-height: 1.6;
 }
+.setup-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.setup-checked {
+  font-size: 11px;
+  color: #8097aa;
+}
 .setup-command {
   display: flex;
   gap: 8px;

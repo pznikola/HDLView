@@ -176,11 +176,19 @@ pub fn toolchain_status(profile: &ToolchainProfile) -> ToolchainStatus {
                 &[],
                 None,
             )
-        } else {
+        } else if image == QUALIFIED_IMAGE {
             ToolchainStatus::new(
                 ImageMissing,
                 &format!("The tools image {image} is not downloaded. The download is about 4 GB and needs about 20 GB of free disk space."),
                 &[format!("docker pull {image}")],
+                None,
+            )
+        } else {
+            // Another image may exist on no registry, such as a locally built one.
+            ToolchainStatus::new(
+                ImageMissing,
+                &format!("The tools image {image} named in Toolchain is not on this computer. HDLView is qualified with {QUALIFIED_IMAGE}: download it (about 4 GB, needing about 20 GB of free disk space) and use the default profile."),
+                &[format!("docker pull {QUALIFIED_IMAGE}")],
                 None,
             )
         };
@@ -651,8 +659,9 @@ mod tests {
         assert_eq!(state(Some("exit 1")).0.state, ToolchainState::DockerStopped);
         let (missing, resolved) = state(Some("[ \"$1\" = version ]"));
         assert_eq!(missing.state, ToolchainState::ImageMissing);
-        assert_eq!(missing.commands, ["docker pull tools:1"]);
-        assert!(format!("{:#}", resolved.unwrap_err()).contains("docker pull tools:1"));
+        let pull = format!("docker pull {QUALIFIED_IMAGE}");
+        assert_eq!(missing.commands, std::slice::from_ref(&pull));
+        assert!(format!("{:#}", resolved.unwrap_err()).contains(&pull));
         let image = |release: &str| format!("[ \"$1\" = version ] || echo sha256:abc {release}");
         let old = state(Some(&image("2025.12"))).0;
         assert_eq!(old.state, ToolchainState::ImageOld);

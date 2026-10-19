@@ -60,6 +60,8 @@ const defaultProfile: Profile = {
   pdk_root: "/foss/pdks",
   timeout_seconds: 3600,
 };
+/** Images earlier versions used by default; a profile saved with one is replaced. */
+const retiredImages = ["hdlview-tools:2025.12"];
 const representations: { id: Representation; label: string }[] = [
   { id: "elaborated", label: "Elaborated RTL" },
   { id: "mapped", label: "Mapped gates" },
@@ -73,7 +75,12 @@ function App() {
   const [profile, setProfile] = useState<Profile>(() => {
     try {
       const saved = localStorage.getItem("hdlview-profile");
-      return saved ? parseProfile(saved) : defaultProfile;
+      const parsed = saved ? parseProfile(saved) : defaultProfile;
+      if (parsed.image && retiredImages.includes(parsed.image)) {
+        localStorage.removeItem("hdlview-profile");
+        return defaultProfile;
+      }
+      return parsed;
     } catch {
       return defaultProfile;
     }
@@ -133,11 +140,13 @@ function App() {
   const fail = useCallback((e: unknown) => setError(String(e)), []);
   const [toolchain, setToolchain] = useState<ToolchainStatus>();
   const [report, setReport] = useState<ToolchainReport>();
+  const [checkedAt, setCheckedAt] = useState<string>();
   const checkToolchain = useCallback(
     () =>
       api<ToolchainStatus>("toolchain_status", { profile })
         .then((status) => {
           setToolchain(status);
+          setCheckedAt(new Date().toLocaleTimeString());
           return status;
         })
         .catch(() => undefined),
@@ -146,6 +155,14 @@ function App() {
   useEffect(() => {
     void checkToolchain();
   }, [checkToolchain]);
+  // A profile saved by an earlier version may name an image this one no longer uses.
+  const resetProfile =
+    profile.provider === "docker" && profile.image !== defaultProfile.image
+      ? () => {
+          localStorage.removeItem("hdlview-profile");
+          setProfile(defaultProfile);
+        }
+      : undefined;
   const [explorer, setExplorer] = useState<"sources" | "design" | "inspector">(
     "sources",
   );
@@ -1640,6 +1657,8 @@ function App() {
                     <ToolchainSetup
                       status={toolchain}
                       onCheck={() => void checkToolchain()}
+                      onDefault={resetProfile}
+                      checkedAt={checkedAt}
                     />
                   )}
                   <div className="welcome-actions">
@@ -1742,6 +1761,8 @@ function App() {
                     if (status?.state === "ready") setModal(undefined);
                   })
                 }
+                onDefault={resetProfile}
+                checkedAt={checkedAt}
               />
             )}
             {modal === "Probe results" && report && (
