@@ -1,6 +1,8 @@
 # Third-party dependency notices
 Generated from installed locked dependencies. System libraries and external HDL toolchains retain their separate notices.
 
+HDLView itself is licensed under the GNU General Public License version 3 only (`LICENSE`), with this additional permission under GPL section 7: if you modify this Program, or any covered work, by linking or combining it with elkjs (or a modified version of that library), containing parts covered by the terms of the Eclipse Public License 2.0, the licensors of this Program grant you additional permission to convey the resulting work.
+
 ## adler2 2.0.1
 License: 0BSD OR MIT OR Apache-2.0
 Source: https://github.com/oyvindln/adler2

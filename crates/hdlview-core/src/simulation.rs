@@ -550,31 +550,32 @@ mod tests {
     }
     #[test]
     fn collects_only_unambiguous_current_run_traces() {
-        let dir = tempfile::tempdir().unwrap();
-        let expected = dir.path().join("trace.vcd");
-        let alternative = dir.path().join("testbench.vcd");
+        let temporary = tempfile::tempdir().unwrap();
+        let dir = temporary.path().canonical().unwrap();
+        let expected = dir.join("trace.vcd");
+        let alternative = dir.join("testbench.vcd");
         let scope = vec!["tb".into(), "dut".into()];
         let cancel = CancelToken::default();
         trace(&alternative, "dut");
-        trace(&dir.path().join("wrong.vcd"), "other");
+        trace(&dir.join("wrong.vcd"), "other");
         assert_eq!(
-            collect_trace(dir.path(), &expected, &scope, &cancel).unwrap(),
+            collect_trace(&dir, &expected, &scope, &cancel).unwrap(),
             alternative
         );
-        let nested = dir.path().join("waves");
+        let nested = dir.join("waves");
         fs::create_dir(&nested).unwrap();
         trace(&nested.join("duplicate.vcd"), "dut");
-        assert!(collect_trace(dir.path(), &expected, &scope, &cancel)
+        assert!(collect_trace(&dir, &expected, &scope, &cancel)
             .unwrap_err()
             .to_string()
             .contains("Multiple waveforms"));
         trace(&expected, "dut");
         assert_eq!(
-            collect_trace(dir.path(), &expected, &scope, &cancel).unwrap(),
+            collect_trace(&dir, &expected, &scope, &cancel).unwrap(),
             expected
         );
         fs::write(&expected, "invalid VCD").unwrap();
-        assert!(collect_trace(dir.path(), &expected, &scope, &cancel)
+        assert!(collect_trace(&dir, &expected, &scope, &cancel)
             .unwrap_err()
             .to_string()
             .contains("Malformed waveform"));

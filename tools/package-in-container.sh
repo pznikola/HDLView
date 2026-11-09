@@ -10,7 +10,7 @@ install -m755 "${CARGO_TARGET_DIR}/release/hdlview-desktop" "$package_dir/usr/bi
 install -m755 "${CARGO_TARGET_DIR}/release/hdlview" "$package_dir/usr/bin/hdlview"
 strip "$package_dir/usr/bin/hdlview-desktop" "$package_dir/usr/bin/hdlview"
 install -m644 src-tauri/icons/icon.png "$package_dir/usr/share/icons/hicolor/64x64/apps/hdlview.png"
-install -m644 README.md docs/DEPENDENCIES.md docs/QUALIFICATION.md docs/THIRD_PARTY_NOTICES.md "$package_dir/usr/share/doc/hdlview/"
+install -m644 LICENSE README.md docs/DEPENDENCIES.md docs/QUALIFICATION.md docs/THIRD_PARTY_NOTICES.md "$package_dir/usr/share/doc/hdlview/"
 cp -r examples tools/profiles "$package_dir/usr/share/hdlview/"
 cat > "$package_dir/DEBIAN/control" <<CONTROL
 Package: hdlview

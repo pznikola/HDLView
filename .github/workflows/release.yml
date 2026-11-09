@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - name: Tag matches the version
+        run: test "$GITHUB_REF_NAME" = "v$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml)"
       - run: gh release view "$GITHUB_REF_NAME" || gh release create "$GITHUB_REF_NAME" --generate-notes
   linux:
     needs: release
@@ -38,6 +40,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --legacy-peer-deps
-      - run: npm run package -- --bundles nsis
-      - run: cargo build --locked --release -p hdlview
-      - run: gh release upload "$GITHUB_REF_NAME" target/release/bundle/nsis/*.exe target/release/hdlview.exe --clobber
+      - run: npm run package
+      - run: python tools/check-windows-installer.py target/release/bundle/nsis/*-setup.exe
+      - run: gh release upload "$GITHUB_REF_NAME" target/release/bundle/nsis/*-setup.exe --clobber

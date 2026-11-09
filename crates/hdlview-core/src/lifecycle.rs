@@ -144,6 +144,7 @@ mod tests {
     fn fixture(base: &Path, name: &str) -> (WorkspaceProject, PathBuf, PathBuf) {
         let root = base.join(name);
         fs::create_dir(&root).unwrap();
+        let root = root.canonical().unwrap();
         fs::write(root.join("top.v"), "module top; endmodule\n").unwrap();
         let mut workspace =
             crate::workspace::create(&root.join("hdlview.project.json"), name.into(), false)

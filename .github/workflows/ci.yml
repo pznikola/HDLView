@@ -23,6 +23,9 @@ jobs:
       - run: npm run build
   windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -30,7 +33,18 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --legacy-peer-deps
-      - run: cargo test --workspace --exclude hdlview-desktop
+      - run: cargo test --no-fail-fast --workspace --exclude hdlview-desktop
       - run: npm test
-      - run: npm run build
-      - run: cargo check -p hdlview-desktop
+      - run: npm run package
+      - run: python tools/check-windows-installer.py target/release/bundle/nsis/*-setup.exe
+      # The runner cannot run Linux containers; the CLI must still report why.
+      - run: >-
+          cargo run --locked --release -p hdlview -- --store "$RUNNER_TEMP/store"
+          --profile tools/profiles/docker.json probe | python -c
+          "import json, sys; s = json.load(sys.stdin)['status']['state']; print(s);
+          sys.exit(s not in ('docker_missing', 'docker_stopped', 'image_missing'))"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hdlview-windows-setup
+          path: target/release/bundle/nsis/*-setup.exe
+          retention-days: 14

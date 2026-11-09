@@ -17,13 +17,19 @@ This is version 0.1.0. Read [qualification and remaining limitations](docs/QUALI
 
 ## Install
 
-HDLView is installed in three steps. The desktop application and the HDL tools are
-separate downloads.
+HDLView and the HDL tools are separate downloads. HDLView runs the tools from the
+unmodified [IIC-OSIC-TOOLS](https://github.com/iic-jku/IIC-OSIC-TOOLS) Docker image;
+it neither changes nor distributes that image. Each HDLView version is qualified with
+one release of the image, named in the default profile. Releases before 2026.08 lack
+LibreLane 3 and are rejected. Newer releases may work; **Check toolchain** lists the
+tool versions found. When Docker is not installed, not running, or the image is
+absent, the start panel and the footer say which step is missing and show the command
+for it.
 
-1. Install Docker: [Docker Engine](https://docs.docker.com/engine/install/) on Linux,
-   [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)
-   with the WSL 2 backend on Windows. On Linux, allow your user to run it, then log
-   out and in:
+### Linux
+
+1. Install [Docker Engine](https://docs.docker.com/engine/install/) and allow your
+   user to run it, then log out and in:
 
    ```sh
    sudo usermod -aG docker $USER
@@ -35,17 +41,13 @@ separate downloads.
    docker pull hpretl/iic-osic-tools:2026.09
    ```
 
-3. Download HDLView from the
-   [Releases page](https://github.com/pznikola/HDLView/releases). On Ubuntu 22.04 or
-   later install the `.deb` package:
+3. Download the `.deb` from the
+   [Releases page](https://github.com/pznikola/HDLView/releases) and install it on
+   Ubuntu 22.04 or later:
 
    ```sh
    sudo apt install ./hdlview_0.1.0_amd64.deb
    ```
-
-   On Windows 10 or 11 run the setup `.exe`. It installs for the current user and
-   needs no administrator rights. The installer is not signed, so Windows asks for
-   confirmation the first time.
 
 Start **HDLView** from the application menu. The package installs the bundled
 examples read-only under `/usr/share/hdlview/examples`; copy them to your home
@@ -55,14 +57,42 @@ directory before opening one:
 cp -r /usr/share/hdlview/examples ~/hdlview-examples
 ```
 
-The image is the unmodified [IIC-OSIC-TOOLS](https://github.com/iic-jku/IIC-OSIC-TOOLS)
-release; HDLView neither changes nor distributes it. Each HDLView version is qualified with one release of that image, named in the
-default profile. Releases before 2026.08 lack LibreLane 3 and are rejected. Newer
-releases may work; **Check toolchain** lists the tool versions found. When Docker is
-not installed, not running, or the image is absent, the start panel and the footer
-say which step is missing and show the command for it.
+### Windows
 
-On Windows only the Docker toolchain is supported, with the PDKs inside the image.
+You need 64-bit Windows 10 (22H2) or 11, virtualization turned on in the BIOS, at
+least 8 GB of RAM, and about 30 GB of free disk space.
+
+1. Open PowerShell as administrator, turn on WSL 2, then restart:
+
+   ```powershell
+   wsl --install
+   ```
+
+2. Install [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)
+   with the default WSL 2 engine and start it. Wait until it reports that the engine
+   is running.
+
+3. Download the tools image in PowerShell:
+
+   ```powershell
+   docker pull hpretl/iic-osic-tools:2026.09
+   ```
+
+4. Download `HDLView_0.1.0_x64-setup.exe` from the
+   [Releases page](https://github.com/pznikola/HDLView/releases) and run it. It
+   installs for the current user and needs no administrator rights. The installer is
+   not signed: if Windows shows "Windows protected your PC", choose **More info** and
+   then **Run anyway**.
+
+Start **HDLView** from the Start menu and open a project. Docker Desktop must be
+running while you build or simulate. On Windows only the Docker toolchain is
+supported, with the PDKs inside the image.
+
+HDLView keeps builds in `%LOCALAPPDATA%\org.hdlview.desktop`. Closing HDLView and
+deleting that folder frees the space; it is rebuilt when needed. Uninstall HDLView in
+**Settings → Apps**; the tools image is removed with `docker rmi
+hpretl/iic-osic-tools:2026.09`.
+
 The Windows build compiles and its path handling is qualified on Linux, but it has
 **not yet been run on a Windows machine**; see the
 [qualification notes](docs/QUALIFICATION.md#windows-port).
@@ -377,3 +407,19 @@ EditorConfig, Prettier, ESLint, and TypeScript settings are active at the reposi
 root. Run `npm run format` to apply formatting and `npm run format:check` to check it.
 The formatter excludes generated artifacts, qualification result files, and verbatim
 third-party notices. Rust uses Cargo's standard formatter and Clippy checks.
+
+## License
+
+Copyright (C) 2026 Nikola Petrovic
+
+HDLView is free software: you can redistribute it and/or modify it under the terms of
+the GNU General Public License version 3 as published by the Free Software
+Foundation; see [LICENSE](LICENSE). It is distributed without any warranty.
+
+Additional permission under GNU GPL version 3 section 7: if you modify this Program,
+or any covered work, by linking or combining it with elkjs (or a modified version of
+that library), containing parts covered by the terms of the Eclipse Public License
+2.0, the licensors of this Program grant you additional permission to convey the
+resulting work.
+
+Third-party licenses are listed in [THIRD_PARTY_NOTICES](docs/THIRD_PARTY_NOTICES.md).

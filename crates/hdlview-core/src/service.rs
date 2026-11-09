@@ -1180,11 +1180,12 @@ mod lint_tests {
     }
     #[test]
     fn file_previews_reject_stale_projects_and_jobs_are_bounded() {
-        let directory = tempfile::tempdir().unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary.path().canonical().unwrap();
         let store = tempfile::tempdir().unwrap();
         let service = Service::new(store.path().into());
         let workspace = workspace::create(
-            &directory.path().join("hdlview.project.json"),
+            &directory.join("hdlview.project.json"),
             "files".into(),
             false,
         )
@@ -1193,7 +1194,7 @@ mod lint_tests {
         service
             .request("open_project", json!({"path":path}))
             .unwrap();
-        service.request("create_file_entry",json!({"path":path,"request":{"directory":directory.path().join("rtl"),"name":"a.sv","group":"design","folder":false}})).unwrap();
+        service.request("create_file_entry",json!({"path":path,"request":{"directory":directory.join("rtl"),"name":"a.sv","group":"design","folder":false}})).unwrap();
         let mut token = Value::Null;
         for _ in 0..4 {
             let job = service.request("preview_file_change", json!({"path":path,"request":{"file":"rtl/a.sv","directory":false,"kind":"remove"}})).unwrap();
@@ -1221,7 +1222,7 @@ mod lint_tests {
         assert!(service
             .request("apply_file_change", json!({"path":path,"token":token}))
             .is_err());
-        assert!(directory.path().join("rtl/a.sv").exists());
+        assert!(directory.join("rtl/a.sv").exists());
         let (release, held) = std::sync::mpsc::channel();
         let job = service
             .launch("files", move |_| {

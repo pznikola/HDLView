@@ -656,11 +656,12 @@ mod tests {
     #[test]
     fn copy_is_immutable() {
         let d = tempfile::tempdir().unwrap();
-        fs::write(d.path().join("top.v"), "old").unwrap();
+        let root = d.path().canonical().unwrap();
+        fs::write(root.join("top.v"), "old").unwrap();
         let o = tempfile::tempdir().unwrap();
         let mut h = BTreeMap::new();
         copy_tree(
-            d.path(),
+            &root,
             Path::new("top.v"),
             o.path(),
             &mut h,
@@ -668,7 +669,7 @@ mod tests {
             false,
         )
         .unwrap();
-        fs::write(d.path().join("top.v"), "new").unwrap();
+        fs::write(root.join("top.v"), "new").unwrap();
         assert_eq!(fs::read_to_string(o.path().join("top.v")).unwrap(), "old");
     }
     #[test]

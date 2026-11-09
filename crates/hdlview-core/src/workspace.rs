@@ -1147,7 +1147,7 @@ mod tests {
         assert_eq!(workspace.project.headers.len(), 1);
         let captured = capture(&workspace.path, &workspace.project, out.path()).unwrap();
         let source = &captured.project.sources[0].path;
-        assert!(source.path().to_string_lossy().contains("block/top.sv"));
+        assert!(portable(source.path()).contains("block/top.sv"));
         assert!(captured.project.source_roots.is_empty());
         fs::write(external.path().join("block/top.sv"), "new").unwrap();
         assert_eq!(
@@ -1224,7 +1224,7 @@ mod tests {
         {
             assert!(out.path().join("inputs").join(path).exists());
             assert_eq!(
-                captured.origins[&path.path().to_string_lossy().into_owned()],
+                captured.origins[&portable(path.path())],
                 original.join(path.path().file_name().unwrap())
             );
         }
@@ -1312,7 +1312,7 @@ mod tests {
                 .project
                 .sources
                 .iter()
-                .map(|s| s.path.path().to_string_lossy().into_owned())
+                .map(|s| portable(s.path.path()))
                 .collect::<Vec<_>>(),
             vec![
                 "package.sv",

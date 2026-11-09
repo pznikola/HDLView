@@ -73,10 +73,24 @@ What was checked here, and what was not:
 - Not checked at all: the NSIS installer and the Windows jobs of the two workflows,
   Docker Desktop bind-mount speed, file ownership without `--user`, WebView2 rendering
   of the layout and 3D views, and cancelling a running build.
+- The Windows CI job builds the installer and `tools/check-windows-installer.py`
+  installs it silently, fails if it holds anything other than `HDLView.exe`,
+  `uninstall.exe`, `LICENSE.txt` and `THIRD_PARTY_NOTICES.md`, and checks that the
+  uninstaller removes it. The web interface and the Python helper scripts are compiled
+  into `HDLView.exe`. The CLI probe must report a missing Docker or image there,
+  because the runner cannot run Linux containers. This job has not run yet.
 
-Qualification on a Windows 11 machine with Docker Desktop remains a release gate: the
-setup panel in each state, `tools/qualify.py` at the three levels, the browser suite,
-and the manual window workflow.
+Qualification on a Windows 11 machine with Docker Desktop remains a release gate. On
+this host that is a Windows 11 evaluation VM under KVM (nested virtualization is
+enabled; CPU mode host-passthrough so WSL 2 runs inside it), with the installer from
+the CI artifact, following the README as a student would:
+
+- The setup panel with Docker Desktop absent, stopped, without the image, and ready.
+- A course project: Elaborated, Mapped and Post-layout on SKY130 and IHP, Icarus and
+  Verilator simulation, waveforms, layout and 3D views (software rendering in a VM),
+  live lint, rename, delete to the Recycle Bin, and cancelling a running build.
+- Post-layout time of `01_simpleRegister` and `17_afifo`.
+- After uninstalling, the program folder and the Start menu shortcut are gone.
 
 ## Large gate schematics
 
